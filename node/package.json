@@ -1,0 +1,16 @@
+{
+  "name": "node-service",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node index.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.11.3",
+    "dotenv": "^16.3.1",
+    "bcrypt": "^5.1.1"
+  }
+}

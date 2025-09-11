@@ -1,0 +1,55 @@
+version: "3.8"
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: clonar_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  node:
+    build: ./node
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./node:/usr/src/app
+      - node_modules:/usr/src/app/node_modules
+    command: npm start
+    depends_on:
+      postgres:
+        condition: service_healthy
+      python:
+        condition: service_started
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=clonar_db
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+    env_file:
+      - .env
+
+  python:
+    build: ./python
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./python:/usr/src/app
+    command: uvicorn app:app --host 0.0.0.0 --port 5000
+    environment:
+      - SERPAPI_KEY=${SERPAPI_KEY:-}
+    env_file:
+      - .env
+
+volumes:
+  node_modules:
+  postgres_data:
