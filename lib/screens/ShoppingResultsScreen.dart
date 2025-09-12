@@ -54,7 +54,7 @@ class ShoppingResultsScreen extends StatefulWidget {
   State<ShoppingResultsScreen> createState() => _ShoppingResultsScreenState();
 }
 
-class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
+class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with WidgetsBindingObserver {
   List<QuerySession> conversationHistory = [];
   final TextEditingController _followUpController = TextEditingController();
   final FocusNode _followUpFocusNode = FocusNode();
@@ -64,6 +64,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // register lifecycle listener
     print('ShoppingResultsScreen query: "${widget.query}"');
     // Create initial QuerySession
     final resultType = _detectResultType(widget.query);
@@ -83,21 +84,12 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Ensure focus is removed when returning to this screen
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Ensure keyboard stays closed when coming back
       _followUpFocusNode.unfocus();
-    });
-  }
-
-  @override
-  void didUpdateWidget(ShoppingResultsScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // Unfocus when returning from navigation
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _followUpFocusNode.unfocus();
-    });
+    }
+    super.didChangeAppLifecycleState(state);
   }
 
   String _detectResultType(String query) {
@@ -173,8 +165,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
 
   @override
   void dispose() {
-    // Dismiss keyboard before disposing
-    _followUpFocusNode.unfocus();
+    WidgetsBinding.instance.removeObserver(this); // clean up
     _followUpController.dispose();
     _followUpFocusNode.dispose();
     _scrollController.dispose();
@@ -220,8 +211,12 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
     } else {
       // If empty, just focus back to the field
       print('Empty query - refocusing field');
-      _followUpFocusNode.requestFocus();
+      _showKeyboard();
     }
+  }
+
+  void _showKeyboard() {
+    _followUpFocusNode.requestFocus();
   }
 
   void _scrollToQuery(int queryIndex) {
@@ -431,43 +426,137 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
       return <String>[];
     }
 
-    // Handle images - properly extract from images array
+    // Handle images - properly extract from images array with exterior image first
     List<String> getImages() {
+      final List<String> imageUrls = [];
+      
+      // Get all images from the images array first
       final images = hotel['images'];
       if (images != null && images is List && images.isNotEmpty) {
-        // Extract all image URLs from the images array
-        final imageUrls = <String>[];
         for (final img in images) {
           if (img is String && img.isNotEmpty) {
             imageUrls.add(img);
           } else if (img is Map && img['thumbnail'] != null) {
-            final thumbnail = img['thumbnail'].toString();
-            if (thumbnail.isNotEmpty) {
-              imageUrls.add(thumbnail);
+            final thumbnailUrl = img['thumbnail'].toString();
+            if (thumbnailUrl.isNotEmpty) {
+              imageUrls.add(thumbnailUrl);
             }
           }
         }
-        if (imageUrls.isNotEmpty) {
-          return imageUrls;
+      }
+      
+      // If no images from images array, fallback to thumbnail
+      if (imageUrls.isEmpty) {
+        final thumbnail = hotel['thumbnail'];
+        if (thumbnail != null && thumbnail.toString().isNotEmpty) {
+          imageUrls.add(thumbnail.toString());
         }
       }
       
-      // Fallback to thumbnail if available
-      final thumbnail = hotel['thumbnail'];
-      if (thumbnail != null && thumbnail.toString().isNotEmpty) {
-        return [thumbnail.toString()];
+    return imageUrls;
+  }
+
+  // Extract description from multiple possible fields
+  String _extractDescription(Map<String, dynamic> hotel) {
+    // Try multiple description fields
+    final description = safeString(hotel['description'], '');
+    if (description.isNotEmpty && description != 'No description available') {
+      return description;
+    }
+    
+    final summary = safeString(hotel['summary'], '');
+    if (summary.isNotEmpty) {
+      return summary;
+    }
+    
+    final overview = safeString(hotel['overview'], '');
+    if (overview.isNotEmpty) {
+      return overview;
+    }
+    
+    final about = safeString(hotel['about'], '');
+    if (about.isNotEmpty) {
+      return about;
+    }
+    
+    final details = safeString(hotel['details'], '');
+    if (details.isNotEmpty) {
+      return details;
+    }
+    
+    // If no description, return empty string (don't show features)
+    return '';
+  }
+
+  // Extract location from multiple possible fields
+    String location = '';
+    
+    // Try address first
+    location = safeString(hotel['address'], '');
+    
+    // If no address, try location field
+    if (location.isEmpty) {
+      location = safeString(hotel['location'], '');
+    }
+    
+    // If still no location, try building from city, state, country
+    if (location.isEmpty) {
+      final city = safeString(hotel['city'], '');
+      final state = safeString(hotel['state'], '');
+      final country = safeString(hotel['country'], '');
+      if (city.isNotEmpty || state.isNotEmpty || country.isNotEmpty) {
+        location = [city, state, country].where((s) => s.isNotEmpty).join(', ');
       }
-      return <String>[];
+    }
+    
+    // If still no location, try other possible fields
+    if (location.isEmpty) {
+      location = safeString(hotel['place'], '');
+    }
+    if (location.isEmpty) {
+      location = safeString(hotel['destination'], '');
+    }
+    
+    // If still no location, try to extract from hotel name
+    if (location.isEmpty) {
+      final hotelName = safeString(hotel['name'], '');
+      // Common patterns: "Hotel Name City", "Hotel Name in City", "Hotel Name at City"
+      final nameParts = hotelName.split(' ');
+      if (nameParts.length >= 3) {
+        // Try to extract city from the end of the name
+        final possibleCity = nameParts.last;
+        if (possibleCity.length > 2 && !possibleCity.toLowerCase().contains('hotel')) {
+          location = possibleCity;
+        }
+      }
+    }
+    
+    // Only show "Location not specified" if truly no location data
+    if (location.isEmpty) {
+      location = 'Location not specified';
+    }
+
+    // Extract price from multiple possible fields
+    double price = safeNumber(hotel['price'], 0.0);
+    if (price == 0.0) {
+      // Try to extract from rate_per_night
+      final ratePerNight = hotel['rate_per_night'];
+      if (ratePerNight != null && ratePerNight is Map) {
+        final lowest = ratePerNight['lowest'];
+        if (lowest != null) {
+          price = safeNumber(lowest, 0.0);
+        }
+      }
     }
 
     return {
       'name': safeString(hotel['name'], 'Unknown Hotel'),
-      'location': safeString(hotel['address'], 'Location not specified'),
+      'location': location,
       'rating': safeNumber(hotel['rating'], 0.0),
       'reviewCount': safeInt(hotel['reviews'], 0),
-      'price': safeNumber(hotel['price'], 0.0),
+      'price': price,
       'originalPrice': safeNumber(hotel['originalPrice'], 0.0),
-      'description': safeString(hotel['description'], 'No description available'),
+      'description': _extractDescription(hotel),
       'thumbnail': safeString(hotel['thumbnail'], ''),
       'link': safeString(hotel['link'], ''),
       'amenities': safeAmenities(hotel['amenities']),
@@ -516,9 +605,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
       resizeToAvoidBottomInset: true,
       appBar: _buildAppBar(),
       body: GestureDetector(
-        behavior: HitTestBehavior.translucent,
+        behavior: HitTestBehavior.opaque,
         onTap: () {
-          FocusScope.of(context).unfocus();
+          FocusScope.of(context).unfocus(); // dismiss keyboard on any tap
         },
         child: Column(
         children: [
@@ -880,13 +969,17 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
                       fontSize: 20,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    safeHotel['location'],
-                    style: AppTypography.body1.copyWith(
-                      color: AppColors.textSecondary,
+                  // Only show separate location if it's different from what's in the hotel name
+                  if (safeHotel['location'] != 'Location not specified' && 
+                      !safeHotel['name'].toLowerCase().contains(safeHotel['location'].toLowerCase())) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      safeHotel['location'],
+                      style: AppTypography.body1.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
                     ),
-                  ),
+                  ],
                   const SizedBox(height: 8),
                   
                   // Rating and review count
@@ -899,7 +992,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        safeHotel['rating'] > 0 ? '${safeHotel['rating']}' : 'N/A',
+                        safeHotel['rating'] > 0 ? '${safeHotel['rating'].toStringAsFixed(1)}' : 'N/A',
                         style: AppTypography.body1.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
@@ -913,27 +1006,32 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
                       ),
                       const Spacer(),
                       // Price
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          if (safeHotel['originalPrice'] > 0) ...[
-                            Text(
-                              '\$${safeHotel['originalPrice']}',
-                              style: AppTypography.body1.copyWith(
-                                color: AppColors.textSecondary,
-                                decoration: TextDecoration.lineThrough,
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (safeHotel['originalPrice'] > 0) ...[
+                              Text(
+                                '\$${safeHotel['originalPrice']}',
+                                style: AppTypography.body1.copyWith(
+                                  color: AppColors.textSecondary,
+                                  decoration: TextDecoration.lineThrough,
+                                ),
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                            const SizedBox(height: 2),
+                              const SizedBox(height: 2),
+                            ],
+                            if (safeHotel['price'] > 0)
+                              Text(
+                                '\$${safeHotel['price'].toStringAsFixed(0)}',
+                                style: AppTypography.title1.copyWith(
+                                  color: AppColors.accent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
                           ],
-                          Text(
-                            safeHotel['price'] > 0 ? '\$${safeHotel['price']}' : 'Price not available',
-                            style: AppTypography.title1.copyWith(
-                              color: AppColors.accent,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ],
                   ),
@@ -944,91 +1042,53 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
             // Image carousel
             _buildHotelImageCarousel(safeHotel['images']),
             
-            // Quick actions
+            // Quick actions - Horizontal scrollable
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {}, // Empty onTap to prevent bubbling
               child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _buildQuickActionButton('Find a Room', Icons.bed, () {
-                      _navigateToHotelDetail(safeHotel);
-                    }),
-                    _buildQuickActionButton('Website', Icons.language, () {
-                      _launchUrl(safeHotel['link']);
-                    }),
-                    _buildQuickActionButton('Call', Icons.phone, () {
-                      _makePhoneCall(safeHotel['phone']);
-                    }),
-                    _buildQuickActionButton('Directions', Icons.directions, () {
-                      _openDirections(safeHotel['location']);
-                    }),
-                  ],
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: SizedBox(
+                  height: 40,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    children: [
+                      _buildQuickActionButton('Find a Room', Icons.bed, () {
+                        _navigateToHotelDetail(safeHotel);
+                      }),
+                      const SizedBox(width: 8),
+                      _buildQuickActionButton('Website', Icons.language, () {
+                        _launchUrl(safeHotel['link']);
+                      }),
+                      const SizedBox(width: 8),
+                      _buildQuickActionButton('Call', Icons.phone, () {
+                        _makePhoneCall(safeHotel['phone']);
+                      }),
+                      const SizedBox(width: 8),
+                      _buildQuickActionButton('Directions', Icons.directions, () {
+                        _openDirections(safeHotel['location']);
+                      }),
+                    ],
+                  ),
                 ),
               ),
             ),
             
-            // Description or Amenities
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (safeHotel['description'] != 'No description available')
-                    Text(
-                      safeHotel['description'],
-                      style: AppTypography.body1.copyWith(
-                        color: AppColors.textSecondary,
-                        height: 1.4,
-                      ),
-                    )
-                  else if (safeHotel['amenities'].isNotEmpty)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Amenities:',
-                          style: AppTypography.body1.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: safeHotel['amenities'].take(6).map<Widget>((amenity) {
-                            return Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: AppColors.surfaceVariant,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                amenity,
-                                style: AppTypography.caption.copyWith(
-                                  color: AppColors.textSecondary,
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                      ],
-                    )
-                  else
-                    Text(
-                      'No additional information available',
-                      style: AppTypography.body1.copyWith(
-                        color: AppColors.textSecondary,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                ],
+            // Description with larger text (only if real description available)
+            if (safeHotel['description'].isNotEmpty && safeHotel['description'] != 'No description available')
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text(
+                  safeHotel['description'],
+                  style: AppTypography.body1.copyWith(
+                    fontSize: 16, // Larger text size
+                    color: AppColors.textPrimary, // More prominent color
+                    height: 1.5, // Better line spacing
+                    fontWeight: FontWeight.w400, // Slightly bolder
+                  ),
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -1070,6 +1130,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
       );
     }
     
+    // Ensure exterior image (first image) is always shown first
+    // This mimics Google's behavior where exterior image is primary
     return SizedBox(
       height: 200,
       child: ListView.builder(
@@ -1157,36 +1219,24 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
             
             // Center: TextField
             Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  print('TextField tapped - requesting focus');
-                  _followUpFocusNode.requestFocus();
-                },
                 child: TextField(
                   controller: _followUpController,
                   focusNode: _followUpFocusNode,
                   onSubmitted: (value) => _onFollowUpSubmitted(),
-                  onChanged: (value) {
-                    // Enable real-time typing
-                    print('Text changed: $value');
-                  },
-                  onTap: () {
-                    print('TextField onTap - requesting focus');
-                    _followUpFocusNode.requestFocus();
-                  },
+                onChanged: (value) {
+                  print('Text changed: $value');
+                },
+                onTap: () {
+                  _followUpFocusNode.requestFocus();
+                },
+                autofocus: false,
                   minLines: 1,
                   maxLines: 4,
-                  keyboardType: TextInputType.multiline,
-                  textInputAction: TextInputAction.newline,
-                  enabled: true,
-                  autofocus: false,
-                  readOnly: false,
-                  showCursor: true,
-                  style: TextStyle(
+                keyboardType: TextInputType.text,
+                textInputAction: TextInputAction.done,
+                style: const TextStyle(
                     fontSize: 16,
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    height: 1.4,
                   ),
                   decoration: const InputDecoration(
                     hintText: 'Ask follow up...',
@@ -1197,7 +1247,6 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> {
                     border: InputBorder.none,
                     isDense: true,
                     contentPadding: EdgeInsets.zero,
-                  ),
                 ),
               ),
             ),

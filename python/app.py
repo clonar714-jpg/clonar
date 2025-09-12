@@ -129,6 +129,13 @@ def extract_hotel_results(raw_results):
             "link": item.get("link", ""),
         }
         
+        # Debug: Print all available fields for the first hotel
+        if len(results) == 0:  # Only for first hotel
+            print("=== SerpAPI Hotel Fields ===")
+            for key, value in item.items():
+                print(f"{key}: {value}")
+            print("=== End Fields ===")
+        
         # Extract images properly from the images array
         images = item.get("images", [])
         if images and isinstance(images, list):
@@ -159,6 +166,21 @@ def extract_hotel_results(raw_results):
         
         hotel_data["amenities"] = amenities
         
+        # Extract description from multiple possible fields
+        description = ""
+        if "description" in item and item["description"]:
+            description = item["description"]
+        elif "summary" in item and item["summary"]:
+            description = item["summary"]
+        elif "overview" in item and item["overview"]:
+            description = item["overview"]
+        elif "about" in item and item["about"]:
+            description = item["about"]
+        elif "details" in item and item["details"]:
+            description = item["details"]
+        
+        hotel_data["description"] = description
+        
         # Extract booking information
         booking_info = item.get("booking", {})
         if booking_info:
@@ -174,6 +196,42 @@ def extract_hotel_results(raw_results):
         
         # Add description if available
         hotel_data["description"] = item.get("description", "")
+        
+        # Extract room information from essential_info
+        essential_info = item.get("essential_info", [])
+        room_types = []
+        
+        if essential_info:
+            # Parse room information from essential_info
+            room_info = {
+                "room_type": "",
+                "bed_count": "",
+                "sleeps": "",
+                "bathrooms": "",
+                "size": ""
+            }
+            
+            for info in essential_info:
+                info_lower = info.lower()
+                if "bedroom" in info_lower:
+                    room_info["room_type"] = info
+                elif "bed" in info_lower and "bedroom" not in info_lower:
+                    room_info["bed_count"] = info
+                elif "sleeps" in info_lower:
+                    room_info["sleeps"] = info
+                elif "bathroom" in info_lower:
+                    room_info["bathrooms"] = info
+                elif "sq ft" in info_lower:
+                    room_info["size"] = info
+                elif any(word in info_lower for word in ["apartment", "suite", "room"]):
+                    if not room_info["room_type"]:
+                        room_info["room_type"] = info
+            
+            # Only add room info if we have meaningful data
+            if any(room_info.values()):
+                room_types.append(room_info)
+        
+        hotel_data["room_types"] = room_types
         
         results.append(hotel_data)
     
