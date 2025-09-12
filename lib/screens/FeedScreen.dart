@@ -646,23 +646,23 @@ class _FeedScreenState extends State<FeedScreen> {
             border: Border.all(color: AppColors.surfaceVariant),
           ),
           child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
                   Icons.play_circle_outline,
                   size: 48,
-                  color: AppColors.textSecondary,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Reel ${index + 1}',
-                  style: AppTypography.body1.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
+              color: AppColors.textSecondary,
             ),
+                const SizedBox(height: 8),
+            Text(
+                  'Reel ${index + 1}',
+              style: AppTypography.body1.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
           ),
         );
       }),
