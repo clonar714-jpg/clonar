@@ -5,9 +5,9 @@ import 'package:http/http.dart' as http;
 class ApiService {
   // Try different URLs for different environments
   static const List<String> baseUrls = [
-    'http://10.0.2.2:8001',  // Android emulator
-    'http://localhost:8001',  // Local development
-    'http://127.0.0.1:8001', // Alternative local
+    'http://10.0.2.2:5000',  // Android emulator - Python API
+    'http://localhost:5000',  // Local development - Python API
+    'http://127.0.0.1:5000', // Alternative local - Python API
   ];
   
   /// Search for products or hotels using the backend API
