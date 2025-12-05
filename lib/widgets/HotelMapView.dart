@@ -35,7 +35,9 @@ class _HotelMapViewState extends State<HotelMapView> {
 
   void _initializeMap() {
     try {
+      print('🗺️ HotelMapView: Initializing with ${widget.points.length} points');
       if (widget.points.isEmpty) {
+        print('⚠️ HotelMapView: No points provided');
         setState(() => _isMapReady = true);
         return;
       }
@@ -47,7 +49,9 @@ class _HotelMapViewState extends State<HotelMapView> {
         return lat != null && lng != null;
       }).toList();
 
+      print('🗺️ HotelMapView: ${validPoints.length} valid points out of ${widget.points.length}');
       if (validPoints.isEmpty) {
+        print('⚠️ HotelMapView: No valid points after filtering');
         setState(() => _isMapReady = true);
         return;
       }
@@ -81,8 +85,11 @@ class _HotelMapViewState extends State<HotelMapView> {
 
       _center = LatLng(avgLat, avgLng);
 
+      print('✅ HotelMapView: Created ${_markers.length} markers, center at ${_center!.latitude}, ${_center!.longitude}');
+
       if (mounted) {
         setState(() => _isMapReady = true);
+        print('✅ HotelMapView: Map marked as ready');
       }
     } catch (e) {
       print('❌ HotelMapView initialization error: $e');
@@ -101,7 +108,9 @@ class _HotelMapViewState extends State<HotelMapView> {
   @override
   Widget build(BuildContext context) {
     // Always show placeholder initially to prevent blocking
+    print('🗺️ HotelMapView build: isMapReady=$_isMapReady, points=${widget.points.length}, markers=${_markers.length}, center=${_center != null}');
     if (!_isMapReady || widget.points.isEmpty || _markers.isEmpty || _center == null) {
+      print('⚠️ HotelMapView: Showing placeholder (not ready yet)');
       return Container(
         height: widget.height ?? 200,
         decoration: BoxDecoration(

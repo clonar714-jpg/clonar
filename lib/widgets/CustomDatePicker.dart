@@ -7,7 +7,6 @@ enum CustomDatePickerMode {
   oneWay,
   multiCity,
   singleDate, // For hotels, cars, etc.
-  single, // Alias for singleDate (for backward compatibility)
 }
 
 class CustomDatePicker extends StatefulWidget {
@@ -48,7 +47,7 @@ class _CustomDatePickerState extends State<CustomDatePicker> {
   }
 
   void _onSelectionChanged(DateRangePickerSelectionChangedArgs args) {
-    if (widget.mode == CustomDatePickerMode.oneWay || widget.mode == CustomDatePickerMode.singleDate || widget.mode == CustomDatePickerMode.single) {
+    if (widget.mode == CustomDatePickerMode.oneWay || widget.mode == CustomDatePickerMode.singleDate) {
       // Single date selection
       if (args.value is DateTime) {
         setState(() {
@@ -372,7 +371,6 @@ class _CustomDatePickerState extends State<CustomDatePicker> {
       case CustomDatePickerMode.multiCity:
         return 'Select departure date';
       case CustomDatePickerMode.singleDate:
-      case CustomDatePickerMode.single:
         return 'Select date';
     }
   }

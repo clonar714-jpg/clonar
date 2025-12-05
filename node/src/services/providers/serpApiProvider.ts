@@ -1,0 +1,247 @@
+/**
+ * 🔍 SerpAPI Shopping Provider
+ * Implements BaseProvider interface for SerpAPI (Google Shopping)
+ */
+
+import axios from "axios";
+import { BaseProvider, FieldType, SearchOptions } from "./baseProvider";
+
+export interface ShoppingProduct {
+  title: string;
+  price: string;
+  rating: number;
+  thumbnail: string;
+  images: string[];
+  link: string;
+  source: string;
+  snippet?: string;
+  description?: string;
+  category?: string;
+  brand?: string;
+  gender?: string;
+  reviews?: string;
+  extensions?: string[];
+  tag?: string;
+  delivery?: string;
+  _raw_snippet?: string;
+}
+
+/**
+ * Normalize price so Flutter parsing never fails.
+ */
+function parsePrice(raw: any): string {
+  if (!raw) return "0";
+  if (typeof raw === "number") return raw.toString();
+
+  const text = raw.toString();
+  const cleaned = text.replace(/[^\d.]/g, "");
+  return cleaned.length ? cleaned : "0";
+}
+
+/**
+ * Normalize rating.
+ */
+function parseRating(raw: any): number {
+  if (!raw) return 0;
+  const text = raw.toString().replace(/[^\d.]/g, "");
+  return Number(text) || 0;
+}
+
+/**
+ * Normalize thumbnail or images.
+ */
+function safeImage(img: any): string {
+  if (!img) return "";
+  if (typeof img === "string") return img;
+  return "";
+}
+
+/**
+ * Map raw SerpAPI product to Clonar standard product.
+ */
+function normalizeProduct(item: any): ShoppingProduct {
+  const title =
+    item.title ||
+    item.name ||
+    item.product_title ||
+    item.tag ||
+    "Unknown Product";
+
+  const price =
+    parsePrice(item.price || item.extracted_price || item.current_price);
+
+  const rating = parseRating(item.rating || item.reviews || item.score);
+
+  const thumbnail =
+    safeImage(item.thumbnail) ||
+    safeImage(item.image) ||
+    (item.images?.[0] ? safeImage(item.images[0]) : "") ||
+    "";
+
+  // Build images array - include thumbnail if not already in images
+  const imageList: string[] = [];
+  if (thumbnail) {
+    imageList.push(thumbnail);
+  }
+  if (item.images && Array.isArray(item.images)) {
+    item.images.forEach((img: any) => {
+      const imgUrl = safeImage(img);
+      if (imgUrl && !imageList.includes(imgUrl)) {
+        imageList.push(imgUrl);
+      }
+    });
+  }
+  const images = imageList.length > 0 ? imageList : (thumbnail ? [thumbnail] : []);
+
+  const link =
+    item.link ||
+    item.url ||
+    item.product_link ||
+    "";
+
+  const oldPrice = parsePrice(item.old_price || item.original_price || item.list_price);
+
+  // Description extraction (multi-source)
+  const snippet = item.snippet || "";
+  const description = item.description || item.product_description || item.long_description || item.short_description || "";
+  const extensions = Array.isArray(item.extensions) && item.extensions.length > 0
+    ? item.extensions.map((e: any) => String(e || "")).filter((e: string) => e.trim().length > 0).join(", ")
+    : "";
+  const tag = item.tag || "";
+  const delivery = item.delivery || "";
+
+  // Combine descriptions (priority: snippet > description > extensions > tag)
+  const finalDescription = snippet || description || extensions || tag || "";
+
+  return {
+    title,
+    price,
+    rating,
+    thumbnail,
+    images,
+    link,
+    source: "SerpAPI",
+    snippet: finalDescription,
+    description: finalDescription,
+    reviews: item.reviews || item.review_count || "",
+    extensions: extensions ? extensions.split(", ") : [],
+    tag,
+    delivery,
+    _raw_snippet: snippet, // Keep original for LLM context
+  };
+}
+
+/**
+ * Extract size from query
+ */
+function extractSize(query: string): string | null {
+  const sizeMatch = query.match(/\b(size|sz)\s*(\d+)\b/i);
+  return sizeMatch ? sizeMatch[2] : null;
+}
+
+/**
+ * Extract color from query
+ */
+function extractColor(query: string): string | null {
+  const colors = ['black', 'white', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'gray', 'grey', 'navy', 'beige', 'tan'];
+  const lowerQuery = query.toLowerCase();
+  return colors.find(c => lowerQuery.includes(c)) || null;
+}
+
+/**
+ * SerpAPI Shopping Provider Implementation
+ * Uses unified BaseProvider interface
+ */
+export class SerpApiProvider implements BaseProvider<ShoppingProduct> {
+  name = "SerpAPI";
+  fieldType: FieldType = "shopping";
+
+  async search(query: string, options?: SearchOptions): Promise<ShoppingProduct[]> {
+    const serpUrl = "https://serpapi.com/search.json";
+    const serpKey = process.env.SERPAPI_KEY;
+
+    if (!serpKey) {
+      throw new Error("Missing SERPAPI_KEY");
+    }
+
+    // Query is already optimized by ProviderManager
+    const optimalQuery = query;
+    
+    const params: any = {
+      engine: "google_shopping",
+      q: optimalQuery, // Use optimized query
+      hl: "en",
+      gl: "us",
+      api_key: serpKey,
+      num: options?.limit || 20,
+      tbs: "qdr:m", // ✅ FIX: Get results from past month (qdr:d=day, qdr:w=week, qdr:m=month, qdr:y=year)
+    };
+
+    // ✅ Retry logic with exponential backoff for SerpAPI shopping (slower than hotels)
+    const maxRetries = 3;
+    let lastError: any;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Increase timeout on each retry: 20s, 30s, 40s
+        const timeout = 20000 + (attempt * 10000);
+        console.log(`🔍 SerpAPI shopping attempt ${attempt + 1}/${maxRetries} (timeout: ${timeout}ms)...`);
+        
+        const res = await axios.get(serpUrl, { params, timeout });
+        let items = res.data.shopping_results || [];
+        
+        console.log(`✅ SerpAPI shopping success: ${items.length} products found`);
+
+      // Extract and filter by size (if in query)
+      const size = extractSize(query);
+      if (size) {
+        items = items.filter((p: any) => {
+          const title = (p.title || "").toLowerCase();
+          const desc = (p.snippet || p.description || "").toLowerCase();
+          return title.includes(`size ${size}`) || 
+                 title.includes(` ${size} `) ||
+                 desc.includes(`size ${size}`) ||
+                 (p.variants && Array.isArray(p.variants) && p.variants.some((v: any) => 
+                   v.size?.toString() === size || v.size?.toString() === `US ${size}` || v.size?.toString() === `UK ${size}`
+                 ));
+        });
+      }
+
+      // Extract and filter by color (if in query)
+      const color = extractColor(query);
+      if (color) {
+        items = items.filter((p: any) => {
+          const title = (p.title || "").toLowerCase();
+          const desc = (p.snippet || p.description || "").toLowerCase();
+          return title.includes(color) || desc.includes(color);
+        });
+      }
+
+        const normalizedProducts = items.map((item: any) => normalizeProduct(item));
+        
+        return normalizedProducts;
+      } catch (error: any) {
+        lastError = error;
+        const isTimeout = error.message?.includes("timeout") || error.code === "ECONNABORTED";
+        
+        if (isTimeout && attempt < maxRetries - 1) {
+          // Exponential backoff: 1s, 2s, 3s
+          const backoffDelay = (attempt + 1) * 1000;
+          console.warn(`⚠️ SerpAPI timeout (attempt ${attempt + 1}), retrying in ${backoffDelay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, backoffDelay));
+          continue;
+        }
+        
+        // Last attempt or non-timeout error
+        console.error(`❌ SerpAPI search error (attempt ${attempt + 1}/${maxRetries}):`, error.message);
+        if (attempt === maxRetries - 1) {
+          throw error; // Throw on final attempt
+        }
+      }
+    }
+    
+    // Should never reach here, but TypeScript needs it
+    throw lastError || new Error("SerpAPI search failed after all retries");
+  }
+}
+

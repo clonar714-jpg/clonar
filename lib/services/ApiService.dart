@@ -1,57 +1,149 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
-class ApiService {
-  // Try different URLs for different environments
-  static const List<String> baseUrls = [
-    'http://10.0.2.2:5000',  // Android emulator - Python API
-    'http://localhost:5000',  // Local development - Python API
-    'http://127.0.0.1:5000', // Alternative local - Python API
-  ];
+// Singleton HTTP client for memory efficiency
+class _HttpClientSingleton {
+  static final _HttpClientSingleton _instance = _HttpClientSingleton._internal();
+  factory _HttpClientSingleton() => _instance;
+  _HttpClientSingleton._internal();
   
-  /// Search for products or hotels using the backend API
-  static Future<Map<String, dynamic>> search(String query) async {
-    Exception? lastException;
-    
-    for (String baseUrl in baseUrls) {
-      try {
-        print('Trying API at: $baseUrl');
-        final response = await http.post(
-          Uri.parse('$baseUrl/search'),
-          headers: {
-            'Content-Type': 'application/json',
-          },
+  late final http.Client _client;
+  
+  void initialize() {
+    _client = http.Client();
+  }
+  
+  http.Client get client => _client;
+  
+  void dispose() {
+    _client.close();
+  }
+}
+
+final _httpClient = _HttpClientSingleton();
+
+/// Safe HTTP request wrapper that adds timeouts and error handling
+Future<http.Response> safeRequest(Future<http.Response> future) async {
+  try {
+    return await future.timeout(const Duration(seconds: 8));
+  } on TimeoutException {
+    return http.Response(
+      jsonEncode({'success': false, 'error': 'Request timeout'}),
+      408,
+      headers: {'content-type': 'application/json'},
+    );
+  } catch (e) {
+    if (kDebugMode) print('HTTP request error: $e');
+    return http.Response(
+      jsonEncode({'success': false, 'error': e.toString()}),
+      500,
+      headers: {'content-type': 'application/json'},
+    );
+  }
+}
+
+/// API service class for making HTTP requests with optimized memory usage
+class ApiService {
+  static const String baseUrl = 'http://10.0.0.127:8001';  // Python API running on port 8001
+  static const String apiUrl = baseUrl;  // Python API doesn't use /api prefix
+  
+  // Initialize the singleton HTTP client
+  static void initialize() {
+    _httpClient.initialize();
+  }
+  
+  // Dispose the singleton HTTP client
+  static void dispose() {
+    _httpClient.dispose();
+  }
+
+  /// Make a GET request with timeout and error handling
+  static Future<http.Response> get(String endpoint, {Map<String, String>? headers}) async {
+    return safeRequest(
+      http.get(
+        Uri.parse('$apiUrl$endpoint'),
+        headers: headers,
+      ),
+    );
+  }
+
+  /// Make a POST request with timeout and error handling
+  static Future<http.Response> post(String endpoint, {
+    Map<String, String>? headers,
+    Object? body,
+  }) async {
+    return safeRequest(
+      http.post(
+        Uri.parse('$apiUrl$endpoint'),
+        headers: headers,
+        body: body,
+      ),
+    );
+  }
+
+  /// Make a PUT request with timeout and error handling
+  static Future<http.Response> put(String endpoint, {
+    Map<String, String>? headers,
+    Object? body,
+  }) async {
+    return safeRequest(
+      http.put(
+        Uri.parse('$apiUrl$endpoint'),
+        headers: headers,
+        body: body,
+      ),
+    );
+  }
+
+  /// Make a DELETE request with timeout and error handling
+  static Future<http.Response> delete(String endpoint, {
+    Map<String, String>? headers,
+  }) async {
+    return safeRequest(
+      http.delete(
+        Uri.parse('$apiUrl$endpoint'),
+        headers: headers,
+      ),
+    );
+  }
+
+  /// Upload a file with timeout and error handling
+  static Future<http.Response> uploadFile(String endpoint, {
+    Map<String, String>? headers,
+    required http.MultipartRequest request,
+  }) async {
+    return safeRequest(
+      request.send().then((streamedResponse) => http.Response.fromStream(streamedResponse)),
+    );
+  }
+
+  /// Search method for shopping and hotel results
+  static Future<http.Response> search(String query) async {
+    return safeRequest(
+      http.post(
+        Uri.parse('$apiUrl/search'),
+        headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'query': query,
-          }),
-        ).timeout(Duration(seconds: 10));
+          'image_url': "",
+        }),
+      ),
+    );
+  }
 
-        print('Response status: ${response.statusCode}');
-        print('Response body length: ${response.body.length}');
-
-        if (response.statusCode == 200) {
-          final Map<String, dynamic> data = jsonDecode(response.body);
-          print('Successfully connected to: $baseUrl');
-          return data;
-        } else {
-          lastException = Exception('Failed to search: ${response.statusCode} - ${response.body}');
-        }
-      } on SocketException catch (e) {
-        print('SocketException for $baseUrl: $e');
-        lastException = Exception('No internet connection to $baseUrl');
-      } on HttpException catch (e) {
-        print('HttpException for $baseUrl: $e');
-        lastException = Exception('HTTP error occurred: $e');
-      } on FormatException catch (e) {
-        print('FormatException for $baseUrl: $e');
-        lastException = Exception('Invalid response format: $e');
-      } catch (e) {
-        print('General error for $baseUrl: $e');
-        lastException = Exception('Search failed: $e');
-      }
-    }
-    
-    throw lastException ?? Exception('All API endpoints failed');
+  /// Image-based search method for shopping and hotel results
+  static Future<http.Response> searchWithImage(String query, String imageUrl) async {
+    return safeRequest(
+      http.post(
+        Uri.parse('$apiUrl/search'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'query': query,
+          'image_url': imageUrl.isNotEmpty ? imageUrl : "",
+        }),
+      ),
+    );
   }
 }

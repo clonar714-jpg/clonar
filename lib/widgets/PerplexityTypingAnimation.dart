@@ -1,0 +1,250 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+
+/// 🎨 Beautiful Perplexity-style typing animation widget
+/// Features:
+/// - Smooth word-by-word animation
+/// - Animated blinking cursor
+/// - Fade-in effects
+/// - Smooth scrolling
+class PerplexityTypingAnimation extends StatefulWidget {
+  final String text;
+  final bool isStreaming;
+  final TextStyle? textStyle;
+  final Duration animationDuration;
+  final int wordsPerTick;
+
+  const PerplexityTypingAnimation({
+    Key? key,
+    required this.text,
+    required this.isStreaming,
+    this.textStyle,
+    this.animationDuration = const Duration(milliseconds: 30),
+    this.wordsPerTick = 1,
+  }) : super(key: key);
+
+  @override
+  State<PerplexityTypingAnimation> createState() => _PerplexityTypingAnimationState();
+}
+
+class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
+    with SingleTickerProviderStateMixin {
+  String _displayedText = '';
+  Timer? _animationTimer;
+  late AnimationController _cursorController;
+  late Animation<double> _cursorAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    
+    // Animated blinking cursor (Perplexity-style)
+    _cursorController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 530), // Smooth blink speed
+    );
+    
+    _cursorAnimation = Tween<double>(
+      begin: 1.0,
+      end: 0.0,
+    ).animate(CurvedAnimation(
+      parent: _cursorController,
+      curve: Curves.easeInOut,
+    ));
+    
+    _cursorController.repeat(reverse: true);
+    
+    // ✅ Always start animation, even if text is already provided
+    // This ensures smooth word-by-word appearance
+    _startAnimation();
+  }
+
+  @override
+  void didUpdateWidget(PerplexityTypingAnimation oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    // If text changed, continue animation from current position
+    if (widget.text != oldWidget.text) {
+      if (widget.text.length > oldWidget.text.length) {
+        // Text is being appended (streaming) - continue animating
+        // Don't reset _displayedText, just continue from where we are
+        if (_animationTimer == null || !_animationTimer!.isActive) {
+          _startAnimation();
+        }
+      } else {
+        // Text was replaced (correction) - restart animation
+        _displayedText = '';
+        _startAnimation();
+      }
+    }
+    
+    // Update cursor visibility based on streaming state
+    if (widget.isStreaming) {
+      if (!_cursorController.isAnimating) {
+        _cursorController.repeat(reverse: true);
+      }
+    } else {
+      _cursorController.stop();
+      _cursorController.value = 0.0; // Hide cursor when done
+    }
+  }
+
+  void _startAnimation() {
+    // Don't cancel if already running - let it continue smoothly
+    if (_animationTimer?.isActive ?? false) {
+      return;
+    }
+    
+    // ✅ FIX: Always start from current displayed text, not from empty
+    // This allows smooth continuation when new text arrives during streaming
+    if (_displayedText.length >= widget.text.length) {
+      // If displayed text is already longer, reset to match widget text
+      _displayedText = widget.text;
+      return;
+    }
+    
+    // Word-by-word animation (smoother than character-by-character)
+    _animationTimer = Timer.periodic(widget.animationDuration, (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      
+      // ✅ FIX: Always check against current widget.text (which updates during streaming)
+      if (_displayedText.length < widget.text.length) {
+        // Get remaining text to display
+        final remainingText = widget.text.substring(_displayedText.length).trimLeft();
+        
+        if (remainingText.isEmpty) {
+          // No text left, we're done
+          setState(() {
+            _displayedText = widget.text;
+          });
+          timer.cancel();
+          if (!widget.isStreaming) {
+            _cursorController.stop();
+            _cursorController.value = 0.0;
+          }
+          return;
+        }
+        
+        // Split into words
+        final words = remainingText.split(' ').where((w) => w.isNotEmpty).toList();
+        
+        if (words.isEmpty) {
+          // No words, just add remaining characters
+          setState(() {
+            _displayedText = widget.text;
+          });
+          timer.cancel();
+          if (!widget.isStreaming) {
+            _cursorController.stop();
+            _cursorController.value = 0.0;
+          }
+          return;
+        }
+        
+        // Add words gradually (1-2 words per tick for smooth animation)
+        int wordsToAdd = widget.wordsPerTick;
+        if (words.length < wordsToAdd) {
+          wordsToAdd = words.length;
+        }
+        
+        if (wordsToAdd > 0) {
+          // Calculate how much text to add
+          final wordsToAddList = words.sublist(0, wordsToAdd);
+          final textToAdd = wordsToAddList.join(' ');
+          
+          // Find where to insert in the original text
+          final currentLength = _displayedText.length;
+          // Find the next occurrence of this text after current position
+          final searchStart = currentLength;
+          final nextWordStart = widget.text.indexOf(textToAdd, searchStart);
+          
+          if (nextWordStart != -1 && nextWordStart >= currentLength) {
+            // Found it - add up to that position (including any leading space)
+            final endPos = nextWordStart + textToAdd.length;
+            setState(() {
+              _displayedText = widget.text.substring(0, endPos);
+            });
+          } else {
+            // Fallback: append the words
+            final spaceNeeded = currentLength > 0 && 
+                               _displayedText.isNotEmpty && 
+                               !_displayedText.endsWith(' ') ? ' ' : '';
+            setState(() {
+              _displayedText = _displayedText + spaceNeeded + textToAdd;
+            });
+          }
+        }
+      } else {
+        // Animation complete
+        timer.cancel();
+        if (!widget.isStreaming) {
+          _cursorController.stop();
+          _cursorController.value = 0.0;
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _animationTimer?.cancel();
+    _cursorController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // ✅ Always use displayed text for animation
+    // This ensures smooth word-by-word appearance
+    final displayText = _displayedText;
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Text with fade-in effect
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          child: RichText(
+            key: ValueKey(displayText),
+            text: TextSpan(
+              style: widget.textStyle ?? const TextStyle(
+                fontSize: 15,
+                height: 1.6,
+                color: Colors.black87,
+              ),
+              children: [
+                TextSpan(text: displayText),
+                // Animated blinking cursor (only when streaming)
+                if (widget.isStreaming || _displayedText.length < widget.text.length)
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: AnimatedBuilder(
+                      animation: _cursorAnimation,
+                      builder: (context, child) {
+                        return Opacity(
+                          opacity: _cursorAnimation.value,
+                          child: Container(
+                            width: 2,
+                            height: 18,
+                            margin: const EdgeInsets.only(left: 2),
+                            decoration: BoxDecoration(
+                              color: widget.textStyle?.color ?? Colors.black87,
+                              borderRadius: BorderRadius.circular(1),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+

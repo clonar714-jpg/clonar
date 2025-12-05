@@ -99,6 +99,63 @@ class HotelCardPerplexity extends StatelessWidget {
     final reviews = safeString(hotel["reviews"] ?? hotel["review_count"] ?? hotel["reviewCount"], "");
     final address = safeString(hotel["address"] ?? hotel["location"], "");
     
+    // Extract price - support multiple formats from SerpAPI and future affiliate APIs
+    String? getPrice() {
+      // Try different price fields that might come from SerpAPI or affiliate APIs
+      final price = hotel["price"];
+      final ratePerNight = hotel["rate_per_night"];
+      final extractedPrice = hotel["extracted_price"];
+      final pricePerNight = hotel["price_per_night"];
+      final nightlyRate = hotel["nightly_rate"];
+      
+      // Handle different price formats
+      String? priceStr;
+      if (price != null) {
+        if (price is String) {
+          priceStr = price.trim();
+        } else if (price is Map) {
+          // Handle rate_per_night object format: {lowest: "$299", highest: "$399"}
+          priceStr = price["lowest"]?.toString().trim() ?? 
+                     price["price"]?.toString().trim() ?? 
+                     price["value"]?.toString().trim();
+        } else {
+          priceStr = price.toString().trim();
+        }
+      } else if (ratePerNight != null) {
+        if (ratePerNight is Map) {
+          priceStr = ratePerNight["lowest"]?.toString().trim() ?? 
+                     ratePerNight["price"]?.toString().trim();
+        } else {
+          priceStr = ratePerNight.toString().trim();
+        }
+      } else if (extractedPrice != null) {
+        // If it's a number, format it as currency
+        if (extractedPrice is num) {
+          priceStr = "\$${extractedPrice.toStringAsFixed(0)}";
+        } else {
+          priceStr = extractedPrice.toString().trim();
+        }
+      } else if (pricePerNight != null) {
+        priceStr = pricePerNight.toString().trim();
+      } else if (nightlyRate != null) {
+        priceStr = nightlyRate.toString().trim();
+      }
+      
+      // Validate price - don't show if it's "0", empty, or invalid
+      if (priceStr == null || priceStr.isEmpty || priceStr == "0" || priceStr == "\$0") {
+        return null;
+      }
+      
+      // Ensure it has $ sign if it's a number
+      if (priceStr.startsWith(RegExp(r'\d'))) {
+        priceStr = "\$" + priceStr;
+      }
+      
+      return priceStr;
+    }
+    
+    final price = getPrice();
+    
     // ✅ Perplexity-style: Extract review-based themes (dynamically generated from reviews)
     // Themes are provided by backend after analyzing hotel reviews
     final themesData = hotel["themes"];
@@ -183,7 +240,7 @@ class HotelCardPerplexity extends StatelessWidget {
               ),
                 const SizedBox(height: 8),
 
-                // ✅ RATING + REVIEW COUNT
+                // ✅ RATING + REVIEW COUNT + PRICE
                 Row(
                   children: [
                     if (rating > 0) ...[
@@ -206,6 +263,18 @@ class HotelCardPerplexity extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ],
+                    // ✅ PRICE - Display if available from SerpAPI or future affiliate APIs
+                    if (price != null) ...[
+                      const Spacer(),
+                      Text(
+                        price,
+                        style: AppTypography.body1.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
+                        ),
+                      ),
                     ],
                     // ✅ TripAdvisor logo - Ready for when official API is integrated
                     // TODO: When TripAdvisor API is integrated, uncomment below and check:

@@ -11,7 +11,7 @@ import {
   getMovieImages,
   getMovieReviews,
   getPersonDetails
-} from "@/services/tmdbService";
+} from "../services/tmdbService.js";
 
 // Lazy-load OpenAI client
 let clientInstance: OpenAI | null = null;

@@ -212,7 +212,7 @@ class _RoomDetailsScreenState extends State<RoomDetailsScreen> {
           Row(
             children: [
               Text(
-                '\$${widget.room['price'] ?? 0}',
+                '\$${(widget.room['price'] as num?)?.toInt() ?? 0}', // ✅ null-safe
                 style: AppTypography.title1.copyWith(
                   color: AppColors.accent,
                   fontWeight: FontWeight.bold,

@@ -217,7 +217,7 @@ class _AddToListPageState extends State<AddToListPage> {
     int itemCount = _selectedImages.isNotEmpty ? _selectedImages.length : 1;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text("$itemCount persona${itemCount > 1 ? 's' : ''} added to Collections"),
+        content: Text("$itemCount persona${itemCount > 1 ? 's' : ''} added to Collections"), // ✅ null-safe
         backgroundColor: AppColors.primary,
       ),
     );

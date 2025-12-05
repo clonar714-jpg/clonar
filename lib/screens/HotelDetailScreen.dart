@@ -1,15 +1,32 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import 'RoomDetailsScreen.dart';
+import 'rooms_page.dart';
+import '../services/AgentService.dart';
+import '../widgets/GoogleMapWidget.dart';
+import '../services/GeocodingService.dart';
+import '../services/CacheService.dart';
+import 'FullScreenMapScreen.dart';
+import 'HotelPhotoGalleryScreen.dart';
 
 class HotelDetailScreen extends StatefulWidget {
   final Map<String, dynamic> hotel;
+  final DateTime? checkInDate;
+  final DateTime? checkOutDate;
+  final int? guestCount;
+  final int? roomCount;
 
   const HotelDetailScreen({
     Key? key,
     required this.hotel,
+    this.checkInDate,
+    this.checkOutDate,
+    this.guestCount,
+    this.roomCount,
   }) : super(key: key);
 
   @override
@@ -28,18 +45,216 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
   final GlobalKey _roomsSectionKey = GlobalKey();
   bool _isDescriptionExpanded = false;
 
+  // Dynamic hotel content
+  String _whatPeopleSay = '';
+  String _reviewSummary = '';
+  String _chooseThisIf = '';
+  String _about = '';
+  String _locationSummary = '';
+  String _ratingInsights = '';
+  List<String> _amenitiesClean = [];
+  bool _isLoadingContent = true;
+  
+  // Map coordinates
+  double? _hotelLatitude;
+  double? _hotelLongitude;
+  bool _isLoadingCoordinates = false;
+
   @override
   void initState() {
     super.initState();
     _imagePageController = PageController();
     _scrollController.addListener(_onScroll);
     
-    // Initialize with today's date and tomorrow's date
-    final today = DateTime.now();
-    final tomorrow = today.add(const Duration(days: 1));
+    // Initialize with dates and travelers from TravelScreen if provided, otherwise use defaults
+    if (widget.checkInDate != null && widget.checkOutDate != null) {
+      _selectedCheckIn = '${_getMonthName(widget.checkInDate!.month)} ${widget.checkInDate!.day}';
+      _selectedCheckOut = '${_getMonthName(widget.checkOutDate!.month)} ${widget.checkOutDate!.day}';
+    } else {
+      // Initialize with today's date and tomorrow's date
+      final today = DateTime.now();
+      final tomorrow = today.add(const Duration(days: 1));
+      
+      _selectedCheckIn = '${_getMonthName(today.month)} ${today.day}';
+      _selectedCheckOut = '${_getMonthName(tomorrow.month)} ${tomorrow.day}';
+    }
     
-    _selectedCheckIn = '${_getMonthName(today.month)} ${today.day}';
-    _selectedCheckOut = '${_getMonthName(tomorrow.month)} ${tomorrow.day}';
+    // Set guest count if provided
+    if (widget.guestCount != null) {
+      _adultCount = widget.guestCount!;
+      _kidsCount = 0; // Default to 0 kids if not specified
+    }
+    
+    // Load dynamic "What people say" content
+    _loadHotelDetails();
+    _loadHotelCoordinates();
+  }
+  
+  Future<void> _loadHotelDetails() async {
+    try {
+      setState(() {
+        _isLoadingContent = true;
+      });
+      
+      // ✅ CACHE: Generate cache key from hotel name and location
+      final hotelName = widget.hotel['name']?.toString() ?? '';
+      final hotelLocation = widget.hotel['location']?.toString() ?? widget.hotel['address']?.toString() ?? '';
+      final cacheKey = CacheService.generateCacheKey(
+        'hotel-details-$hotelName-$hotelLocation',
+      );
+      
+      // ✅ CACHE: Check cache first (hotel details change slowly, cache for 7 days)
+      final cachedData = await CacheService.get(cacheKey);
+      if (cachedData != null) {
+        print('✅ Hotel details cache HIT for: $hotelName');
+        setState(() {
+          _whatPeopleSay = cachedData['whatPeopleSay'] ?? _getFallbackWhatPeopleSay();
+          _reviewSummary = cachedData['reviewSummary'] ?? '';
+          _chooseThisIf = cachedData['chooseThisIf'] ?? _getChooseThisIfText();
+          _about = cachedData['about'] ?? _getAboutText();
+          _locationSummary = cachedData['locationSummary'] ?? '';
+          _ratingInsights = cachedData['ratingInsights'] ?? '';
+          _amenitiesClean = (cachedData['amenitiesClean'] as List<dynamic>?)
+              ?.map((a) => a.toString())
+              .toList() ?? 
+              (widget.hotel['amenities'] as List<dynamic>?)
+                  ?.map((a) => a.toString())
+                  .toList() ?? [];
+          _isLoadingContent = false;
+        });
+        return; // Use cached data, skip API call
+      }
+      
+      print('❌ Hotel details cache MISS for: $hotelName (fetching from API)');
+      
+      final url = Uri.parse('${AgentService.baseUrl}/api/hotel-details');
+      
+      // Build comprehensive hotel data object - auto-adapts to any fields present
+      // This works with minimal SerpAPI data and automatically uses richer data when available
+      final Map<String, dynamic> hotelData = {
+        'name': widget.hotel['name'] ?? '',
+        'location': widget.hotel['location'],
+        'address': widget.hotel['address'],
+        'rating': widget.hotel['rating'],
+        'reviewCount': widget.hotel['reviewCount'],
+        'description': widget.hotel['description'],
+        'amenities': widget.hotel['amenities'],
+        'nearby': widget.hotel['nearby'],
+        // Rating breakdowns (if available from any source)
+        'cleanliness': widget.hotel['cleanliness'] ?? widget.hotel['cleanliness_rating'],
+        'rooms': widget.hotel['rooms'] ?? widget.hotel['rooms_rating'],
+        'service': widget.hotel['service'] ?? widget.hotel['service_rating'],
+        'sleepQuality': widget.hotel['sleepQuality'] ?? widget.hotel['sleep_quality'],
+        'value': widget.hotel['value'] ?? widget.hotel['value_rating'],
+        'locationRating': widget.hotel['locationRating'] ?? widget.hotel['location_rating'],
+        // Future-proof: Include any additional fields that might be present
+        // The AI will automatically use them if they appear
+        if (widget.hotel['reviews'] != null) 'reviews': widget.hotel['reviews'],
+        if (widget.hotel['review_snippets'] != null) 'review_snippets': widget.hotel['review_snippets'],
+        if (widget.hotel['ratings_breakdown'] != null) 'ratings_breakdown': widget.hotel['ratings_breakdown'],
+        if (widget.hotel['airport_distance'] != null) 'airport_distance': widget.hotel['airport_distance'],
+        if (widget.hotel['nearby_places'] != null) 'nearby_places': widget.hotel['nearby_places'],
+        if (widget.hotel['hotel_class'] != null) 'hotel_class': widget.hotel['hotel_class'],
+        if (widget.hotel['tags'] != null) 'tags': widget.hotel['tags'],
+        if (widget.hotel['geo'] != null) 'geo': widget.hotel['geo'],
+        if (widget.hotel['gps_coordinates'] != null) 'gps_coordinates': widget.hotel['gps_coordinates'],
+        if (widget.hotel['latitude'] != null) 'latitude': widget.hotel['latitude'],
+        if (widget.hotel['longitude'] != null) 'longitude': widget.hotel['longitude'],
+      };
+      
+      // Remove null/empty values to keep payload clean
+      hotelData.removeWhere((key, value) => value == null || value == '' || (value is List && value.isEmpty));
+      
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(hotelData),
+      ).timeout(const Duration(seconds: 15));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        
+        // ✅ CACHE: Store response in cache (7 days expiry for hotel details)
+        await CacheService.set(
+          cacheKey,
+          data,
+          expiry: const Duration(days: 7),
+          query: 'hotel-details', // Mark as hotel details for logging
+        );
+        print('💾 Cached hotel details for: $hotelName');
+        
+        setState(() {
+          _whatPeopleSay = data['whatPeopleSay'] ?? _getFallbackWhatPeopleSay();
+          _reviewSummary = data['reviewSummary'] ?? '';
+          _chooseThisIf = data['chooseThisIf'] ?? _getChooseThisIfText();
+          _about = data['about'] ?? _getAboutText();
+          _locationSummary = data['locationSummary'] ?? '';
+          _ratingInsights = data['ratingInsights'] ?? '';
+          _amenitiesClean = (data['amenitiesClean'] as List<dynamic>?)
+              ?.map((a) => a.toString())
+              .toList() ?? 
+              (widget.hotel['amenities'] as List<dynamic>?)
+                  ?.map((a) => a.toString())
+                  .toList() ?? [];
+          _isLoadingContent = false;
+        });
+      } else {
+        _setFallbackContent();
+      }
+    } catch (e) {
+      print('Error loading hotel details: $e');
+      _setFallbackContent();
+    }
+  }
+  
+  void _setFallbackContent() {
+    setState(() {
+      _whatPeopleSay = _getFallbackWhatPeopleSay();
+      _reviewSummary = '';
+      _chooseThisIf = _getChooseThisIfText();
+      _about = _getAboutText();
+      _locationSummary = '';
+      _ratingInsights = '';
+      _amenitiesClean = (widget.hotel['amenities'] as List<dynamic>?)
+          ?.map((a) => a.toString())
+          .toList() ?? [];
+      _isLoadingContent = false;
+    });
+  }
+  
+  String _getFallbackWhatPeopleSay() {
+    final name = widget.hotel['name'] ?? 'this hotel';
+    final location = widget.hotel['location'] ?? '';
+    final rating = _safeDouble(widget.hotel['rating'], 0.0);
+    
+    final locationText = location.isNotEmpty && location != 'Location not specified' ? ' in $location' : '';
+    final ratingText = rating >= 4.5 
+        ? "highly rated" 
+        : rating >= 4.0 
+        ? "well-rated" 
+        : "popular";
+    
+    return '$name$locationText is $ratingText among guests, with many reviewers praising the comfortable accommodations, convenient location, and quality service. Guests appreciate the modern amenities and friendly staff. Some visitors mention minor areas for improvement, but overall satisfaction remains high.';
+  }
+
+  // Helper function to safely convert dynamic values to double
+  double _safeDouble(dynamic value, double fallback) {
+    if (value == null) return fallback;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    final str = value.toString().trim();
+    if (str.isEmpty) return fallback;
+    return double.tryParse(str) ?? fallback;
+  }
+
+  // Helper function to safely convert dynamic values to int
+  int _safeInt(dynamic value, int fallback) {
+    if (value == null) return fallback;
+    if (value is int) return value;
+    if (value is double) return value.toInt();
+    final str = value.toString().trim();
+    if (str.isEmpty) return fallback;
+    return int.tryParse(str) ?? fallback;
   }
 
   void _onScroll() {
@@ -62,7 +277,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
   // Helper method to get rating from hotel data
   double _getRating(String category) {
     // Try to get specific rating from hotel data
-    final rating = widget.hotel[category] ?? widget.hotel['${category}_rating'];
+    final rating = widget.hotel[category] ?? widget.hotel['${category}_rating']; // ✅ null-safe
     if (rating != null) {
       if (rating is double) return rating;
       if (rating is int) return rating.toDouble();
@@ -107,7 +322,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
         final amenityStr = amenity.toString().toLowerCase();
         if (amenityStr.contains('king') || amenityStr.contains('queen') || 
             amenityStr.contains('double') || amenityStr.contains('twin')) {
-          return '${amenityStr.split(' ').first.toUpperCase()}${amenityStr.split(' ').skip(1).join(' ')} Room';
+          return '${amenityStr.split(' ').first.toUpperCase()}${amenityStr.split(' ').skip(1).join(' ')} Room'; // ✅ null-safe
         }
       }
     }
@@ -122,7 +337,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                         price is int ? price.toDouble() : 
                         double.tryParse(price.toString());
       if (priceValue != null) {
-        return '\$${priceValue.toStringAsFixed(0)} per night';
+        return '\$${priceValue.toStringAsFixed(0)} per night'; // ✅ null-safe
       }
     }
     return '\$169 per night';
@@ -243,39 +458,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        elevation: 0,
-        leading: Container(
-          margin: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.15),
-                blurRadius: 6,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: IconButton(
-            icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-        ),
-        title: Text(
-          widget.hotel['name'] ?? 'Hotel Details',
-          style: AppTypography.title1.copyWith(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.bold,
-          ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        centerTitle: true,
-      ),
+      backgroundColor: Colors.black, // Dark background like Perplexity
       body: Stack(
         children: [
           SingleChildScrollView(
@@ -284,10 +467,10 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Hotel image carousel
+                // Hotel image carousel (larger, takes up more space)
                 _buildImageCarousel(),
                 
-                // Hotel basic info
+                // Hotel basic info (on dark background)
                 _buildHotelInfo(),
                 
                 // Action buttons
@@ -295,6 +478,9 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                 
                 // What people say (Reviews)
                 _buildWhatPeopleSay(),
+                
+                // Review Summary (if available)
+                if (_reviewSummary.isNotEmpty) _buildReviewSummary(),
                 
                 // Choose this if
                 _buildChooseThisIf(),
@@ -308,8 +494,14 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                 // Location
                 _buildLocation(),
                 
+                // Location Summary (if available)
+                if (_locationSummary.isNotEmpty) _buildLocationSummary(),
+                
                 // Traveler insights
                 _buildTravelerInsights(),
+                
+                // Rating Insights (if available)
+                if (_ratingInsights.isNotEmpty) _buildRatingInsights(),
                 
                 // Rooms section
                 _buildRoomsSection(),
@@ -318,14 +510,23 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
               ],
             ),
           ),
-          // Fixed bottom button (conditional)
-          if (_showBottomButton)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _buildBottomButton(),
+          // Back button (always visible, matches original close button style)
+          Positioned(
+            top: 8,
+            left: 8,
+            child: SafeArea(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
             ),
+          ),
         ],
       ),
     );
@@ -333,7 +534,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
 
   Widget _buildActionButtons() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       child: Row(
         children: [
           Expanded(
@@ -343,7 +544,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
               );
             }),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10), // Tighter spacing like Perplexity
           Expanded(
             child: _buildSimpleActionButton('Website', Icons.language, () {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -351,7 +552,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
               );
             }),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10), // Tighter spacing like Perplexity
           Expanded(
             child: _buildSimpleActionButton('Directions', Icons.directions, () {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -368,25 +569,37 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
         decoration: BoxDecoration(
-          color: AppColors.surfaceVariant,
-          borderRadius: BorderRadius.circular(8),
+          color: Colors.grey[850], // Slightly lighter for better contrast (Perplexity style)
+          borderRadius: BorderRadius.circular(12), // More rounded like Perplexity
+          border: Border.all(
+            color: Colors.grey[700]!.withOpacity(0.3),
+            width: 0.5,
+          ),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               icon,
-              size: 18,
-              color: AppColors.textPrimary,
+              size: 18, // Slightly smaller icon to save space
+              color: Colors.white,
             ),
-            const SizedBox(width: 8),
-            Text(
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
               label,
-              style: AppTypography.body1.copyWith(
-                color: AppColors.textPrimary,
+                style: const TextStyle(
+                  color: Colors.white,
                 fontWeight: FontWeight.w500,
+                  fontSize: 14, // Slightly smaller text
+                  letterSpacing: 0.2,
+                ),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                textAlign: TextAlign.center,
               ),
             ),
           ],
@@ -531,6 +744,15 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
     );
   }
 
+  void _openPhotoGallery() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => HotelPhotoGalleryScreen(hotel: widget.hotel),
+      ),
+    );
+  }
+
   Widget _buildImageCarousel() {
     final dynamic imagesData = widget.hotel['images'];
     List<String> images = [];
@@ -559,15 +781,15 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
     // If no images, show a placeholder
     if (images.isEmpty) {
       return SizedBox(
-        height: 250,
+        height: 400, // Larger height like Perplexity
         child: Container(
           width: double.infinity,
           decoration: BoxDecoration(
-            color: AppColors.surfaceVariant,
+            color: Colors.grey[900],
           ),
           child: const Icon(
             Icons.hotel,
-            color: AppColors.textSecondary,
+            color: Colors.white70,
             size: 64,
           ),
         ),
@@ -575,7 +797,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
     }
     
     return SizedBox(
-      height: 250,
+      height: 400, // Larger height like Perplexity (was 250)
       child: Stack(
         children: [
           PageView.builder(
@@ -587,33 +809,38 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
             },
             itemCount: images.length,
             itemBuilder: (context, index) {
-              return Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceVariant,
-                ),
-                child: Image.network(
-                  images[index],
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: AppColors.surfaceVariant,
-                      child: const Icon(
-                        Icons.hotel,
-                        color: AppColors.textSecondary,
-                        size: 64,
-                      ),
-                    );
-                  },
+              return GestureDetector(
+                onTap: () {
+                  _openPhotoGallery();
+                },
+                child: Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceVariant,
+                  ),
+                  child: Image.network(
+                    images[index],
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        color: AppColors.surfaceVariant,
+                        child: const Icon(
+                          Icons.hotel,
+                          color: AppColors.textSecondary,
+                          size: 64,
+                        ),
+                      );
+                    },
+                  ),
                 ),
               );
             },
           ),
           
-          // Image indicators
+          // Image indicators at bottom center
           if (images.length > 1)
             Positioned(
-              bottom: 16,
+              bottom: 60, // Position above the photo count badge
               left: 0,
               right: 0,
               child: Row(
@@ -634,37 +861,84 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                 ),
               ),
             ),
+          
+          // Photo count badge at bottom right (like reference screenshot)
+          Positioned(
+            bottom: 16,
+            right: 16,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  _openPhotoGallery();
+                },
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF8B4513), // Brown color like in screenshot
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.4),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.photo_library,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${images.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
   Widget _buildHotelInfo() {
+    // Pre-calculate values safely to avoid type cast errors
+    final rating = _safeDouble(widget.hotel['rating'], 0.0);
+    final reviewCount = _safeInt(widget.hotel['reviewCount'], 0);
+    final originalPrice = _safeDouble(widget.hotel['originalPrice'], 0.0);
+    final price = _safeDouble(widget.hotel['price'], 0.0);
+    
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Hotel name
+          // Hotel name (white text on dark background)
           Text(
             widget.hotel['name'] ?? 'Hotel Name',
-            style: AppTypography.title1.copyWith(
+            style: const TextStyle(
               fontWeight: FontWeight.bold,
               fontSize: 24,
-            ),
-          ),
-          const SizedBox(height: 8),
-          
-          // Location
-          Text(
-            widget.hotel['location'] ?? 'Location',
-            style: AppTypography.body1.copyWith(
-              color: AppColors.textSecondary,
+              color: Colors.white,
             ),
           ),
           const SizedBox(height: 12),
           
-                  // Rating and reviews
+          // Rating and reviews (white text on dark background)
                   Row(
                     children: [
                       const Icon(
@@ -674,16 +948,19 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        '${widget.hotel['rating'] ?? 0.0}',
-                        style: AppTypography.title2.copyWith(
+                '${rating.toStringAsFixed(1)}',
+                style: const TextStyle(
                           fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  color: Colors.white,
                         ),
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        '(${widget.hotel['reviewCount'] ?? 0} reviews)',
-                        style: AppTypography.body1.copyWith(
-                          color: AppColors.textSecondary,
+                '($reviewCount reviews)',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -701,30 +978,6 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                           size: 12,
                         ),
                       ),
-              const Spacer(),
-              // Price
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (widget.hotel['originalPrice'] != null) ...[
-                    Text(
-                      '\$${widget.hotel['originalPrice']}',
-                      style: AppTypography.body1.copyWith(
-                        color: AppColors.textSecondary,
-                        decoration: TextDecoration.lineThrough,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                  ],
-                  Text(
-                    '\$${widget.hotel['price'] ?? 0}',
-                    style: AppTypography.title1.copyWith(
-                      color: AppColors.accent,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
             ],
           ),
         ],
@@ -759,25 +1012,28 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                 Row(
                   children: [
                     Text(
-                      '${(widget.hotel['rating'] ?? 0.0).toStringAsFixed(1)}',
-                      style: AppTypography.title1.copyWith(
+                      '${_safeDouble(widget.hotel['rating'], 0.0).toStringAsFixed(1)}',
+                      style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 32,
+                        color: Colors.white,
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Text(
+                    const Text(
                       'Good',
-                      style: AppTypography.title2.copyWith(
-                        color: AppColors.textSecondary,
+                      style: TextStyle(
+                        fontSize: 18,
+                        color: Colors.white70,
                       ),
                     ),
                     const Spacer(),
                     Text(
-                      '${widget.hotel['reviewCount'] ?? 0} reviews',
-                      style: AppTypography.body1.copyWith(
-                        color: AppColors.accent,
+                      '${_safeInt(widget.hotel['reviewCount'], 0)} reviews',
+                      style: const TextStyle(
+                        color: Colors.tealAccent,
                         decoration: TextDecoration.underline,
+                        fontSize: 14,
                       ),
                     ),
                   ],
@@ -787,9 +1043,9 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                   children: List.generate(5, (index) {
                     return Icon(
                       Icons.star,
-                      color: index < (widget.hotel['rating'] ?? 0.0).floor()
-                          ? AppColors.accent
-                          : AppColors.surfaceVariant,
+                      color: index < _safeDouble(widget.hotel['rating'], 0.0).floor()
+                          ? Colors.tealAccent
+                          : Colors.grey[700]!,
                       size: 20,
                     );
                   }),
@@ -806,6 +1062,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
           _buildRatingBar('Sleep Quality', _getRating('sleep_quality')),
           _buildRatingBar('Rooms', _getRating('rooms')),
           _buildRatingBar('Value', _getRating('value')),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -820,8 +1077,9 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
             width: 80,
             child: Text(
               label,
-              style: AppTypography.body1.copyWith(
-                color: AppColors.textSecondary,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
               ),
             ),
           ),
@@ -829,7 +1087,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
             child: Container(
               height: 8,
               decoration: BoxDecoration(
-                color: AppColors.surfaceVariant,
+                color: Colors.grey[800],
                 borderRadius: BorderRadius.circular(4),
               ),
               child: FractionallySizedBox(
@@ -837,7 +1095,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                 widthFactor: rating / 5.0,
                 child: Container(
                   decoration: BoxDecoration(
-                    color: AppColors.accent,
+                    color: Colors.tealAccent,
                     borderRadius: BorderRadius.circular(4),
                   ),
                 ),
@@ -847,8 +1105,10 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
           const SizedBox(width: 12),
           Text(
             rating.toStringAsFixed(1),
-            style: AppTypography.body1.copyWith(
+            style: const TextStyle(
               fontWeight: FontWeight.w600,
+              color: Colors.white,
+              fontSize: 14,
             ),
           ),
         ],
@@ -857,6 +1117,43 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
   }
 
   Widget _buildRoomsSection() {
+    // ✅ Generate hotel ID from hotel data
+    final hotelId = widget.hotel['id']?.toString() ?? 
+                    widget.hotel['property_token']?.toString() ??
+                    widget.hotel['name']?.toString().replaceAll(' ', '-').toLowerCase() ??
+                    'hotel';
+    final hotelName = widget.hotel['name']?.toString() ?? 'Hotel';
+
+    // Parse dates from selected strings (format: "MMM d")
+    DateTime? checkInDate;
+    DateTime? checkOutDate;
+    try {
+      final today = DateTime.now();
+      final checkInParts = _selectedCheckIn.split(' ');
+      if (checkInParts.length >= 2) {
+        final monthName = checkInParts[0];
+        final day = int.tryParse(checkInParts[1]) ?? today.day;
+        final month = _getMonthNumber(monthName);
+        if (month > 0) {
+          checkInDate = DateTime(today.year, month, day);
+          // Ensure check-in is not in the past
+          if (checkInDate.isBefore(today)) {
+            checkInDate = today;
+          }
+          checkOutDate = checkInDate.add(const Duration(days: 1));
+        } else {
+          checkInDate = today;
+          checkOutDate = checkInDate.add(const Duration(days: 1));
+        }
+      } else {
+        checkInDate = today;
+        checkOutDate = checkInDate.add(const Duration(days: 1));
+      }
+    } catch (e) {
+      checkInDate = DateTime.now();
+      checkOutDate = checkInDate.add(const Duration(days: 1));
+    }
+
     return Padding(
       key: _roomsSectionKey,
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -872,33 +1169,49 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
           ),
           const SizedBox(height: 12),
           
-          // Date and guest selector
+          // ✅ Date and guest selector (navigates to RoomsPage)
           GestureDetector(
-            onTap: _showDateGuestModal,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => RoomsPage(
+                    hotelId: hotelId,
+                    hotelName: hotelName,
+                    initialCheckIn: checkInDate,
+                    initialCheckOut: checkOutDate,
+                    initialGuests: _adultCount + _kidsCount,
+                  ),
+                ),
+              );
+            },
             child: Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: AppColors.surface,
+                color: Colors.grey[850],
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.surfaceVariant),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.calendar_today, color: AppColors.textSecondary),
+                  const Icon(Icons.calendar_today, color: Colors.white70),
                   const SizedBox(width: 8),
                   Text(
                     '$_selectedCheckIn - $_selectedCheckOut',
-                    style: AppTypography.body1.copyWith(
+                    style: const TextStyle(
                       fontWeight: FontWeight.w500,
+                      color: Colors.white,
+                      fontSize: 14,
                     ),
                   ),
                   const Spacer(),
-                  const Icon(Icons.people, color: AppColors.textSecondary),
+                  const Icon(Icons.people, color: Colors.white70),
                   const SizedBox(width: 8),
                   Text(
-                    '${_adultCount + _kidsCount} guests',
-                    style: AppTypography.body1.copyWith(
+                    _buildGuestText(),
+                    style: const TextStyle(
                       fontWeight: FontWeight.w500,
+                      color: Colors.white,
+                      fontSize: 14,
                     ),
                   ),
                 ],
@@ -909,18 +1222,33 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
           Center(
             child: Text(
               'powered by Selfbook',
-              style: AppTypography.caption.copyWith(
-                color: AppColors.textSecondary,
+              style: const TextStyle(
+                color: Colors.white54,
+                fontSize: 12,
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          
-          // Available room types
-          _buildAvailableRooms(),
+          const SizedBox(height: 20),
         ],
       ),
     );
+  }
+
+  String _buildGuestText() {
+    final totalGuests = _adultCount + _kidsCount;
+    if (widget.roomCount != null && widget.roomCount! > 1) {
+      return '$totalGuests guests, ${widget.roomCount} rooms';
+    } else if (totalGuests == 1) {
+      return '1 guest';
+    } else {
+      return '$totalGuests guests';
+    }
+  }
+
+  int _getMonthNumber(String monthName) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return months.indexWhere((m) => m.toLowerCase() == monthName.toLowerCase()) + 1;
   }
 
   Widget _buildAvailableRooms() {
@@ -1083,9 +1411,8 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        color: AppColors.surface,
+        color: Colors.grey[850],
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.surfaceVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1144,36 +1471,42 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
               children: [
                 Text(
                   room['name'],
-                  style: AppTypography.title2.copyWith(
+                  style: const TextStyle(
                     fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                    color: Colors.white,
                   ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '\$${room['price'].toStringAsFixed(0)} per night',
-                  style: AppTypography.title1.copyWith(
-                    color: AppColors.accent,
+                  '\$${_safeDouble(room['price'], 0.0).toStringAsFixed(0)} per night',
+                  style: const TextStyle(
+                    color: Colors.tealAccent,
                     fontWeight: FontWeight.bold,
+                    fontSize: 20,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '\$${(room['price'] * 1.15).toStringAsFixed(2)} including taxes + fees',
-                  style: AppTypography.body1.copyWith(
-                    color: AppColors.textSecondary,
+                  '\$${(_safeDouble(room['price'], 0.0) * 1.15).toStringAsFixed(2)} including taxes + fees',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
                   ),
                 ),
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: AppColors.surfaceVariant,
+                    color: Colors.grey[700],
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     room['bedType'],
-                    style: AppTypography.caption.copyWith(
+                    style: const TextStyle(
                       fontWeight: FontWeight.w500,
+                      color: Colors.white,
+                      fontSize: 12,
                     ),
                   ),
                 ),
@@ -1185,11 +1518,11 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
                   child: ElevatedButton(
                     onPressed: () {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Reserving ${room['name']}...')),
+                        SnackBar(content: Text('Reserving ${(room['name'] as String?) ?? 'Room'}...')), // ✅ null-safe
                       );
                     },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.accent,
+                      backgroundColor: Colors.tealAccent.shade700,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
@@ -1221,31 +1554,118 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
           const SizedBox(height: 20),
           Row(
             children: [
-              const Icon(Icons.star, color: AppColors.accent, size: 20),
+              const Icon(Icons.star, color: Colors.tealAccent, size: 20),
               const SizedBox(width: 8),
-              Text(
+              const Text(
                 'What people say',
-                style: AppTypography.title2.copyWith(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  color: Colors.white,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.surfaceVariant),
-            ),
-            child: Text(
-              widget.hotel['description'] ?? 'No reviews available',
-              style: AppTypography.body1.copyWith(
-                height: 1.4,
-              ),
+          _isLoadingContent
+              ? const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Center(
+                    child: CircularProgressIndicator(color: Colors.white70),
+                  ),
+                )
+              : Text(
+                  _whatPeopleSay.isNotEmpty
+                      ? _whatPeopleSay
+                      : _getFallbackWhatPeopleSay(),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    height: 1.6,
+                    color: Colors.white,
+                  ),
+                ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReviewSummary() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 20),
+          const Text(
+            'Review summary',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: Colors.white,
             ),
           ),
+          const SizedBox(height: 8),
+          Text(
+            'This summary was created by AI, based on recent reviews.',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.white60,
+              fontStyle: FontStyle.italic,
+            ),
+            ),
+          const SizedBox(height: 12),
+          Text(
+            _reviewSummary,
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.6,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationSummary() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 20),
+          Text(
+            _locationSummary,
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.6,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRatingInsights() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 20),
+          Text(
+            _ratingInsights,
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.6,
+              color: Colors.white,
+              ),
+            ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -1288,7 +1708,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
       } else {
         // Show first 150 characters for short version
         return description.length > 150 
-            ? '${description.substring(0, 150)}...'
+            ? '${description.substring(0, 150)}...' // ✅ null-safe
             : description;
       }
     }
@@ -1332,29 +1752,26 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
             children: [
               const Icon(Icons.lightbulb_outline, color: Colors.orange, size: 20),
               const SizedBox(width: 8),
-              Text(
+              const Text(
                 'Choose this if',
-                style: AppTypography.title2.copyWith(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  color: Colors.white,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-            ),
-            child: Text(
-              _getChooseThisIfText(),
-              style: AppTypography.body1.copyWith(
-                height: 1.4,
+          Text(
+            _chooseThisIf.isNotEmpty ? _chooseThisIf : _getChooseThisIfText(),
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.6,
+              color: Colors.white,
               ),
             ),
-          ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -1367,17 +1784,23 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 20),
-          Text(
+          const Text(
             'About',
-            style: AppTypography.title2.copyWith(
+            style: TextStyle(
               fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: Colors.white,
             ),
           ),
           const SizedBox(height: 12),
           Text(
-            _getAboutText(isExpanded: _isDescriptionExpanded),
-            style: AppTypography.body1.copyWith(
-              height: 1.4,
+            _about.isNotEmpty 
+                ? (_isDescriptionExpanded ? _about : (_about.length > 150 ? '${_about.substring(0, 150)}...' : _about))
+                : _getAboutText(isExpanded: _isDescriptionExpanded),
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.6,
+              color: Colors.white,
             ),
           ),
           const SizedBox(height: 8),
@@ -1389,24 +1812,27 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
             },
             child: Text(
               _isDescriptionExpanded ? 'Read less' : 'Read more',
-              style: AppTypography.body1.copyWith(
-                color: AppColors.accent,
+              style: const TextStyle(
+                color: Colors.tealAccent,
                 decoration: TextDecoration.underline,
+                fontSize: 15,
               ),
             ),
           ),
+          const SizedBox(height: 20),
         ],
       ),
     );
   }
 
   Widget _buildAmenities() {
-    final dynamic amenitiesData = widget.hotel['amenities'];
-    List<String> amenities = [];
-    
-    if (amenitiesData != null && amenitiesData is List) {
-      amenities = amenitiesData.map((item) => item?.toString() ?? '').where((item) => item.isNotEmpty).toList();
-    }
+    // Use cleaned amenities from API if available, otherwise use hotel data
+    List<String> amenities = _amenitiesClean.isNotEmpty 
+        ? _amenitiesClean 
+        : (widget.hotel['amenities'] as List<dynamic>?)
+            ?.map((item) => item?.toString() ?? '')
+            .where((item) => item.isNotEmpty)
+            .toList() ?? [];
     
     // Fallback to default amenities if none available
     if (amenities.isEmpty) {
@@ -1427,18 +1853,21 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 20),
-          Text(
+          const Text(
             'Amenities',
-            style: AppTypography.title2.copyWith(
+            style: TextStyle(
               fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: Colors.white,
             ),
           ),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: amenities.map((amenity) => _buildAmenityChip(amenity)).toList(),
+            children: amenities.take(8).map((amenity) => _buildAmenityChip(amenity)).toList(), // ✅ Limit to 8 amenities (Perplexity-style)
           ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -1448,67 +1877,187 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.surfaceVariant,
-        borderRadius: BorderRadius.circular(16),
+        color: const Color(0xFF1F1F1F), // Perplexity-style dark grey
+        borderRadius: BorderRadius.circular(20), // More rounded like Perplexity
       ),
       child: Text(
         amenity,
-        style: AppTypography.caption.copyWith(
-          color: AppColors.textPrimary,
-          fontWeight: FontWeight.w500,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 13, // Perplexity uses 13px
+          fontWeight: FontWeight.normal, // Perplexity uses normal weight
         ),
       ),
     );
   }
 
+  Future<void> _loadHotelCoordinates() async {
+    print('🗺️ HotelDetailScreen: Loading coordinates for hotel: ${widget.hotel['name'] ?? widget.hotel['title']}');
+    print('🗺️ HotelDetailScreen: Hotel data keys: ${widget.hotel.keys.toList()}');
+    
+    // First try to extract from hotel data
+    final coords = GeocodingService.extractCoordinates(widget.hotel);
+    print('🗺️ HotelDetailScreen: Extracted coordinates: $coords');
+    
+    if (coords != null && coords['latitude'] != null && coords['longitude'] != null) {
+      final lat = coords['latitude']!;
+      final lng = coords['longitude']!;
+      
+      // Validate coordinates (not 0,0)
+      if (lat != 0.0 && lng != 0.0) {
+        print('✅ HotelDetailScreen: Using coordinates from hotel data: $lat, $lng');
+        setState(() {
+          _hotelLatitude = lat;
+          _hotelLongitude = lng;
+        });
+        return;
+      } else {
+        print('⚠️ HotelDetailScreen: Coordinates are 0,0 - invalid, will geocode');
+      }
+    }
+
+    // If no coordinates, try to geocode the address
+    final location = widget.hotel['location'] ?? 
+                    widget.hotel['address'] ?? 
+                    widget.hotel['address_line'] ?? '';
+    
+    print('🗺️ HotelDetailScreen: No valid coordinates found, geocoding address: $location');
+    
+    if (location.isNotEmpty && location != 'Location not available') {
+      setState(() {
+        _isLoadingCoordinates = true;
+      });
+      
+      try {
+        final geocoded = await GeocodingService.geocodeAddress(location)
+            .timeout(const Duration(seconds: 10));
+        
+        if (geocoded != null && mounted) {
+          final lat = geocoded['latitude']!;
+          final lng = geocoded['longitude']!;
+          
+          if (lat != 0.0 && lng != 0.0) {
+            print('✅ HotelDetailScreen: Geocoded successfully: $lat, $lng');
+            setState(() {
+              _hotelLatitude = lat;
+              _hotelLongitude = lng;
+              _isLoadingCoordinates = false;
+            });
+          } else {
+            print('⚠️ HotelDetailScreen: Geocoded coordinates are 0,0');
+            if (mounted) {
+              setState(() {
+                _isLoadingCoordinates = false;
+              });
+            }
+          }
+        } else if (mounted) {
+          print('❌ HotelDetailScreen: Geocoding returned null');
+          setState(() {
+            _isLoadingCoordinates = false;
+          });
+        }
+      } catch (e) {
+        print('❌ HotelDetailScreen: Geocoding error: $e');
+        if (mounted) {
+          setState(() {
+            _isLoadingCoordinates = false;
+          });
+        }
+      }
+    } else {
+      print('⚠️ HotelDetailScreen: No location/address available for geocoding');
+      if (mounted) {
+        setState(() {
+          _isLoadingCoordinates = false;
+        });
+      }
+    }
+  }
+
   Widget _buildLocation() {
+    final hotelName = widget.hotel['name'] ?? widget.hotel['title'] ?? 'Hotel';
+    final location = widget.hotel['location'] ?? 
+                    widget.hotel['address'] ?? 
+                    'Location not available';
+    
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 20),
-          Text(
+          const Text(
             'Location',
-            style: AppTypography.title2.copyWith(
+            style: TextStyle(
               fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: Colors.white,
             ),
           ),
           const SizedBox(height: 12),
+          if (_isLoadingCoordinates)
           Container(
             height: 200,
             decoration: BoxDecoration(
-              color: AppColors.surfaceVariant,
+                color: Colors.grey[800],
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.location_on,
-                    color: AppColors.textSecondary,
-                    size: 48,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    widget.hotel['location'] ?? 'Location not available',
-                    style: AppTypography.body1.copyWith(
-                      color: AppColors.textSecondary,
+              child: const Center(
+                child: CircularProgressIndicator(
+                  color: Colors.white70,
+                ),
+              ),
+            )
+          else
+            GestureDetector(
+              onTap: () {
+                // Only open full screen if we have valid coordinates
+                if (_hotelLatitude != null && _hotelLongitude != null && 
+                    _hotelLatitude != 0.0 && _hotelLongitude != 0.0) {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => FullScreenMapScreen(
+                        points: [
+                          {
+                            'name': hotelName,
+                            'lat': _hotelLatitude,
+                            'latitude': _hotelLatitude,
+                            'lng': _hotelLongitude,
+                            'longitude': _hotelLongitude,
+                            'rating': widget.hotel['rating'] ?? widget.hotel['overall_rating'] ?? '0',
+                          }
+                        ],
+                        title: hotelName,
+                      ),
                     ),
-                    textAlign: TextAlign.center,
+                  );
+                }
+              },
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: GoogleMapWidget(
+                  latitude: _hotelLatitude,
+                  longitude: _hotelLongitude,
+                  address: location,
+                  title: hotelName,
+                  height: 200,
+                  showMarker: true,
+                  interactive: true,
                   ),
-                  const SizedBox(height: 4),
+              ),
+            ),
+          if (location.isNotEmpty && location != 'Location not available') ...[
+            const SizedBox(height: 12),
                   Text(
-                    'Tap to view on map',
-                    style: AppTypography.caption.copyWith(
-                      color: AppColors.textSecondary,
+              location,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
                     ),
                   ),
                 ],
-              ),
-            ),
-          ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -1570,7 +2119,7 @@ class _DateGuestModalState extends State<_DateGuestModal> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: MediaQuery.of(context).size.height * 0.8,
+      height: MediaQuery.of(context).size.height * 0.6,
       decoration: const BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),

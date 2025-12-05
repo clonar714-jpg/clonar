@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
+import '../models/Collage.dart';
+import '../services/collage_service.dart';
+import 'CollageViewPage.dart';
 
 class FeedScreen extends StatefulWidget {
   const FeedScreen({super.key});
@@ -18,6 +23,18 @@ class _FeedScreenState extends State<FeedScreen> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
+  // Collage data for feed
+  List<Map<String, dynamic>> _feedItems = [];
+  bool _isLoadingCollages = false;
+  String? _collageError;
+  bool _isLoadingMore = false;
+  bool _hasMorePages = true;
+  int _currentPage = 1;
+  final ScrollController _scrollController = ScrollController();
+  
+  // Cached data to prevent recalculation
+  Map<String, List<Map<String, dynamic>>>? _cachedCategoryItems;
+
   final Map<String, List<String>> _categorySubcategories = {
     'All': ['All'],
     'Fashion': ['Clothes', 'Outfits', 'Accessories', 'Shoes', 'Bags', 'Jewelry'],
@@ -34,10 +51,79 @@ class _FeedScreenState extends State<FeedScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _loadCollages();
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 300) {
+      if (!_isLoadingMore && _hasMorePages) {
+        _loadMoreCollages();
+      }
+    }
+  }
+
+  Future<void> _loadCollages() async {
+    setState(() {
+      _isLoadingCollages = true;
+      _collageError = null;
+      _currentPage = 1;
+      _hasMorePages = true;
+    });
+
+    try {
+      final feedItems = await CollageService.getPublishedCollagesForFeed(page: 1, limit: 20);
+      setState(() {
+        _feedItems = feedItems;
+        _isLoadingCollages = false;
+        _hasMorePages = feedItems.length >= 20;
+        _currentPage = 1;
+      });
+      print('🔍 Loaded ${feedItems.length} collages for feed');
+    } catch (e) {
+      setState(() {
+        _collageError = e.toString();
+        _isLoadingCollages = false;
+      });
+      print('❌ Error loading collages for feed: $e');
+    }
+  }
+
+  Future<void> _loadMoreCollages() async {
+    if (_isLoadingMore || !_hasMorePages) return;
+    
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    try {
+      final nextPage = _currentPage + 1;
+      final feedItems = await CollageService.getPublishedCollagesForFeed(page: nextPage, limit: 20);
+      
+      setState(() {
+        _feedItems.addAll(feedItems);
+        _isLoadingMore = false;
+        _hasMorePages = feedItems.length >= 20;
+        _currentPage = nextPage;
+      });
+      print('🔍 Loaded ${feedItems.length} more collages (page $nextPage)');
+    } catch (e) {
+      setState(() {
+        _isLoadingMore = false;
+      });
+      print('❌ Error loading more collages: $e');
+    }
   }
 
   void _toggleSearchMode() {
@@ -56,10 +142,16 @@ class _FeedScreenState extends State<FeedScreen> {
     });
   }
 
+  // Optimized method with caching to prevent recalculation
   List<Map<String, dynamic>> _getSampleItemsForCategory() {
     // Different content based on feed filter
     if (_feedFilter == 'Following') {
       return _getFollowingItems();
+    }
+    
+    // Use cached data if available
+    if (_cachedCategoryItems != null) {
+      return _cachedCategoryItems![_selectedCategory] ?? _cachedCategoryItems!['All']!;
     }
     
     final Map<String, List<Map<String, dynamic>>> categoryItems = {
@@ -145,6 +237,8 @@ class _FeedScreenState extends State<FeedScreen> {
       ],
     };
 
+    // Cache the data for future use
+    _cachedCategoryItems = categoryItems;
     return categoryItems[_selectedCategory] ?? categoryItems['All']!;
   }
 
@@ -315,6 +409,32 @@ class _FeedScreenState extends State<FeedScreen> {
   }
 
   Widget _buildFeedContent() {
+    // For masonry grid, we need to handle layout differently
+    if (_feedFilter == 'All' && _isGridView) {
+      return Column(
+        children: [
+          const SizedBox(height: 16),
+          
+          // Second Row with Feed/Reels Icons with horizontal padding
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _buildFeedReelsRow(),
+          ),
+          
+          const SizedBox(height: 24),
+          
+          // Feed Items - MasonryGridView handles its own scrolling
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _buildFeedItems(),
+            ),
+          ),
+        ],
+      );
+    }
+    
+    // For other views, use SingleChildScrollView
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
@@ -349,7 +469,8 @@ class _FeedScreenState extends State<FeedScreen> {
   }
 
   Widget _buildFixedTopRow() {
-    return Container(
+    return RepaintBoundary(
+      child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -362,6 +483,7 @@ class _FeedScreenState extends State<FeedScreen> {
       ),
       child: SafeArea(
         child: _isSearchMode ? _buildSearchBar() : _buildNormalTopRow(),
+      ),
       ),
     );
   }
@@ -533,7 +655,8 @@ class _FeedScreenState extends State<FeedScreen> {
   }
 
   Widget _buildFeedReelsRow() {
-    return Row(
+    return RepaintBoundary(
+      child: Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         // Grid/Feed Icon
@@ -606,21 +729,261 @@ class _FeedScreenState extends State<FeedScreen> {
           ),
         ),
       ],
+      ),
     );
   }
 
   Widget _buildFeedItems() {
+    if (_feedFilter == 'All') {
+      // Show real collages for "All" feed
+      return _buildCollagesFeed();
+    } else {
+      // Show mock data for "Following" feed
     if (_isGridView) {
       return _buildGridView();
     } else {
       return _buildReelsView();
     }
   }
+  }
+
+  Widget _buildCollagesFeed() {
+    if (_isLoadingCollages) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_collageError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.error_outline,
+                size: 64,
+                color: AppColors.textSecondary,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Failed to load collages',
+                style: AppTypography.title2.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _collageError!,
+                style: AppTypography.body1.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _loadCollages,
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_feedItems.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+                Icons.auto_awesome_mosaic_outlined,
+                size: 64,
+              color: AppColors.textSecondary,
+            ),
+              const SizedBox(height: 16),
+              Text(
+                'No collages yet',
+                style: AppTypography.title2.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+                const SizedBox(height: 8),
+            Text(
+                'Be the first to create and share a collage!',
+              style: AppTypography.body1.copyWith(
+                color: AppColors.textSecondary,
+              ),
+                textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+          ),
+        );
+    }
+
+    if (_isGridView) {
+      return _buildCollagesGridView();
+    } else {
+      return _buildCollagesReelsView();
+    }
+  }
+
+  Widget _buildCollagesGridView() {
+    return RefreshIndicator(
+      onRefresh: _loadCollages,
+      color: AppColors.primary,
+      child: MasonryGridView.count(
+        controller: _scrollController,
+        crossAxisCount: MediaQuery.of(context).size.width > 600 ? 3 : 2,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        padding: EdgeInsets.zero,  // Remove padding since we're wrapping in Padding widget
+        itemCount: _feedItems.length + (_hasMorePages ? 1 : 0),
+        itemBuilder: (context, index) {
+          // Show loading indicator at the bottom
+          if (index == _feedItems.length) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              alignment: Alignment.center,
+              child: const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+              ),
+            );
+          }
+
+          final feedItem = _feedItems[index];
+          final collage = feedItem['collage'] as Collage;
+          final username = feedItem['username'] as String;
+
+          return Hero(
+            tag: 'collage_${collage.id}',
+            child: _buildPinterestCard(collage, username),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildPinterestCard(Collage collage, String username) {
+    // Find first image item as preview
+    CollageItem? coverItem;
+    for (var item in collage.items) {
+      if (item.type == 'image' &&
+          item.imageUrl.isNotEmpty &&
+          !item.imageUrl.startsWith('text://')) {
+        coverItem = item;
+        break;
+      }
+    }
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CollageViewPage(collage: collage),
+          ),
+        );
+      },
+      child: Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+      ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+            if (coverItem != null)
+              Image.network(
+                coverItem.imageUrl,
+              width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    height: 180,
+                color: AppColors.surfaceVariant,
+                    child: const Center(
+                      child: Icon(Icons.broken_image, color: Colors.grey),
+                ),
+                  );
+                },
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) return child;
+                  return Container(
+                    height: 180,
+                    color: AppColors.surfaceVariant,
+                    child: const Center(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                      ),
+                    ),
+                  );
+                },
+              )
+            else
+              Container(
+                height: 180,
+                color: AppColors.surfaceVariant,
+                child: const Center(
+                  child: Icon(Icons.auto_awesome_mosaic, color: Colors.grey),
+                  ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+              child: Text(
+                '@$username',
+                    style: AppTypography.caption.copyWith(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCollagesReelsView() {
+    return Column(
+      children: _feedItems.map((feedItem) {
+        final collage = feedItem['collage'] as Collage;
+        final username = feedItem['username'] as String;
+        return RepaintBoundary(
+          child: _CollageReelCard(
+            key: ValueKey('collage_reel_${collage.id}'),
+            collage: collage,
+            username: username,
+          ),
+        );
+      }).toList(),
+    );
+  }
 
   Widget _buildGridView() {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
+      cacheExtent: 1000, // Cache 1000 pixels worth of items
+      addRepaintBoundaries: true, // Enable repaint boundaries for each item
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         childAspectRatio: 0.8,
@@ -629,7 +992,9 @@ class _FeedScreenState extends State<FeedScreen> {
       ),
       itemCount: 8,
       itemBuilder: (context, index) {
-        return _buildFeedCard(index);
+        return RepaintBoundary(
+          child: _buildFeedCard(index, key: ValueKey('feed_card_$index')),
+        );
       },
     );
   }
@@ -637,118 +1002,26 @@ class _FeedScreenState extends State<FeedScreen> {
   Widget _buildReelsView() {
     return Column(
       children: List.generate(6, (index) {
-        return Container(
-          margin: const EdgeInsets.only(bottom: 16),
-          height: 200,
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.surfaceVariant),
-          ),
-          child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-                  Icons.play_circle_outline,
-                  size: 48,
-              color: AppColors.textSecondary,
-            ),
-                const SizedBox(height: 8),
-            Text(
-                  'Reel ${index + 1}',
-              style: AppTypography.body1.copyWith(
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ],
-        ),
-          ),
+        return RepaintBoundary(
+          child: _ReelCard(
+            key: ValueKey('reel_$index'),
+            index: index,
+                  ),
         );
       }),
     );
   }
 
-  Widget _buildFeedCard(int index) {
+
+
+  Widget _buildFeedCard(int index, {Key? key}) {
     final List<Map<String, dynamic>> sampleItems = _getSampleItemsForCategory();
     final item = sampleItems[index % sampleItems.length];
 
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.surfaceVariant),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Image placeholder
-          Expanded(
-            flex: 3,
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: AppColors.surfaceVariant,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-              ),
-              child: Center(
-                child: Text(
-                  item['image'],
-                  style: const TextStyle(fontSize: 40),
-                ),
-              ),
-            ),
-          ),
-          
-          // Content
-          Expanded(
-            flex: 2,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item['title'],
-                    style: AppTypography.body1.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    item['subtitle'],
-                    style: AppTypography.caption.copyWith(
-                      color: _feedFilter == 'Following' ? AppColors.primary : AppColors.textSecondary,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const Spacer(),
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.favorite_border,
-                        size: 16,
-                        color: AppColors.textSecondary,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        item['likes'],
-                        style: AppTypography.caption.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
+    return _FeedCard(
+      key: key,
+      item: item,
+      feedFilter: _feedFilter,
     );
   }
 
@@ -1046,12 +1319,307 @@ class _FeedScreenState extends State<FeedScreen> {
             )
           else
             Text(
-              '${item['posts']} posts',
+              '${(item['posts'] as int?) ?? 0} posts', // ✅ null-safe
               style: AppTypography.caption.copyWith(
                 color: AppColors.textSecondary,
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// Extracted const widgets for better performance
+class _FeedCard extends StatelessWidget {
+  final Map<String, dynamic> item;
+  final String feedFilter;
+  
+  const _FeedCard({
+    required this.item,
+    required this.feedFilter,
+    Key? key,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.surfaceVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Image placeholder
+          Expanded(
+            flex: 3,
+            child: RepaintBoundary(
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceVariant,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                ),
+                child: Center(
+                  child: Text(
+                    item['image'],
+                    style: const TextStyle(fontSize: 40),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          
+          // Content
+          Expanded(
+            flex: 2,
+            child: RepaintBoundary(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item['title'],
+                      style: AppTypography.body1.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      item['subtitle'],
+                      style: AppTypography.caption.copyWith(
+                        color: feedFilter == 'Following' ? AppColors.primary : AppColors.textSecondary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const Spacer(),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.favorite_border,
+                          size: 16,
+                          color: AppColors.textSecondary,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          item['likes'],
+                          style: AppTypography.caption.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CollageReelCard extends StatelessWidget {
+  final Collage collage;
+  final String username;
+  
+  const _CollageReelCard({
+    required this.collage,
+    required this.username,
+    Key? key,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CollageViewPage(collage: collage),
+          ),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        height: 200,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.surfaceVariant),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            // Collage preview
+            Expanded(
+              flex: 2,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
+                child: collage.coverImageUrl != null && collage.coverImageUrl!.isNotEmpty
+                    ? Image.network(
+                        collage.coverImageUrl!,
+                        width: double.infinity,
+                        height: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          color: AppColors.surfaceVariant,
+                          child: const Center(
+                            child: Icon(
+                              Icons.broken_image,
+                              color: AppColors.textSecondary,
+                              size: 32,
+                            ),
+                          ),
+                        ),
+                      )
+                    : Container(
+                        color: AppColors.surfaceVariant,
+                        child: const Center(
+                          child: Icon(
+                            Icons.auto_awesome_mosaic,
+                            color: AppColors.textSecondary,
+                            size: 32,
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+            
+            // Content
+            Expanded(
+              flex: 3,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      username,
+                      style: AppTypography.title2.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      collage.title,
+                      style: AppTypography.body1.copyWith(
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.textPrimary,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    if (collage.description != null && collage.description!.isNotEmpty) ...[
+                      Text(
+                        collage.description!,
+                        style: AppTypography.body1.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Text(
+                      '${collage.items.length} items • ${collage.layout}',
+                      style: AppTypography.caption.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const Spacer(),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.favorite_border,
+                          size: 16,
+                          color: AppColors.textSecondary,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '0', // TODO: Add likes count
+                          style: AppTypography.caption.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        const Icon(
+                          Icons.visibility,
+                          size: 16,
+                          color: AppColors.textSecondary,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '0', // TODO: Add views count
+                          style: AppTypography.caption.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReelCard extends StatelessWidget {
+  final int index;
+  
+  const _ReelCard({
+    required this.index,
+    Key? key,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      height: 200,
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.surfaceVariant),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.play_circle_outline,
+              size: 48,
+              color: AppColors.textSecondary,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Reel ${index + 1}',
+              style: AppTypography.body1.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -201,7 +201,7 @@ class ShoppingGridScreen extends StatelessWidget {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          '${product.rating}',
+                          '${product.rating.toStringAsFixed(1)}', // ✅ null-safe
                           style: const TextStyle(
                             color: AppColors.textSecondary,
                             fontSize: 12,

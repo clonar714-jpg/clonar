@@ -46,7 +46,7 @@ class ProductService {
       price = double.tryParse(productData['extracted_price'].toString()) ?? 0.0;
     } else if (productData['price'] != null) {
       // Extract numeric value from price string like "$150.00"
-      String priceStr = productData['price'].toString().replaceAll(RegExp(r'[^\d.]'), '');
+      String priceStr = (productData['price'] as String?)?.replaceAll(RegExp(r'[^\d.]'), '') ?? ''; // ✅ null-safe
       price = double.tryParse(priceStr) ?? 0.0;
     }
 
@@ -55,7 +55,7 @@ class ProductService {
     if (productData['old_price'] != null) {
       // If there's an old_price, use current price as discount price and old_price as original
       discountPrice = price;
-      String oldPriceStr = productData['old_price'].toString().replaceAll(RegExp(r'[^\d.]'), '');
+      String oldPriceStr = (productData['old_price'] as String?)?.replaceAll(RegExp(r'[^\d.]'), '') ?? ''; // ✅ null-safe
       price = double.tryParse(oldPriceStr) ?? price;
     } else if (productData['discountPrice'] != null) {
       discountPrice = double.tryParse(productData['discountPrice'].toString()) ?? null;
@@ -69,17 +69,18 @@ class ProductService {
 
     // Extract images - use thumbnail as primary image
     List<String> images = [];
-    if (productData['thumbnail'] != null && productData['thumbnail'].toString().isNotEmpty) {
-      images.add(productData['thumbnail'].toString());
+    final thumbnail = productData['thumbnail'] as String?; // ✅ null-safe
+    if (thumbnail != null && thumbnail.isNotEmpty) {
+      images.add(thumbnail);
     }
 
     return Product(
       id: DateTime.now().millisecondsSinceEpoch + (productData.hashCode % 1000),
-      title: productData['title'] ?? 'Unknown Product',
-      description: productData['description'] ?? '',
+      title: (productData['title'] as String?) ?? 'Unknown Product', // ✅ null-safe
+      description: (productData['description'] as String?) ?? '', // ✅ null-safe
       price: price,
       discountPrice: discountPrice,
-      source: productData['source'] ?? 'Unknown Source',
+      source: (productData['source'] as String?) ?? 'Unknown Source', // ✅ null-safe
       rating: rating,
       images: images,
     );

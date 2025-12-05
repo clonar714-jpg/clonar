@@ -24,11 +24,8 @@ build/
 
 .android/
 
-windows/
-
-macos/
-
-linux/
+# Platform folders (windows/, macos/, linux/) are tracked
+# Only ignore build artifacts within them, not the folders themselves
 
 
 
@@ -38,13 +35,22 @@ linux/
 
 .dart_tool/
 
+flutter_sdk.zip
+
 
 
 # Env files
 
 *.env
 
+# Android sensitive files (contain API keys and user-specific paths)
 android/gradle.properties
+android/app/src/main/res/values/strings.xml
+android/local.properties
+android/app/src/main/AndroidManifest.xml
+
+# Config files that might contain sensitive data
+config.json
 
 
 

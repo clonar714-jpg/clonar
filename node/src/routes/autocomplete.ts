@@ -149,5 +149,63 @@ function generateFallbackSuggestions(query: string): string[] {
   return suggestions.slice(0, 5);
 }
 
+/**
+ * Location Autocomplete Endpoint
+ * Uses Google Places Autocomplete API for location suggestions
+ * POST /api/autocomplete/location
+ * Body: { query: string }
+ */
+router.post("/location", async (req: Request, res: Response) => {
+  try {
+    const { query } = req.body;
+
+    if (!query || typeof query !== "string" || query.trim().length === 0) {
+      return res.json({ predictions: [] });
+    }
+
+    const trimmedQuery = query.trim();
+
+    // Don't search for very short queries (less than 2 characters)
+    if (trimmedQuery.length < 2) {
+      return res.json({ predictions: [] });
+    }
+
+    const apiKey = process.env.GOOGLE_MAPS_BACKEND_KEY;
+    
+    if (!apiKey) {
+      console.warn("⚠️ GOOGLE_MAPS_BACKEND_KEY not configured for location autocomplete");
+      return res.json({ predictions: [] });
+    }
+
+    // Use Google Places Autocomplete API
+    const autocompleteUrl = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(trimmedQuery)}&key=${apiKey}&types=(cities)`;
+    
+    const response = await fetch(autocompleteUrl);
+    
+    if (!response.ok) {
+      console.error(`❌ Google Places Autocomplete API HTTP error: ${response.status} ${response.statusText}`);
+      return res.json({ predictions: [] });
+    }
+
+    const data = await response.json();
+    
+    if (data.status === 'OK' && data.predictions && Array.isArray(data.predictions)) {
+      const predictions = data.predictions.map((prediction: any) => ({
+        description: prediction.description,
+        place_id: prediction.place_id,
+        structured_formatting: prediction.structured_formatting,
+      }));
+      
+      res.json({ predictions });
+    } else {
+      console.warn(`⚠️ Places Autocomplete failed - Status: ${data.status}, Error: ${data.error_message || 'Unknown error'}`);
+      res.json({ predictions: [] });
+    }
+  } catch (err: any) {
+    console.error("❌ Error fetching location autocomplete:", err);
+    res.json({ predictions: [] });
+  }
+});
+
 export default router;
 

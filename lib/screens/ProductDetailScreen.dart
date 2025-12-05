@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../models/Product.dart';
+import '../services/AgentService.dart';
+import '../services/CacheService.dart';
 
 class ProductDetailScreen extends StatefulWidget {
   final Product product;
@@ -24,35 +28,140 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   List<String> _availableColors = [];
   bool _isOutOfStock = false;
 
+  // Dynamic product content
+  String _whatPeopleSay = '';
+  String _buyThisIf = '';
+  List<String> _keyFeatures = [];
+  bool _isLoadingDetails = true;
+
   @override
   void initState() {
     super.initState();
     _initializeVariants();
+    _loadProductDetails();
+  }
+  
+  Future<void> _loadProductDetails() async {
+    try {
+      setState(() {
+        _isLoadingDetails = true;
+      });
+      
+      // ✅ CACHE: Generate cache key from product title and source
+      final productTitle = widget.product.title;
+      final productSource = widget.product.source ?? '';
+      final cacheKey = CacheService.generateCacheKey(
+        'product-details-$productTitle-$productSource',
+      );
+      
+      // ✅ CACHE: Check cache first (product details change slowly, cache for 3 days)
+      final cachedData = await CacheService.get(cacheKey);
+      if (cachedData != null) {
+        print('✅ Product details cache HIT for: $productTitle');
+        setState(() {
+          _whatPeopleSay = cachedData['whatPeopleSay'] ?? 'Customers appreciate the quality and value of this product.';
+          _buyThisIf = cachedData['buyThisIf'] ?? 'This product is ideal for those seeking quality and reliability.';
+          _keyFeatures = List<String>.from(cachedData['keyFeatures'] ?? []);
+          _isLoadingDetails = false;
+        });
+        return; // Use cached data, skip API call
+      }
+      
+      print('❌ Product details cache MISS for: $productTitle (fetching from API)');
+      
+      final url = Uri.parse('${AgentService.baseUrl}/api/product-details');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'title': widget.product.title,
+          'description': widget.product.description,
+          'price': widget.product.price,
+          'rating': widget.product.rating,
+          'source': widget.product.source,
+        }),
+      ).timeout(const Duration(seconds: 10));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        
+        // ✅ CACHE: Store response in cache (3 days expiry for product details)
+        await CacheService.set(
+          cacheKey,
+          data,
+          expiry: const Duration(days: 3),
+          query: 'product-details',
+        );
+        print('💾 Cached product details for: $productTitle');
+        
+        setState(() {
+          _whatPeopleSay = data['whatPeopleSay'] ?? 'Customers appreciate the quality and value of this product.';
+          _buyThisIf = data['buyThisIf'] ?? 'This product is ideal for those seeking quality and reliability.';
+          _keyFeatures = List<String>.from(data['keyFeatures'] ?? []);
+          _isLoadingDetails = false;
+        });
+      } else {
+        // Use fallback content
+        _setFallbackContent();
+      }
+    } catch (e) {
+      print('Error loading product details: $e');
+      _setFallbackContent();
+    }
+  }
+  
+  void _setFallbackContent() {
+    setState(() {
+      _whatPeopleSay = 'Customers appreciate the quality and value of this product. Many reviewers mention the good build quality and reliable performance.';
+      _buyThisIf = 'You want a quality product that offers good value. Ideal for those seeking reliability and performance.';
+      _keyFeatures = ['Quality materials', 'Reliable performance', 'Good value', 'Durable construction'];
+      _isLoadingDetails = false;
+    });
   }
 
   void _initializeVariants() {
+    // ✅ null-safe: safely handle empty or null variants
     if (widget.product.variants.isNotEmpty) {
-      _availableColors = widget.product.variants.map((v) => v.color).toList();
-      _selectedColor = _availableColors.first;
+      _availableColors = widget.product.variants
+          .where((v) => v.color.isNotEmpty) // ✅ null-safe: filter out empty colors
+          .map((v) => v.color)
+          .toList();
+      _selectedColor = _availableColors.isNotEmpty ? _availableColors.first : null; // ✅ null-safe: check if colors exist
       _updateAvailableSizes();
     }
   }
 
   void _updateAvailableSizes() {
     if (_selectedColor != null) {
+      try {
       final selectedVariant = widget.product.variants
-          .firstWhere((v) => v.color == _selectedColor);
-      _availableSizes = selectedVariant.sizes;
-      _selectedSize = _availableSizes.isNotEmpty ? _availableSizes.first : null;
+            .firstWhere((v) => v.color == _selectedColor); // ✅ null-safe: find variant safely
+        _availableSizes = selectedVariant.sizes
+            .where((size) => size.isNotEmpty) // ✅ null-safe: filter out empty sizes
+            .toList();
+        _selectedSize = _availableSizes.isNotEmpty ? _availableSizes.first : null; // ✅ null-safe: check if sizes exist
+        _updateStockStatus();
+      } catch (e) {
+        // ✅ null-safe: handle case where variant not found
+        _availableSizes = [];
+        _selectedSize = null;
       _updateStockStatus();
     }
+  }
   }
 
   void _updateStockStatus() {
     if (_selectedColor != null && _selectedSize != null) {
+      try {
       final selectedVariant = widget.product.variants
-          .firstWhere((v) => v.color == _selectedColor);
-      _isOutOfStock = selectedVariant.availableQuantity == 0;
+            .firstWhere((v) => v.color == _selectedColor); // ✅ null-safe: find variant safely
+        _isOutOfStock = selectedVariant.availableQuantity <= 0; // ✅ null-safe: check if out of stock
+      } catch (e) {
+        // ✅ null-safe: handle case where variant not found
+        _isOutOfStock = true;
+      }
+    } else {
+      _isOutOfStock = false; // ✅ null-safe: reset stock status if no selection
     }
   }
 
@@ -61,14 +170,18 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // Top section with close/share icons and image carousel
-            _buildTopSection(),
+            // Scrollable content with image
+            SingleChildScrollView(
+        child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+                  // Image carousel at the top (scrollable)
+                  _buildImageCarousel(),
             
-            // Scrollable content
-            Expanded(
-              child: SingleChildScrollView(
+                  // Content with padding
+                  Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -96,7 +209,12 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   ],
                 ),
               ),
+                ],
             ),
+            ),
+            
+            // Fixed close and share icons at the top
+            _buildFixedTopButtons(),
           ],
         ),
       ),
@@ -104,42 +222,68 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     );
   }
 
-  Widget _buildTopSection() {
-    return Column(
-      children: [
-        // Close and share icons
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+  Widget _buildFixedTopButtons() {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            mainAxisAlignment: MainAxisAlignment.start,
             children: [
-              IconButton(
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.9),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
                 icon: const Icon(Icons.close, size: 24),
                 onPressed: () => Navigator.pop(context),
                 color: AppColors.textPrimary,
               ),
-              IconButton(
-                icon: const Icon(Icons.share_outlined, size: 24),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Product shared!')),
-                  );
-                },
-                color: AppColors.textPrimary,
               ),
             ],
           ),
         ),
-        
-        // Image carousel
-        _buildImageCarousel(),
-      ],
+      ),
     );
   }
 
   Widget _buildImageCarousel() {
+    // ✅ null-safe: handle empty images list
+    if (widget.product.images.isEmpty) {
     return SizedBox(
       height: 300,
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: AppColors.surfaceVariant,
+            border: Border.all(
+              color: AppColors.surfaceVariant,
+              width: 1,
+            ),
+          ),
+          child: const Center(
+            child: Icon(
+              Icons.image_not_supported,
+              color: AppColors.textSecondary,
+              size: 60,
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Only show carousel if there's more than one image
+    final hasMultipleImages = widget.product.images.length > 1;
+
+    return Stack(
+      children: [
+        SizedBox(
+          height: 300,
       child: PageView.builder(
         onPageChanged: (index) {
           setState(() {
@@ -148,7 +292,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
         },
         itemCount: widget.product.images.length,
         itemBuilder: (context, index) {
-          return Container(
+              final imageUrl = widget.product.images[index]; // ✅ null-safe: get image URL safely
+              return GestureDetector(
+                onTap: () => _viewImageFullscreen(index),
+                child: Container(
             margin: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
@@ -173,11 +320,59 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                     ),
                   );
                 },
+                    ),
               ),
             ),
           );
         },
       ),
+        ),
+        // Page indicator (dots) at the bottom
+        if (hasMultipleImages)
+          Positioned(
+            bottom: 12,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(
+                widget.product.images.length,
+                (index) => Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _currentImageIndex == index
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.4),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        // Image counter (e.g., "1 / 3") at the top right
+        if (hasMultipleImages)
+          Positioned(
+            top: 12,
+            right: 32,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                '${_currentImageIndex + 1} / ${widget.product.images.length}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -187,7 +382,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       children: [
         // Title
         Text(
-          widget.product.title,
+          widget.product.title.isNotEmpty ? widget.product.title : 'Untitled Product', // ✅ null-safe: handle empty title
           style: AppTypography.title1.copyWith(
             fontWeight: FontWeight.bold,
             fontSize: 22,
@@ -201,7 +396,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             const Icon(Icons.star, color: Colors.amber, size: 20),
             const SizedBox(width: 4),
             Text(
-              '${widget.product.rating} (2,054)',
+              '${widget.product.rating.toStringAsFixed(1)} (2,054)', // ✅ null-safe: format rating safely
               style: AppTypography.body1.copyWith(
                 color: AppColors.textSecondary,
               ),
@@ -215,21 +410,24 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
         const SizedBox(height: 20),
         
         // Color dropdown
+        if (_availableColors.isNotEmpty) // ✅ null-safe: only show if colors available
         _buildDropdown('Color', _selectedColor, _availableColors, (value) {
           setState(() {
-            _selectedColor = value!;
+              _selectedColor = value; // ✅ null-safe: handle null value
             _updateAvailableSizes();
           });
         }),
-        const SizedBox(height: 16),
+        if (_availableColors.isNotEmpty) const SizedBox(height: 16),
         
         // Size dropdown
+        if (_availableSizes.isNotEmpty) // ✅ null-safe: only show if sizes available
         _buildDropdown('Size', _selectedSize, _availableSizes, (value) {
           setState(() {
-            _selectedSize = value!;
+              _selectedSize = value; // ✅ null-safe: handle null value
             _updateStockStatus();
           });
         }),
+        if (_availableSizes.isNotEmpty) const SizedBox(height: 16),
         const SizedBox(height: 16),
         
         // Quantity selector
@@ -259,13 +457,13 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
           ),
           child: DropdownButtonHideUnderline(
             child: DropdownButton<String>(
-              value: value,
+              value: value, // ✅ null-safe: value can be null
               isExpanded: true,
               onChanged: onChanged,
               items: items.map((String item) {
                 return DropdownMenuItem<String>(
                   value: item,
-                  child: Text(item),
+                  child: Text(item.isNotEmpty ? item : 'Unknown'), // ✅ null-safe: handle empty items
                 );
               }).toList(),
             ),
@@ -395,8 +593,15 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          'Customers love the comfort and style of these shoes. Many reviewers mention the excellent fit and durability.',
+        _isLoadingDetails
+            ? const SizedBox(
+                height: 60,
+                child: Center(child: CircularProgressIndicator()),
+              )
+            : Text(
+                _whatPeopleSay.isNotEmpty
+                    ? _whatPeopleSay
+                    : 'Customers appreciate the quality and value of this product.',
           style: AppTypography.body1.copyWith(
             color: AppColors.textSecondary,
             height: 1.4,
@@ -418,8 +623,15 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          'You want a versatile sneaker that works for both casual wear and light athletic activities. Perfect for everyday comfort.',
+        _isLoadingDetails
+            ? const SizedBox(
+                height: 60,
+                child: Center(child: CircularProgressIndicator()),
+              )
+            : Text(
+                _buyThisIf.isNotEmpty
+                    ? _buyThisIf
+                    : 'This product is ideal for those seeking quality and reliability.',
           style: AppTypography.body1.copyWith(
             color: AppColors.textSecondary,
             height: 1.4,
@@ -430,13 +642,16 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   }
 
   Widget _buildFeatureTags() {
-    final List<String> features = [
-      'Heel Lockdown',
-      'Breathability',
-      'Eco-Friendly',
-      'Durable',
-      'Comfortable',
-    ];
+    final List<String> features = _keyFeatures.isNotEmpty
+        ? _keyFeatures
+        : ['Quality materials', 'Reliable performance', 'Good value'];
+
+    if (_isLoadingDetails && _keyFeatures.isEmpty) {
+      return const SizedBox(
+        height: 40,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -472,14 +687,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   }
 
   Widget _buildKeyFeatures() {
-    final List<String> keyFeatures = [
-      'Retro basketball style',
-      'Heel lockdown',
-      'Breathability',
-      'Eco-conscious materials',
-      'Lightweight design',
-      'Versatile styling',
-    ];
+    final List<String> keyFeatures = _keyFeatures.isNotEmpty
+        ? _keyFeatures
+        : ['Quality materials', 'Reliable performance', 'Good value', 'Durable construction'];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -492,6 +702,12 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
           ),
         ),
         const SizedBox(height: 12),
+        if (_isLoadingDetails && _keyFeatures.isEmpty)
+          const SizedBox(
+            height: 100,
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else
         ...keyFeatures.map((feature) => Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Row(
@@ -645,6 +861,160 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // Open full-screen image viewer
+  void _viewImageFullscreen(int initialIndex) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => _ImageFullscreenView(
+          images: widget.product.images,
+          initialIndex: initialIndex,
+        ),
+      ),
+    );
+  }
+}
+
+// Full-screen image viewer widget
+class _ImageFullscreenView extends StatefulWidget {
+  final List<String> images;
+  final int initialIndex;
+
+  const _ImageFullscreenView({
+    required this.images,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_ImageFullscreenView> createState() => _ImageFullscreenViewState();
+}
+
+class _ImageFullscreenViewState extends State<_ImageFullscreenView> {
+  late PageController _pageController;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          // Full-screen image viewer with swipe support
+          PageView.builder(
+            controller: _pageController,
+            onPageChanged: (index) {
+              setState(() {
+                _currentIndex = index;
+              });
+            },
+            itemCount: widget.images.length,
+            itemBuilder: (context, index) {
+              return InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 3.0,
+                child: Center(
+                  child: Image.network(
+                    widget.images[index],
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Center(
+                        child: Icon(
+                          Icons.image_not_supported,
+                          color: Colors.white,
+                          size: 64,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+          // Close button at the top left
+          Positioned(
+            top: 8,
+            left: 8,
+            child: SafeArea(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
+            ),
+          ),
+          // Image counter at the top center (only if multiple images)
+          if (widget.images.length > 1)
+            Positioned(
+              top: 8,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '${_currentIndex + 1} / ${widget.images.length}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          // Page indicator dots at the bottom (only if multiple images)
+          if (widget.images.length > 1)
+            Positioned(
+              bottom: 40,
+              left: 0,
+              right: 0,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  widget.images.length,
+                  (index) => Container(
+                    width: 8,
+                    height: 8,
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _currentIndex == index
+                          ? Colors.white
+                          : Colors.white.withOpacity(0.4),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

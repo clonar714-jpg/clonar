@@ -31,6 +31,9 @@ app.get("/", (req, res) => {
 // Initialize database tables
 async function initializeDatabase() {
   try {
+    // Test connection first
+    await pool.query('SELECT NOW()');
+    
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -86,9 +89,11 @@ async function initializeDatabase() {
       `);
     }
 
-    console.log("Database initialized successfully");
+    console.log("✅ Database initialized successfully");
   } catch (err) {
-    console.error("Database initialization error:", err);
+    console.warn("⚠️ Database initialization failed (running without database):", err.message);
+    console.log("💡 To use database features, start PostgreSQL with: docker-compose up postgres");
+    // Server will continue running without database
   }
 }
 
@@ -96,7 +101,16 @@ async function initializeDatabase() {
 // GET /products - return all products
 app.get("/products", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM products ORDER BY created_at DESC");
+    // Check if database is available
+    let result;
+    try {
+      result = await pool.query("SELECT * FROM products ORDER BY created_at DESC");
+    } catch (dbErr) {
+      return res.status(503).json({ 
+        error: "Database unavailable", 
+        message: "Start PostgreSQL with: docker-compose up postgres" 
+      });
+    }
     // Transform the data to match the expected format
     const products = result.rows.map(row => ({
       id: row.id,

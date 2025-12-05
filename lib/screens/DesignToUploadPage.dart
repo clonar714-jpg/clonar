@@ -1,6 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 
@@ -18,6 +21,11 @@ class _DesignToUploadPageState extends State<DesignToUploadPage> {
   String _selectedLayout = 'grid';
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
+
+  // Backend configuration
+  static const String baseUrl = 'http://10.0.2.2:4000';
+  static const String apiUrl = '$baseUrl/api';
+  bool _isUploading = false;
 
   final List<String> _layoutOptions = [
     'grid',
@@ -138,7 +146,16 @@ class _DesignToUploadPageState extends State<DesignToUploadPage> {
     );
   }
 
-  void _uploadDesign() {
+  void _showSuccessSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: AppColors.primary,
+      ),
+    );
+  }
+
+  Future<void> _uploadDesign() async {
     if (_selectedImages.isEmpty) {
       _showErrorSnackBar('Please add at least one image');
       return;
@@ -148,14 +165,80 @@ class _DesignToUploadPageState extends State<DesignToUploadPage> {
       return;
     }
 
-    // TODO: Implement upload logic
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Design uploaded successfully!'),
-        backgroundColor: AppColors.primary,
-      ),
-    );
+    setState(() {
+      _isUploading = true;
+    });
+
+    try {
+      // Get authentication token
+      final prefs = await SharedPreferences.getInstance();
+      String? token = prefs.getString('token');
+      
+      // 🔥 Dev Mode Bypass: Allow fake user even without token
+      if (token == null || token.isEmpty) {
+        debugPrint('🧪 Dev Mode: Using fake token for testing');
+        token = 'dev-mode-token';
+      }
+
+      // Upload the first image (you can extend this to upload multiple images)
+      final imageFile = _selectedImages.first;
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$apiUrl/upload/single'),
+      );
+      
+      // Add authorization header
+      request.headers['Authorization'] = 'Bearer $token';
+      
+      // Add the image file
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'image',  // Changed from 'file' to 'image' to match backend expectation
+          imageFile.path,
+        ),
+      );
+
+      // Add additional metadata
+      request.fields['title'] = _titleController.text.trim();
+      request.fields['description'] = _descriptionController.text.trim();
+      request.fields['layout'] = _selectedLayout;
+
+      print('📤 Uploading image to: $apiUrl/upload/single');
+      print('📦 Title: ${_titleController.text.trim()}');
+      print('📦 Layout: $_selectedLayout');
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      
+      print('📊 Upload response: ${response.statusCode}');
+      print('📄 Upload response body: ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final responseData = jsonDecode(response.body);
+        if (responseData['success'] == true) {
+          _showSuccessSnackBar('Design uploaded successfully!');
+          // Clear the form
+          _selectedImages.clear();
+          _imageWidgets.clear();
+          _titleController.clear();
+          _descriptionController.clear();
+          setState(() {});
     Navigator.pop(context);
+        } else {
+          _showErrorSnackBar(responseData['error'] ?? 'Upload failed');
+        }
+      } else {
+        final responseData = jsonDecode(response.body);
+        _showErrorSnackBar(responseData['error'] ?? 'Upload failed');
+      }
+    } catch (e) {
+      print('💥 Upload error: $e');
+      _showErrorSnackBar('Upload failed: ${e.toString()}'); // ✅ null-safe
+    } finally {
+      setState(() {
+        _isUploading = false;
+      });
+    }
   }
 
   Widget _buildLayoutSelector() {
@@ -324,8 +407,17 @@ class _DesignToUploadPageState extends State<DesignToUploadPage> {
           Padding(
             padding: const EdgeInsets.only(right: 16.0),
             child: TextButton(
-              onPressed: _selectedImages.isNotEmpty ? _uploadDesign : null,
-              child: Text(
+              onPressed: (_selectedImages.isNotEmpty && !_isUploading) ? _uploadDesign : null,
+              child: _isUploading 
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+                    ),
+                  )
+                : Text(
                 'Upload',
                 style: AppTypography.body1.copyWith(
                   color: _selectedImages.isNotEmpty ? AppColors.primary : Colors.grey,

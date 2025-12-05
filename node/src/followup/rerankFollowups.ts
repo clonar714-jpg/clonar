@@ -1,0 +1,54 @@
+// src/followup/rerankFollowups.ts
+import { getEmbedding, cosine } from "../embeddings/embeddingClient";
+
+/**
+ * 🟦 C10.4 — EMBEDDING RERANKING OF FOLLOW-UPS (Perplexity secret)
+ * After generating potential follow-ups, we rerank them using embeddings for relevance
+ */
+export async function rerankFollowUps(
+  query: string,
+  candidates: string[],
+  topN: number = 5
+): Promise<string[]> {
+  if (!candidates || candidates.length === 0) return [];
+
+  // If we have few candidates, return them all
+  if (candidates.length <= topN) {
+    return candidates;
+  }
+
+  try {
+    // Get query embedding once
+    const qEmb = await getEmbedding(query);
+
+    // Score each candidate
+    const scored = await Promise.all(
+      candidates.map(async (candidate) => {
+        if (!candidate || candidate.trim().length === 0) {
+          return { candidate, score: -1 };
+        }
+
+        const candidateEmb = await getEmbedding(candidate);
+        const similarity = cosine(qEmb, candidateEmb);
+
+        return { candidate, score: similarity };
+      })
+    );
+
+    // Sort by score (highest first) and return top N
+    const ranked = scored
+      .filter((item) => item.score >= 0) // Remove invalid candidates
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topN)
+      .map((x) => x.candidate);
+
+    console.log(`🎯 Reranked ${candidates.length} follow-ups → top ${ranked.length} (scores: ${scored.slice(0, topN).map(s => s.score.toFixed(3)).join(", ")})`);
+
+    return ranked;
+  } catch (err: any) {
+    console.error("❌ Follow-up reranking error:", err.message);
+    // Fallback: return first N candidates
+    return candidates.slice(0, topN);
+  }
+}
+
