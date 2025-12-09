@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart' show debugPrint, compute;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import '../isolates/text_parsing_isolate.dart';
+import '../isolates/text_parsing_isolate.dart' show parseAnswerIsolate, parseAgentResponseIsolate, ParsingInput, ParsedContent;
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../models/Product.dart';
@@ -67,6 +67,8 @@ class QuerySession {
   final String? cachedSummary; // Cached generated summary
   final List<Map<String, dynamic>>? cachedParsedLocations; // Cached parsed location segments
   final ParsedContent? cachedParsing; // ✅ PHASE 3: Cached parsed content from isolate
+  // ✅ PATCH 4: Flag to prevent duplicate parsing
+  final bool? isParsing; // Whether this session is currently being parsed
 
   QuerySession({
     required this.query,
@@ -89,6 +91,7 @@ class QuerySession {
     this.cachedSummary,
     this.cachedParsedLocations,
     this.cachedParsing,
+    this.isParsing,
   });
 
   QuerySession copyWith({
@@ -112,6 +115,7 @@ class QuerySession {
     String? cachedSummary,
     List<Map<String, dynamic>>? cachedParsedLocations,
     ParsedContent? cachedParsing,
+    bool? isParsing,
   }) {
     return QuerySession(
       query: query ?? this.query,
@@ -134,6 +138,7 @@ class QuerySession {
       cachedSummary: cachedSummary ?? this.cachedSummary,
       cachedParsedLocations: cachedParsedLocations ?? this.cachedParsedLocations,
       cachedParsing: cachedParsing ?? this.cachedParsing,
+      isParsing: isParsing ?? this.isParsing,
     );
   }
 }
@@ -229,6 +234,10 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   final Map<int, String> _productLinks = {};
   // Keeps track of expanded summaries per query index
   final Map<int, bool> _expandedSummaries = {};
+  // ✅ PATCH B1: Stable animation controller map (prevents restart on scroll)
+  final Map<String, bool> _hasAnimated = {};
+  // ✅ PATCH C1: Preprocessed result cache (prevents heavy computation in build)
+  Map<String, dynamic>? _processedResult;
   // Token queue for smooth streaming display
   Timer? _streamTimer;
   String _displayedText = ''; // What's currently displayed (for animation)
@@ -269,6 +278,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   final FocusNode _followUpFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   List<GlobalKey> _queryKeys = [];
+  // ✅ PATCH E4: Debounce timer for follow-up input
+  Timer? _followUpDebounce;
 
   // Hotel view mode: 'list' or 'map'
   String _hotelViewMode = 'list';
@@ -568,7 +579,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
 
               case 'destination_images':
                 // Handle destination images for overview section (Perplexity-style)
-                print('🖼️ Received destination images event with ${data['data']?.length ?? 0} images');
+                // print('🖼️ Received destination images event with ${data['data']?.length ?? 0} images');
                 final imagesData = (data['data'] as List)
                     .map((e) => e.toString())
                     .where((e) => e.isNotEmpty)
@@ -818,7 +829,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           }
         }
         
-        final responseData = await AgentService.askAgent(session.query, conversationHistory: history);
+        final responseData = await AgentService.askAgent(
+          session.query, 
+          conversationHistory: history,
+          imageUrl: widget.imageUrl, // ✅ Pass imageUrl for image search
+        );
         final resultType = (responseData['intent'] ?? 'answer').toString().toLowerCase();
         
         if (resultType == 'answer' || resultType == 'general') {
@@ -1237,10 +1252,10 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           print('❌ Cannot launch URL: $mapsUri');
         }
       } else {
-        print('⚠️ Coordinates are 0,0 - invalid, falling back to address');
+        // print('⚠️ Coordinates are 0,0 - invalid, falling back to address');
       }
     } else {
-      print('⚠️ No coordinates found, falling back to address');
+      // print('⚠️ No coordinates found, falling back to address');
     }
     
     // Priority 2: Build full address from hotel data
@@ -1590,6 +1605,205 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     });
   }
 
+  // ✅ PATCH 1: Optimized _handleAgentResponse
+  Future<void> _handleAgentResponse(Map<String, dynamic> agentJson, int sessionIndex) async {
+    debugPrint("🟦 Agent Response received");
+
+    // Filter out empty or null responses
+    if (agentJson.isEmpty) return;
+
+    // Extract needed fields
+    final rawResults = agentJson["results"] ?? <String, dynamic>{};
+    final rawAnswer = agentJson["answer"] ?? <String, dynamic>{};
+    final sections = agentJson["sections"] ?? [];
+    final intent = agentJson["finalIntent"] ?? "unknown";
+    final cardType = agentJson["finalCardType"] ?? "unknown";
+
+    // 🔥 Do NOT setState() yet — wait for parsing to finish
+    if (sessionIndex < conversationHistory.length) {
+      setState(() {
+        conversationHistory[sessionIndex] = conversationHistory[sessionIndex].copyWith(
+          isParsing: true,
+        );
+      });
+    }
+
+    // 🔥 Send everything to isolate FIRST
+    final isolateInput = {
+      "rawAnswer": rawAnswer,
+      "rawResults": rawResults,
+      "rawSections": sections,
+      "intent": intent,
+      "cardType": cardType,
+    };
+
+    debugPrint("🚀 Sending data to isolate...");
+
+    final parsed = await compute(parseAgentResponseIsolate, isolateInput);
+
+    debugPrint("✅ Isolate parsing done.");
+
+    // Now that heavy work is done, update UI
+    if (!mounted || sessionIndex >= conversationHistory.length) return;
+
+    setState(() {
+      final session = conversationHistory[sessionIndex];
+      conversationHistory[sessionIndex] = session.copyWith(
+        summary: parsed["summary"] ?? session.summary,
+        rawResults: rawResults,
+        intent: intent,
+        cardType: cardType,
+        isParsing: false,
+        isLoading: false,
+      );
+    });
+
+    debugPrint("🎉 UI updated with parsed data.");
+  }
+
+  // ✅ PATCH C1: Preprocess response data (moves heavy logic out of build methods)
+  Map<String, dynamic>? _preprocessResponse(Map<String, dynamic> response) {
+    try {
+      final sections = response["sections"] ?? [];
+      final locations = response["locations"] ?? [];
+      final mapPoints = response["map"] ?? [];
+      final answer = response["answer"]?.toString() ?? "";
+      final summary = response["summary"]?.toString() ?? "";
+      final followUps = response["followUps"] ?? response["followUpSuggestions"] ?? [];
+      
+      // Preprocess locations (move heavy logic from _buildLocationCard)
+      final preprocessedLocations = (locations as List).map((location) {
+        final title = location['title']?.toString() ?? location['name']?.toString() ?? 'Unknown Location';
+        final rating = safeNumber(location['rating'], 0.0);
+        final reviews = location['reviews']?.toString() ?? '';
+        final address = location['address']?.toString() ?? '';
+        final thumbnail = location['thumbnail']?.toString() ?? '';
+        final link = location['link']?.toString() ?? '';
+        final phone = location['phone']?.toString() ?? '';
+        final gpsCoordinates = location['gps_coordinates'];
+        final images = (location['images'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [];
+        final description = location['description']?.toString() ?? location['snippet']?.toString() ?? '';
+        
+        // Build map URL from GPS coordinates or address
+        String? mapUrl;
+        if (gpsCoordinates != null && gpsCoordinates is Map) {
+          final lat = gpsCoordinates['latitude'];
+          final lng = gpsCoordinates['longitude'];
+          if (lat != null && lng != null) {
+            mapUrl = 'https://www.google.com/maps?q=$lat,$lng';
+          }
+        }
+        if (mapUrl == null && address.isNotEmpty) {
+          mapUrl = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}';
+        }
+        
+        // Use thumbnail or first image from images array
+        final mainImage = thumbnail.isNotEmpty ? thumbnail : (images.isNotEmpty ? images[0] : null);
+        
+        return {
+          'title': title,
+          'rating': rating,
+          'reviews': reviews,
+          'address': address,
+          'thumbnail': thumbnail,
+          'link': link,
+          'phone': phone,
+          'images': images,
+          'description': description,
+          'mapUrl': mapUrl,
+          'mainImage': mainImage,
+        };
+      }).toList();
+      
+      // Preprocess places (move heavy logic from _buildPlaceCard)
+      // Process all results that look like places (have geo, location, or are in places array)
+      final placesArray = response["places"] ?? response["results"] ?? [];
+      final preprocessedPlaces = (placesArray as List).map((place) {
+        final name = place['name']?.toString() ?? place['title']?.toString() ?? 'Unknown Place';
+        final description = place['description']?.toString() ?? '';
+        final rating = place['rating']?.toString() ?? '';
+        final reviews = place['reviews']?.toString() ?? '';
+        final location = place['location']?.toString() ?? place['address']?.toString() ?? '';
+        final website = place['website']?.toString() ?? place['link']?.toString() ?? '';
+        final phone = place['phone']?.toString() ?? '';
+        final geo = place['geo'];
+        
+        // Collect all available images
+        List<String> allImages = [];
+        if (place['images'] != null && place['images'] is List) {
+          for (var img in place['images']) {
+            final imgStr = img?.toString() ?? '';
+            if (imgStr.isNotEmpty && imgStr.startsWith('http') && !allImages.contains(imgStr)) {
+              allImages.add(imgStr);
+            }
+          }
+        }
+        if (place['photos'] != null && place['photos'] is List) {
+          for (var photo in place['photos']) {
+            final photoStr = photo?.toString() ?? '';
+            if (photoStr.isNotEmpty && photoStr.startsWith('http') && !allImages.contains(photoStr)) {
+              allImages.add(photoStr);
+            }
+          }
+        }
+        final imageUrl = place['image_url']?.toString() ?? place['image']?.toString() ?? place['thumbnail']?.toString() ?? '';
+        if (imageUrl.isNotEmpty && imageUrl.startsWith('http')) {
+          if (!allImages.contains(imageUrl)) {
+            allImages.insert(0, imageUrl);
+          }
+        }
+        if (allImages.isEmpty) {
+          allImages.add(''); // Placeholder
+        }
+        
+        // Build map URL
+        String? mapUrl;
+        if (geo != null && geo is Map) {
+          final lat = geo['latitude'] ?? geo['lat'];
+          final lng = geo['longitude'] ?? geo['lng'];
+          if (lat != null && lng != null) {
+            mapUrl = 'https://www.google.com/maps?q=$lat,$lng';
+          }
+        }
+        if (mapUrl == null && location.isNotEmpty) {
+          mapUrl = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(location)}';
+        }
+        
+        // Parse rating
+        double? ratingNum;
+        if (rating.isNotEmpty) {
+          ratingNum = double.tryParse(rating.replaceAll(RegExp(r'[^\d.]'), ''));
+        }
+        
+        return {
+          'name': name,
+          'description': description,
+          'rating': rating,
+          'ratingNum': ratingNum,
+          'reviews': reviews,
+          'location': location,
+          'website': website,
+          'phone': phone,
+          'allImages': allImages,
+          'mapUrl': mapUrl,
+        };
+      }).toList();
+      
+      return {
+        "results": sections,
+        "locations": preprocessedLocations,
+        "mapPoints": mapPoints,
+        "answer": answer,
+        "summary": summary,
+        "followUps": followUps,
+        "preprocessedPlaces": preprocessedPlaces,
+      };
+    } catch (e) {
+      debugPrint("❌ Preprocess error: $e");
+      return null;
+    }
+  }
+
   // ✅ STEP 9: Accept previousContext parameter
   // ✅ FOLLOW-UP PATCH: Accept lastFollowUp and parentQuery
   Future<void> _loadResultsForSession(
@@ -1599,7 +1813,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     String? parentQuery,
   }) async {
     if (sessionIndex >= conversationHistory.length) {
-      print('⚠️  Session index $sessionIndex >= conversationHistory.length ${conversationHistory.length}');
+      // print('⚠️  Session index $sessionIndex >= conversationHistory.length ${conversationHistory.length}');
       return;
     }
     
@@ -1612,13 +1826,31 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       
       // Build conversation history for context (previous queries and answers)
       // Similar to ChatGPT/Perplexity: include all previous exchanges for context
+      // ✅ FIX: If a new image is uploaded, don't include previous image-based queries in history
       final List<Map<String, dynamic>> history = [];
+      final bool hasNewImage = widget.imageUrl != null && widget.imageUrl!.isNotEmpty;
+      
       for (int i = 0; i < sessionIndex; i++) {
         final prevSession = conversationHistory[i];
         // Only include completed exchanges (both query and answer)
+        // ✅ FIX: Skip previous queries if a new image is being used (prevents old image results)
         if (prevSession.query.isNotEmpty && 
             prevSession.summary != null && 
             prevSession.summary!.isNotEmpty) {
+          // If this is a new image search, don't include previous image-based queries
+          if (hasNewImage) {
+            // Skip if previous query was likely an image search (contains image-related keywords)
+            final prevQuery = prevSession.query.toLowerCase();
+            if (prevQuery.contains('similar') || 
+                prevQuery.contains('find') || 
+                prevQuery.contains('image') ||
+                prevQuery.contains('photo') ||
+                prevQuery.contains('picture')) {
+              print('⏭️ Skipping previous image-based query from history: ${prevSession.query}');
+              continue; // Skip this previous query
+            }
+          }
+          
           history.add({
             "query": prevSession.query,
             "summary": prevSession.summary ?? "",
@@ -1635,7 +1867,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           });
         }
       }
-      print('📚 Sending ${history.length} previous exchanges for context');
+      print('📚 Sending ${history.length} previous exchanges for context${hasNewImage ? " (new image search - skipped image-based queries)" : ""}');
       
       Map<String, dynamic> responseData;
       try {
@@ -1645,12 +1877,27 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         
         // ✅ STEP 9: Pass previousContext to AgentService
         // ✅ FOLLOW-UP PATCH: Pass lastFollowUp and parentQuery
+        // ✅ Add timeout wrapper to prevent UI blocking
         responseData = await AgentService.askAgent(
           session.query, 
           conversationHistory: history,
           previousContext: previousContext,
           lastFollowUp: lastFollowUp,
           parentQuery: parentQuery,
+          imageUrl: widget.imageUrl, // ✅ Pass imageUrl for image search
+        ).timeout(
+          const Duration(seconds: 90), // 90 second timeout (longer than backend timeout)
+          onTimeout: () {
+            print('⏱️ Frontend timeout after 90 seconds');
+            return {
+              'success': false,
+              'error': 'Request timeout',
+              'summary': 'The request took too long. Please try again.',
+              'intent': 'answer',
+              'results': [],
+              'sources': [],
+            };
+          },
         );
         print('Agent Response: $responseData');
         print('=== AGENT RESPONSE DEBUG ===');
@@ -1664,23 +1911,44 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             print('First result thumbnail: ${responseData['results'][0]['thumbnail']}');
         }
         }
+      } on TimeoutException catch (e) {
+        print('⏱️ Frontend timeout: $e');
+        // Show timeout message
+        if (mounted) {
+          setState(() {
+            conversationHistory[sessionIndex] = session.copyWith(
+              isLoading: false,
+            );
+          });
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Request timed out. Please try again.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
       } catch (e) {
         print('Agent API call failed: $e');
         print('Error type: ${e.runtimeType}');
         // Show error message instead of mock data
-        setState(() {
-          conversationHistory[sessionIndex] = session.copyWith(
-            isLoading: false,
+        if (mounted) {
+          setState(() {
+            conversationHistory[sessionIndex] = session.copyWith(
+              isLoading: false,
+            );
+          });
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Request failed: ${e.toString().length > 100 ? e.toString().substring(0, 100) + "..." : e.toString()}'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
           );
-        });
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Agent API connection failed: $e'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
-          ),
-        );
+        }
         return;
       }
       
@@ -1754,18 +2022,24 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           }
         }).toList();
         
-        setState(() {
-          conversationHistory[sessionIndex] = session.copyWith(
-            products: products,
-            resultType: resultType,
-            isLoading: false,
-            summary: cleanSummary,
-            intent: responseData['intent']?.toString(),
-            cardType: responseData['cardType']?.toString(),
-            cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
-            rawResults: (responseData['results'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
-            followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-          );
+        // ✅ PATCH E3: Throttle setState calls (prevents rebuilding during frame rendering)
+        if (!mounted) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              conversationHistory[sessionIndex] = session.copyWith(
+                products: products,
+                resultType: resultType,
+                isLoading: false,
+                summary: cleanSummary,
+                intent: responseData['intent']?.toString(),
+                cardType: responseData['cardType']?.toString(),
+                cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
+                rawResults: (responseData['results'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
+                followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+              );
+            });
+          }
         });
       } else if (resultType == "hotel") {
         // ✅ Perplexity-style: Check if backend returned sections + map structure
@@ -1811,12 +2085,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           }
           print('✅ Successfully parsed ${parsedMapPoints.length} map points');
         } else {
-          print('⚠️ No map points in response (mapPoints is null)');
+          // print('⚠️ No map points in response (mapPoints is null)');
         }
         
         print('🏨 Hotel response: ${parsedSections.length} sections, ${hotelResults.length} total hotels, ${parsedMapPoints.length} map points');
         
+        // ✅ PATCH C2: Preprocess response ONCE after API returns
+        final processed = _preprocessResponse(responseData);
+        
         setState(() {
+          _processedResult = processed;
           conversationHistory[sessionIndex] = session.copyWith(
             hotelResults: hotelResults,
             resultType: resultType,
@@ -1836,26 +2114,36 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         
-        setState(() {
-          conversationHistory[sessionIndex] = session.copyWith(
-            rawResults: typedResults,
-            resultType: resultType,
-            isLoading: false,
-            summary: cleanSummary,
-            products: [],
-            hotelResults: [],
-            intent: responseData['intent']?.toString(),
-            cardType: responseData['cardType']?.toString(),
-            cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-          );
+        // ✅ PATCH E3: Throttle setState calls (prevents rebuilding during frame rendering)
+        if (!mounted) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              conversationHistory[sessionIndex] = session.copyWith(
+                rawResults: typedResults,
+                resultType: resultType,
+                isLoading: false,
+                summary: cleanSummary,
+                products: [],
+                hotelResults: [],
+                intent: responseData['intent']?.toString(),
+                cardType: responseData['cardType']?.toString(),
+                cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+                followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+              );
+            });
+          }
         });
       } else if (resultType == "location") {
         final List<Map<String, dynamic>> locationResults = results
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         
+        // ✅ PATCH C2: Preprocess response ONCE after API returns
+        final processed = _preprocessResponse(responseData);
+        
         setState(() {
+          _processedResult = processed;
           conversationHistory[sessionIndex] = session.copyWith(
             locationCards: locationResults,
             resultType: resultType,
@@ -1875,20 +2163,30 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         
-        setState(() {
-          conversationHistory[sessionIndex] = session.copyWith(
-            locationCards: placesResults, // Reuse locationCards for places
-            rawResults: placesResults, // Also store in rawResults
-            resultType: resultType,
-            isLoading: false,
-            summary: cleanSummary,
-            products: [],
-            hotelResults: [],
-            intent: responseData['intent']?.toString(),
-            cardType: responseData['cardType']?.toString(),
-            cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-          );
+        // ✅ PATCH C2: Preprocess response ONCE after API returns
+        final processed = _preprocessResponse(responseData);
+        
+        // ✅ PATCH E3: Throttle setState calls (prevents rebuilding during frame rendering)
+        if (!mounted) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              _processedResult = processed;
+              conversationHistory[sessionIndex] = session.copyWith(
+                locationCards: placesResults, // Reuse locationCards for places
+                rawResults: placesResults, // Also store in rawResults
+                resultType: resultType,
+                isLoading: false,
+                summary: cleanSummary,
+                products: [],
+                hotelResults: [],
+                intent: responseData['intent']?.toString(),
+                cardType: responseData['cardType']?.toString(),
+                cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+                followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+              );
+            });
+          }
         });
       } else {
         // ✅ Fix: Handle "answer" intent - display answer directly (not streaming)
@@ -2402,9 +2700,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                           session.products.isNotEmpty ? 'shopping' : session.resultType, 
                           session
                         ),
-                        // ✅ Images button for places queries
+                        // ✅ Bookable experiences button for places queries
                         if ((session.resultType == 'places' || session.resultType == 'location') && session.cards.isNotEmpty)
-                          _buildImagesButton(session),
+                          _buildBookableExperiencesButton(session),
                         // ✅ Movie-specific tags: In Cinemas/Out of Cinemas, Showtimes (only if in theaters), Cast & Crew, Trailers & Clips, Reviews
                         if (session.resultType == 'movies' && session.cards.isNotEmpty) ...[
                               // In Cinemas / Out of Cinemas tag
@@ -2674,7 +2972,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            ...session.products.map((p) => _buildProductCard(p)).toList(),
+            // ✅ PATCH D1: Give every list item a stable key (prevents unnecessary rebuilds)
+            ...session.products.map((p) {
+              final id = p.id.toString();
+              return KeyedSubtree(
+                key: ValueKey(id),
+                child: _buildProductCard(p),
+              );
+            }).toList(),
           ],
           // Show follow-up suggestions after answer is complete (Perplexity-style, no heading)
           Builder(
@@ -2835,16 +3140,26 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           if (session.summary != null && session.summary!.isNotEmpty) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0), // Keep some padding for text readability
-              child: PerplexityTypingAnimation(
-                text: session.summary!,
-                isStreaming: session.isStreaming,
-                textStyle: const TextStyle(
-                  fontSize: 15,
-                  color: AppColors.textPrimary,
-                  height: 1.6,
-                ),
-                animationDuration: const Duration(milliseconds: 30),
-                wordsPerTick: 1,
+              child: Builder(
+                builder: (context) {
+                  final animKey = 'answer-${session.query.hashCode}';
+                  final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                  return PerplexityTypingAnimation(
+                    text: session.summary!,
+                    isStreaming: session.isStreaming,
+                    animate: shouldAnimate,
+                    onAnimationComplete: () {
+                      _hasAnimated[animKey] = true;
+                    },
+                    textStyle: const TextStyle(
+                      fontSize: 15,
+                      color: AppColors.textPrimary,
+                      height: 1.6,
+                    ),
+                    animationDuration: const Duration(milliseconds: 30),
+                    wordsPerTick: 1,
+                  );
+                },
               ),
             ),
             const SizedBox(height: 24),
@@ -2863,7 +3178,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                     
                     print('🏨 Section "$title" has ${items.length} items');
                     if (items.isEmpty) {
-                      print('⚠️ Section "$title" is empty, skipping');
+                      // print('⚠️ Section "$title" is empty, skipping');
                       return const SizedBox.shrink(); // Hide empty sections
                     }
               
@@ -2894,7 +3209,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                             padding: const EdgeInsets.symmetric(horizontal: 0), // No horizontal padding - full width
                             child: Column(
                               children: [
-                                _buildHotelCard(hotel, isHorizontal: false), // Vertical card layout
+                                // ✅ PATCH D1: Give every list item a stable key
+                                KeyedSubtree(
+                                  key: ValueKey(hotel['id']?.toString() ?? hotel['name']?.toString() ?? 'hotel-$index'),
+                                  child: _buildHotelCard(hotel, isHorizontal: false), // Vertical card layout
+                                ),
                                 if (index < itemsToShow.length - 1) const SizedBox(height: 20), // Spacing between hotels
                               ],
                             ),
@@ -2929,7 +3248,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                       final hotel = entry.value;
                       return Column(
                         children: [
-                          _buildHotelCard(hotel),
+                          // ✅ PATCH D1: Give every list item a stable key
+                          KeyedSubtree(
+                            key: ValueKey(hotel['id']?.toString() ?? hotel['name']?.toString() ?? 'hotel-$index'),
+                            child: _buildHotelCard(hotel),
+                          ),
                           if (index < session.hotelResults.length - 1) const SizedBox(height: 20),
                         ],
                       );
@@ -3109,16 +3432,26 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         children: [
           // ✅ Perplexity-style: Intro paragraph from summary with animation
           if (session.summary != null && session.summary!.isNotEmpty) ...[
-            PerplexityTypingAnimation(
-              text: session.summary!,
-              isStreaming: session.isStreaming,
-              textStyle: const TextStyle(
-                fontSize: 15,
-                color: AppColors.textPrimary,
-                height: 1.6,
-              ),
-              animationDuration: const Duration(milliseconds: 30),
-              wordsPerTick: 1,
+            Builder(
+              builder: (context) {
+                final animKey = 'answer-${session.query.hashCode}';
+                final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                return PerplexityTypingAnimation(
+                  text: session.summary!,
+                  isStreaming: session.isStreaming,
+                  animate: shouldAnimate,
+                  onAnimationComplete: () {
+                    _hasAnimated[animKey] = true;
+                  },
+                  textStyle: const TextStyle(
+                    fontSize: 15,
+                    color: AppColors.textPrimary,
+                    height: 1.6,
+                  ),
+                  animationDuration: const Duration(milliseconds: 30),
+                  wordsPerTick: 1,
+                );
+              },
             ),
             const SizedBox(height: 24),
           ],
@@ -3146,7 +3479,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   ],
                   
                   // Places in this section
-                  ...places.map((place) => _buildPlaceCard(place)).toList(),
+                  // ✅ PATCH D1: Give every list item a stable key
+                  ...places.map((place) {
+                    final id = place['name']?.toString() ?? place['title']?.toString() ?? UniqueKey().toString();
+                    return KeyedSubtree(
+                      key: ValueKey(id),
+                      child: _buildPlaceCard(place),
+                    );
+                  }).toList(),
                 ],
               );
             }),
@@ -3326,6 +3666,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   thumbnail,
                   width: 60,
                   height: 60,
+                  gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) {
                     return Container(
@@ -3393,16 +3734,26 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     // Show full description with beautiful Perplexity-style typing animation
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: PerplexityTypingAnimation(
-        text: summary,
-        isStreaming: session.isStreaming,
-        textStyle: const TextStyle(
-          fontSize: 15,
-          height: 1.6,
-          color: AppColors.textPrimary,
-        ),
-        animationDuration: const Duration(milliseconds: 30),
-        wordsPerTick: 1, // Smooth word-by-word animation
+      child: Builder(
+        builder: (context) {
+          final animKey = 'answer-${session.query.hashCode}';
+          final shouldAnimate = !_hasAnimated.containsKey(animKey);
+          return PerplexityTypingAnimation(
+            text: summary,
+            isStreaming: session.isStreaming,
+            animate: shouldAnimate,
+            onAnimationComplete: () {
+              _hasAnimated[animKey] = true;
+            },
+            textStyle: const TextStyle(
+              fontSize: 15,
+              height: 1.6,
+              color: AppColors.textPrimary,
+            ),
+            animationDuration: const Duration(milliseconds: 30),
+            wordsPerTick: 1, // Smooth word-by-word animation
+          );
+        },
       ),
     );
   }
@@ -3497,7 +3848,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            ...products.map((p) => _buildProductCard(p)).toList(),
+            // ✅ PATCH D1: Give every list item a stable key
+            ...products.map((p) {
+              final id = p.id.toString();
+              return KeyedSubtree(
+                key: ValueKey(id),
+                child: _buildProductCard(p),
+              );
+            }).toList(),
           ],
         );
 
@@ -3536,11 +3894,19 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             .toList();
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: locationResults.map((l) => _buildLocationCard(l)).toList(),
+          // ✅ PATCH D1: Give every list item a stable key
+          children: locationResults.map((l) {
+            final id = l['title']?.toString() ?? l['name']?.toString() ?? UniqueKey().toString();
+            return KeyedSubtree(
+              key: ValueKey(id),
+              child: _buildLocationCard(l),
+            );
+          }).toList(),
         );
 
       case "places":
-        final placesResults = safeCards
+        // ✅ PATCH C3: Use preprocessed places (zero computation in build)
+        final places = _processedResult?["preprocessedPlaces"] ?? safeCards
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         return Column(
@@ -3555,7 +3921,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            ...placesResults.map((p) => _buildPlaceCard(p)).toList(),
+            // ✅ PATCH D1: Give every list item a stable key
+            ...(places as List).map((p) {
+              final id = p['name']?.toString() ?? p['title']?.toString() ?? UniqueKey().toString();
+              return KeyedSubtree(
+                key: ValueKey(id),
+                child: _buildPlaceCard(p),
+              );
+            }).toList(),
           ],
         );
 
@@ -3649,7 +4022,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       itemBuilder: (context, index) {
         return Column(
           children: [
-            _buildHotelCard(session.hotelResults[index]),
+            // ✅ PATCH D1: Give every list item a stable key
+            KeyedSubtree(
+              key: ValueKey(session.hotelResults[index]['id']?.toString() ?? session.hotelResults[index]['name']?.toString() ?? 'hotel-$index'),
+              child: _buildHotelCard(session.hotelResults[index]),
+            ),
             if (index < session.hotelResults.length - 1) const SizedBox(height: 20),
           ],
         );
@@ -3668,7 +4045,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     final hasRating = product.rating > 0;
 
     // Debug: Log image count
-    print('🖼️ Product: ${product.title} - Images: ${validImages.length}');
+    // print('🖼️ Product: ${product.title} - Images: ${validImages.length}');
     if (validImages.isNotEmpty) {
       print('   Image URLs: ${validImages.take(3).join(", ")}${validImages.length > 3 ? "..." : ""}');
     }
@@ -3774,16 +4151,26 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           
           // 🔹 Description (Better typography) with Perplexity-style animation
           if (product.description.trim().isNotEmpty)
-            PerplexityTypingAnimation(
-              text: product.description,
-              isStreaming: false, // Product descriptions are pre-generated
-              textStyle: const TextStyle(
-                fontSize: 14,
-                color: AppColors.textSecondary, // Light grey for dark theme
-                height: 1.5,
-              ),
-              animationDuration: const Duration(milliseconds: 30),
-              wordsPerTick: 1,
+            Builder(
+              builder: (context) {
+                final animKey = 'product-desc-${product.id}';
+                final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                return PerplexityTypingAnimation(
+                  text: product.description,
+                  isStreaming: false, // Product descriptions are pre-generated
+                  animate: shouldAnimate,
+                  onAnimationComplete: () {
+                    _hasAnimated[animKey] = true;
+                  },
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary, // Light grey for dark theme
+                    height: 1.5,
+                  ),
+                  animationDuration: const Duration(milliseconds: 30),
+                  wordsPerTick: 1,
+                );
+              },
             )
           else
             const Text(
@@ -3844,6 +4231,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         url,
         height: height,
         width: double.infinity,
+        gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
         fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
         errorBuilder: (_, __, ___) => _buildNoImagePlaceholder(height: height),
         loadingBuilder: (context, child, loadingProgress) {
@@ -3943,6 +4331,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       child: Image.network(
         url,
         fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
+        gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
         errorBuilder: (_, __, ___) => Container(
           color: Colors.grey.shade200,
           child: const Icon(Icons.image_not_supported, color: Colors.grey),
@@ -4473,9 +4862,15 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 future: _getHotelSummary(safeHotel),
                 builder: (context, snapshot) {
                   final summary = snapshot.data ?? 'A modern property offering comfortable accommodations.';
+                  final animKey = 'hotel-summary-${safeHotel['name']}';
+                  final shouldAnimate = !_hasAnimated.containsKey(animKey);
                   return PerplexityTypingAnimation(
                     text: summary,
                     isStreaming: false, // Hotel descriptions are pre-generated
+                    animate: shouldAnimate,
+                    onAnimationComplete: () {
+                      _hasAnimated[animKey] = true;
+                    },
                     textStyle: TextStyle(
                       fontSize: 14, // Smaller, more compact text
                       color: AppColors.textPrimary.withOpacity(0.8), // Brighter for better visibility
@@ -4539,6 +4934,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       child: SizedBox(
         height: 160,
         child: PageView.builder(
+          physics: const ClampingScrollPhysics(),
           itemCount: pageCount,
           itemBuilder: (context, pageIndex) {
             // Get images for this page (2 images per page)
@@ -5080,10 +5476,20 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     );
   }
 
-  // ✅ NEW: Trigger background parsing (called once, uses global flag)
+  // ✅ PATCH 4: Trigger background parsing (uses session-based flags)
   void _triggerBackgroundParsing(QuerySession session) {
-    if (_globalParsingTriggered) return;
-    _globalParsingTriggered = true;
+    if (session.cachedParsing != null) return;
+    if (session.isParsing == true) return;
+
+    // Find session index and mark as parsing
+    final index = conversationHistory.indexWhere((s) => s.query == session.query);
+    if (index == -1) return;
+    
+    setState(() {
+      conversationHistory[index] = conversationHistory[index].copyWith(
+        isParsing: true, // ✅ PATCH 4: Mark as parsing
+      );
+    });
 
     final input = ParsingInput(
       answerText: session.summary ?? "",
@@ -5095,16 +5501,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       if (!mounted) return;
 
       // find session index
-      final index = conversationHistory.indexWhere((s) => s.query == session.query);
-      if (index == -1) return;
+      final idx = conversationHistory.indexWhere((s) => s.query == session.query);
+      if (idx == -1) return;
 
       setState(() {
-        conversationHistory[index] =
-            conversationHistory[index].copyWith(cachedParsing: parsed);
+        conversationHistory[idx] =
+            conversationHistory[idx].copyWith(
+              cachedParsing: parsed,
+              isParsing: false, // ✅ PATCH 4: Mark parsing as complete
+            );
       });
-
-      // allow next messages to parse
-      _globalParsingTriggered = false;
     });
   }
   
@@ -5120,10 +5526,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     
     // 2) Briefing text with animation
     if (parsed.briefingText.isNotEmpty) {
+      // ✅ PATCH B3: Freeze-proof answer rendering
+      final shouldAnimate = session.isStreaming && !_hasAnimated.containsKey("main-answer");
       widgets.add(
         PerplexityTypingAnimation(
           text: parsed.briefingText,
           isStreaming: session.isStreaming,
+          animate: shouldAnimate,
+          onAnimationComplete: () {
+            _hasAnimated["main-answer"] = true;
+          },
           textStyle: const TextStyle(
             fontSize: 16,
             height: 1.6,
@@ -5138,10 +5550,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     
     // 3) Valid place names with animation
     if (parsed.placeNamesText.isNotEmpty) {
+      final animKey = 'answer-${session.query.hashCode}-places';
+      final shouldAnimate = !_hasAnimated.containsKey(animKey);
       widgets.add(
         PerplexityTypingAnimation(
           text: 'Top places to visit include: ${parsed.placeNamesText}.',
           isStreaming: session.isStreaming,
+          animate: shouldAnimate,
+          onAnimationComplete: () {
+            _hasAnimated[animKey] = true;
+          },
           textStyle: const TextStyle(
             fontSize: 16,
             height: 1.6,
@@ -5161,19 +5579,25 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       final location = segment['location'] as Map<String, dynamic>?;
       
       if (text.isNotEmpty) {
+        final animKey = 'answer-${session.query.hashCode}-segment-$i';
+        final shouldAnimate = !_hasAnimated.containsKey(animKey);
         widgets.add(
           PerplexityTypingAnimation(
             text: text,
             isStreaming: session.isStreaming,
+            animate: shouldAnimate,
+            onAnimationComplete: () {
+              _hasAnimated[animKey] = true;
+            },
             textStyle: const TextStyle(
               fontSize: 16,
               height: 1.6,
               color: AppColors.textPrimary,
             ),
-            animationDuration: const Duration(milliseconds: 30),
-            wordsPerTick: 1,
-          ),
-        );
+          animationDuration: const Duration(milliseconds: 30),
+          wordsPerTick: 1,
+        ),
+      );
         widgets.add(const SizedBox(height: 16));
       }
       
@@ -5380,6 +5804,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         SizedBox(
           height: MediaQuery.of(context).size.width / 2, // Half screen width = square images
           child: PageView.builder(
+          physics: const ClampingScrollPhysics(),
             itemCount: (images.length / 2).ceil(), // Number of pages (2 images per page)
             itemBuilder: (context, pageIndex) {
               final startIndex = pageIndex * 2;
@@ -5454,8 +5879,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     );
   }
   
-  // Build Images button for places queries
-  Widget _buildImagesButton(dynamic session) {
+  // Build Bookable experiences button for places queries
+  Widget _buildBookableExperiencesButton(dynamic session) {
     // Collect all images from all places
     List<String> allImages = [];
     
@@ -5515,13 +5940,13 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(
-                Icons.image,
+                Icons.local_activity,
                 size: 14,
                 color: AppColors.textSecondary,
               ),
               const SizedBox(width: 4),
               Text(
-                'Images',
+                'Bookable experiences',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
@@ -5549,6 +5974,73 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   }
 
   // Helper to build map for place card
+  // Build swipeable image carousel for place photos
+  Widget _buildPlaceImageCarousel(List<String> images, String placeName, int startIndex) {
+    if (images.isEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          color: Colors.grey.shade200,
+          child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+        ),
+      );
+    }
+    
+    // Calculate how many images to show (2 per page, starting from startIndex)
+    final imagesToShow = <String>[];
+    for (int i = startIndex; i < images.length; i += 2) {
+      imagesToShow.add(images[i]);
+    }
+    
+    if (imagesToShow.isEmpty) {
+      // If no images at this offset, show placeholder
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          color: Colors.grey.shade200,
+          child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+        ),
+      );
+    }
+    
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: PageView.builder(
+        itemCount: imagesToShow.length,
+        itemBuilder: (context, index) {
+          final imageUrl = imagesToShow[index];
+          if (imageUrl.isEmpty) {
+            return Container(
+              color: Colors.grey.shade200,
+              child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+            );
+          }
+          
+          return CachedNetworkImage(
+            imageUrl: imageUrl,
+            fit: BoxFit.cover,
+            placeholder: (context, url) => Container(
+              color: Colors.grey.shade200,
+              child: Center(
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.accent,
+                ),
+              ),
+            ),
+            errorWidget: (context, url, error) {
+              print('❌ Image load error for $placeName: $error');
+              return Container(
+                color: Colors.grey.shade200,
+                child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildPlaceMap(Map<String, dynamic> place, dynamic geo, String location, String name) {
     // Extract coordinates
     double? lat;
@@ -5596,7 +6088,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     } else if (addressForGeocoding != null) {
       print('📍 Place map: $name - Will geocode address: $addressForGeocoding');
     } else {
-      print('⚠️ Place map: $name - No coordinates or address available');
+      // print('⚠️ Place map: $name - No coordinates or address available');
     }
     
     return GoogleMapWidget(
@@ -5610,28 +6102,68 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     );
   }
 
-  // 🎯 Build Place Card (Perplexity-style: title+rating, image+map side-by-side, description, action buttons)
+  // 🎯 Build Place Card (Perplexity-style: title+rating, swipeable images side-by-side, description, action buttons)
   Widget _buildPlaceCard(Map<String, dynamic> place) {
     final name = place['name']?.toString() ?? place['title']?.toString() ?? 'Unknown Place';
     final description = place['description']?.toString() ?? '';
     final rating = place['rating']?.toString() ?? '';
     final reviews = place['reviews']?.toString() ?? '';
     final location = place['location']?.toString() ?? place['address']?.toString() ?? '';
-    final imageUrl = place['image_url']?.toString() ?? place['image']?.toString() ?? place['thumbnail']?.toString() ?? '';
     final website = place['website']?.toString() ?? place['link']?.toString() ?? '';
     final phone = place['phone']?.toString() ?? '';
     final geo = place['geo'];
     
-    // ✅ DEBUG: Log place data to verify backend enrichment
-    print('🏛️ Place Card Data:');
-    print('   Name: $name');
-    print('   Location: $location');
-    print('   Has geo: ${geo != null}');
-    print('   Geo: $geo');
-    print('   Has image_url: ${imageUrl.isNotEmpty}');
-    print('   Image URL: ${imageUrl.isNotEmpty ? (imageUrl.length > 50 ? imageUrl.substring(0, 50) + "..." : imageUrl) : "EMPTY"}');
+    // Collect all available images for this place
+    List<String> allImages = [];
     
-    // Build map URL from GPS coordinates or address
+    // ✅ FIX: Prioritize images array from backend (contains all photos)
+    // Add images from images array first (backend provides all photos here)
+    if (place['images'] != null && place['images'] is List) {
+      // print('🖼️ Place "$name": Found images array with ${(place['images'] as List).length} items');
+      for (var img in place['images']) {
+        final imgStr = img?.toString() ?? '';
+        if (imgStr.isNotEmpty && imgStr.startsWith('http') && !allImages.contains(imgStr)) {
+          allImages.add(imgStr);
+        }
+      }
+      print('   Added ${allImages.length} images from images array');
+    }
+    
+    // Add images from photos array (alternative source)
+    if (place['photos'] != null && place['photos'] is List) {
+      // print('🖼️ Place "$name": Found photos array with ${(place['photos'] as List).length} items');
+      for (var photo in place['photos']) {
+        final photoStr = photo?.toString() ?? '';
+        if (photoStr.isNotEmpty && photoStr.startsWith('http') && !allImages.contains(photoStr)) {
+          allImages.add(photoStr);
+        }
+      }
+      print('   Total images after photos array: ${allImages.length}');
+    }
+    
+    // Add primary image (always include it, even if we have images array)
+    final imageUrl = place['image_url']?.toString() ?? place['image']?.toString() ?? place['thumbnail']?.toString() ?? '';
+    if (imageUrl.isNotEmpty && imageUrl.startsWith('http')) {
+      if (!allImages.contains(imageUrl)) {
+        // Add as first image if it's not already in the list
+        allImages.insert(0, imageUrl);
+        print('   Added primary image_url as first image');
+      }
+    }
+    
+    // ✅ DEBUG: Log final image count and URLs
+    // print('🖼️ Place "$name" - Final image count: ${allImages.length}');
+    for (int i = 0; i < allImages.length && i < 5; i++) {
+      print('   Image ${i + 1}: ${allImages[i].length > 60 ? allImages[i].substring(0, 60) + "..." : allImages[i]}');
+    }
+    
+    // If still no images, add placeholder
+    if (allImages.isEmpty) {
+      // print('⚠️ Place "$name" has no images, adding placeholder');
+      allImages.add(''); // Placeholder
+    }
+    
+    // Build map URL from GPS coordinates or address (for Directions button)
     String? mapUrl;
     if (geo != null && geo is Map) {
       final lat = geo['latitude'] ?? geo['lat'];
@@ -5699,78 +6231,94 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           
           const SizedBox(height: 12),
           
-          // Image and map side-by-side (equal squares, Perplexity-style)
-          Row(
-            children: [
-              // Image (square)
-              Expanded(
-                child: AspectRatio(
-                  aspectRatio: 1.0,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: imageUrl.isNotEmpty
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: CachedNetworkImage(
-                              imageUrl: imageUrl,
-                              fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
-                              placeholder: (context, url) => Container(
-                                color: Colors.grey.shade200,
-                                child: Center(
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.accent,
+          // Swipeable images side-by-side (equal squares, Perplexity-style)
+          SizedBox(
+            height: MediaQuery.of(context).size.width / 2 - 4, // Half screen width minus spacing = square images
+            child: PageView.builder(
+              physics: const ClampingScrollPhysics(), // ✅ PATCH 5: Prevent nested scroll freeze
+              scrollDirection: Axis.horizontal, // ✅ FIX: Horizontal scrolling
+              itemCount: (allImages.length / 2).ceil(), // Number of pages (2 images per page)
+              itemBuilder: (context, pageIndex) {
+                final startIndex = pageIndex * 2;
+                final leftImage = startIndex < allImages.length ? allImages[startIndex] : '';
+                final rightImage = startIndex + 1 < allImages.length ? allImages[startIndex + 1] : '';
+                
+                return Row(
+                  children: [
+                    // Left image
+                    Expanded(
+                      child: AspectRatio(
+                        aspectRatio: 1.0,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: leftImage.isNotEmpty
+                              ? CachedNetworkImage(
+                                  imageUrl: leftImage,
+                                  fit: BoxFit.cover,
+                                  placeholder: (context, url) => Container(
+                                    color: Colors.grey.shade200,
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.accent,
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                              errorWidget: (context, url, error) {
-                                print('❌ Image load error for $name: $error');
-                                print('   Image URL: $url');
-                                return Container(
+                                  errorWidget: (context, url, error) {
+                                    return Container(
+                                      color: Colors.grey.shade200,
+                                      child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+                                    );
+                                  },
+                                )
+                              : Container(
                                   color: Colors.grey.shade200,
                                   child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
-                                );
-                              },
-                            ),
-                          )
-                        : Container(
-                            color: Colors.grey.shade200,
-                            child: const Icon(Icons.place, color: Colors.grey, size: 40),
-                          ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Map (square, same size as image)
-              Expanded(
-                child: AspectRatio(
-                  aspectRatio: 1.0,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: _buildPlaceMap(place, geo, location, name),
-                  ),
-                ),
-              ),
-            ],
+                                ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Right image
+                    Expanded(
+                      child: AspectRatio(
+                        aspectRatio: 1.0,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: rightImage.isNotEmpty
+                              ? CachedNetworkImage(
+                                  imageUrl: rightImage,
+                                  fit: BoxFit.cover,
+                                  placeholder: (context, url) => Container(
+                                    color: Colors.grey.shade200,
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.accent,
+                                      ),
+                                    ),
+                                  ),
+                                  errorWidget: (context, url, error) {
+                                    return Container(
+                                      color: Colors.grey.shade200,
+                                      child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+                                    );
+                                  },
+                                )
+                              : Container(
+                                  color: Colors.grey.shade200,
+                                  child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+                                ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
           
-          // ✅ FIX: Full description (Perplexity-style, no truncation) with animation
-          if (description.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            PerplexityTypingAnimation(
-              text: description,
-              isStreaming: false, // Place descriptions are pre-generated
-              textStyle: const TextStyle(
-                fontSize: 14,
-                color: AppColors.textPrimary,
-                height: 1.6, // Better line spacing for readability
-              ),
-              animationDuration: const Duration(milliseconds: 30),
-              wordsPerTick: 1,
-            ),
-          ],
-          
-          // Action buttons (Website, Directions, Call)
+          // ✅ FIX: Action buttons (Website, Directions, Call) - moved before description
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -5811,6 +6359,32 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 ),
             ],
           ),
+          
+          // ✅ FIX: Full description (Perplexity-style, no truncation) with animation - moved after action buttons
+          if (description.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Builder(
+              builder: (context) {
+                final animKey = 'place-desc-$name';
+                final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                return PerplexityTypingAnimation(
+                  text: description,
+                  isStreaming: false, // Place descriptions are pre-generated
+                  animate: shouldAnimate,
+                  onAnimationComplete: () {
+                    _hasAnimated[animKey] = true;
+                  },
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textPrimary,
+                    height: 1.6, // Better line spacing for readability
+                  ),
+                  animationDuration: const Duration(milliseconds: 30),
+                  wordsPerTick: 1,
+                );
+              },
+            ),
+          ],
         ],
       ),
     );
@@ -5885,6 +6459,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                       image,
                       width: double.infinity,
                       height: 200,
+                      gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                       fit: BoxFit.cover,
                       errorBuilder: (context, error, stackTrace) => Container(
                         height: 200,
@@ -6001,35 +6576,18 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
 
 
   Widget _buildLocationCard(Map<String, dynamic> location) {
-    final title = location['title']?.toString() ?? location['name']?.toString() ?? 'Unknown Location';
-    final rating = safeNumber(location['rating'], 0.0);
-    final reviews = location['reviews']?.toString() ?? '';
-    final address = location['address']?.toString() ?? '';
-    final thumbnail = location['thumbnail']?.toString() ?? '';
-    final link = location['link']?.toString() ?? '';
-    final phone = location['phone']?.toString() ?? '';
-    final gpsCoordinates = location['gps_coordinates'];
-    final images = (location['images'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [];
-    final description = location['description']?.toString() ?? location['snippet']?.toString() ?? ''; // Rich description from OpenAI
-    
-    // Build map URL from GPS coordinates or address
-    String? mapUrl;
-    if (gpsCoordinates != null && gpsCoordinates is Map) {
-      final lat = gpsCoordinates['latitude'];
-      final lng = gpsCoordinates['longitude'];
-      if (lat != null && lng != null) {
-        mapUrl = 'https://www.google.com/maps?q=$lat,$lng';
-      }
-    }
-    if (mapUrl == null && address.isNotEmpty) {
-      mapUrl = 'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}';
-    }
-    
-    // Use thumbnail or first image from images array, or placeholder
-    // Prioritize: thumbnail > first image from images array > null
-    final mainImage = thumbnail.isNotEmpty 
-        ? thumbnail 
-        : (images.isNotEmpty ? images[0] : null);
+    // ✅ PATCH C3: Use preprocessed data (already computed, zero work in build)
+    final title = location['title'] ?? 'Unknown Location';
+    final rating = location['rating'] ?? 0.0;
+    final reviews = location['reviews'] ?? '';
+    final address = location['address'] ?? '';
+    final thumbnail = location['thumbnail'] ?? '';
+    final link = location['link'] ?? '';
+    final phone = location['phone'] ?? '';
+    final images = (location['images'] as List?) ?? [];
+    final description = location['description'] ?? '';
+    final mapUrl = location['mapUrl'];
+    final mainImage = location['mainImage'];
     
     // Perplexity-style: Compact, clean card with title+rating on top, images, then buttons
     return Padding(
@@ -6110,6 +6668,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                             child: Image.network(
                               mainImage,
                               fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
+                              gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                               loadingBuilder: (context, child, loadingProgress) {
                                 if (loadingProgress == null) return child;
                                 return Container(
@@ -6267,16 +6826,26 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 0),
             child: description.isNotEmpty
-                ? PerplexityTypingAnimation(
-                    text: description,
-                    isStreaming: false, // Location descriptions are pre-generated
-                    textStyle: const TextStyle(
-                      fontSize: 15,
-                      height: 1.6,
-                      color: AppColors.textPrimary,
-                    ),
-                    animationDuration: const Duration(milliseconds: 30),
-                    wordsPerTick: 1,
+                ? Builder(
+                    builder: (context) {
+                      final animKey = 'location-desc-$title';
+                      final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                      return PerplexityTypingAnimation(
+                        text: description,
+                        isStreaming: false, // Location descriptions are pre-generated
+                        animate: shouldAnimate,
+                        onAnimationComplete: () {
+                          _hasAnimated[animKey] = true;
+                        },
+                        textStyle: const TextStyle(
+                          fontSize: 15,
+                          height: 1.6,
+                          color: AppColors.textPrimary,
+                        ),
+                        animationDuration: const Duration(milliseconds: 30),
+                        wordsPerTick: 1,
+                      );
+                    },
                   )
                 : const Text(
                     'No description available for this location.',
@@ -6315,8 +6884,13 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   controller: _followUpController,
                   focusNode: _followUpFocusNode,
                   onSubmitted: (value) => _onFollowUpSubmitted(),
+                // ✅ PATCH E4: Debounce follow-up TextField input (prevents 40+ rebuilds per second)
                 onChanged: (value) {
-                  print('Text changed: $value');
+                  if (_followUpDebounce?.isActive ?? false) _followUpDebounce!.cancel();
+                  _followUpDebounce = Timer(const Duration(milliseconds: 120), () {
+                    // Handle input (currently just logging, but can add validation/formatting here)
+                    print('Text changed: $value');
+                  });
                 },
                 onTap: () {
                   _followUpFocusNode.requestFocus();
@@ -6456,8 +7030,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 child: Image.network(
                   product.images[0],
                   fit: BoxFit.cover,
+                  gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                   loadingBuilder: (context, child, loadingProgress) {
-                  print('Loading image: ${product.images[0]}');
+                  // print('Loading image: ${product.images[0]}');
                     if (loadingProgress == null) {
                       return AnimatedOpacity(
                         opacity: 1.0,
@@ -6478,8 +7053,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                     );
                   },
                   errorBuilder: (context, error, stackTrace) {
-                    print('Image loading error: $error');
-                    print('Image URL: ${product.images[0]}');
+                    // print('Image loading error: $error');
+                    // print('Image URL: ${product.images[0]}');
                     return Container(
                       color: AppColors.surfaceVariant,
                       child: Center(
@@ -6526,6 +7101,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                       child: Image.network(
                         product.images[1],
                         fit: BoxFit.cover,
+                        gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                         loadingBuilder: (context, child, loadingProgress) {
                           if (loadingProgress == null) {
                             return AnimatedOpacity(
@@ -6547,8 +7123,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                           );
                         },
                         errorBuilder: (context, error, stackTrace) {
-                          print('Image loading error: $error');
-                          print('Image URL: ${product.images[1]}');
+                          // print('Image loading error: $error');
+                          // print('Image URL: ${product.images[1]}');
                           return Container(
                             color: AppColors.surfaceVariant,
                             child: Center(
@@ -6738,6 +7314,7 @@ class _ImageFullscreenViewState extends State<_ImageFullscreenView> {
               child: Image.network(
                 widget.images[index],
                 fit: BoxFit.contain,
+                gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                 errorBuilder: (context, error, stackTrace) {
                   return const Center(
                     child: Icon(

@@ -20,7 +20,7 @@ function getOpenAIClient(): OpenAI {
 /**
  * 🎯 Perplexity-Style Hotel Description Generator
  * 
- * Generates concise 2-3 sentence summaries exactly like Perplexity:
+ * Generates concise 1 sentence summaries exactly like Perplexity:
  * - Uses hotel's reviews, amenities, location, and unique features
  * - Highlights what guests appreciate most
  * - Mentions what makes it stand out
@@ -68,11 +68,11 @@ export async function generateHotelDescription(
 
     const systemPrompt = `You are a travel guide writer creating concise hotel summaries for a search results page (similar to Perplexity's hotel descriptions).
 
-Your task: Write a concise 2-3 sentence summary of this hotel for a traveler.
+Your task: Write a concise 1 sentence summary of this hotel for a traveler.
 
 🎯 REQUIREMENTS:
 
-1. **Length**: Exactly 2-3 sentences (no more, no less)
+1. **Length**: Exactly 1 sentence (no more, no less)
 2. **Style**: Travel-guide style, natural, human-written tone
 3. **Content Sources**: Use the hotel's reviews, amenities, location, and unique features
 4. **Highlights**:
@@ -88,18 +88,16 @@ Your task: Write a concise 2-3 sentence summary of this hotel for a traveler.
 📌 WRITING GUIDELINES:
 
 - Start with the hotel's positioning (e.g., "A 4-star luxury hotel in...", "A midrange option...")
-- Mention standout features guests appreciate (from reviews)
-- Identify target audience (families, couples, business, etc.)
-- If reviews mention specific issues, you can lightly mention them but stay balanced
+- Mention standout features guests appreciate (from reviews) and target audience
 - Use natural, flowing sentences
 - Avoid bullet points or lists
 - Sound like a travel guide, not a sales pitch
 
 📌 EXAMPLE OUTPUTS:
 
-Good: "A 4-star luxury hotel in downtown Park City offering ski-in/ski-out access and world-class service. Guests consistently praise the spacious rooms, exceptional staff, and prime location near Main Street. Ideal for couples and families seeking a premium mountain resort experience."
+Good: "A 4-star luxury hotel in downtown Park City offering ski-in/ski-out access and world-class service, ideal for couples and families seeking a premium mountain resort experience."
 
-Good: "A well-rated midrange option in the heart of the city, known for its modern amenities and friendly service. Reviewers highlight the comfortable beds, complimentary breakfast, and convenient access to public transportation. Best suited for business travelers and budget-conscious families."
+Good: "A well-rated midrange option in the heart of the city, known for its modern amenities and friendly service, best suited for business travelers and budget-conscious families."
 
 Bad: "This amazing hotel is perfect for everyone! You'll love it!" (too generic, exaggerated)
 
@@ -122,7 +120,7 @@ ${metadata.value ? `**Value Rating**: ${metadata.value}/5` : ''}
 
 ${reviewTexts ? `**Guest Reviews (Top 50)**:\n${reviewTexts.substring(0, 3000)}` : '**Reviews**: Not available'}
 
-Write a concise 2-3 sentence summary following the guidelines.`;
+Write a concise 1 sentence summary following the guidelines.`;
 
     const client = getOpenAIClient();
     const response = await client.chat.completions.create({
@@ -132,7 +130,7 @@ Write a concise 2-3 sentence summary following the guidelines.`;
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      max_tokens: 200, // Limit to ensure 2-3 sentences
+      max_tokens: 100, // ✅ Reduced to enforce 1 sentence
     });
 
     const description = response.choices[0]?.message?.content?.trim() || '';

@@ -177,14 +177,14 @@ export class SerpApiProvider implements BaseProvider<ShoppingProduct> {
       tbs: "qdr:m", // ✅ FIX: Get results from past month (qdr:d=day, qdr:w=week, qdr:m=month, qdr:y=year)
     };
 
-    // ✅ Retry logic with exponential backoff for SerpAPI shopping (slower than hotels)
+    // ✅ OPTIMIZATION: Retry logic with minimal backoff for faster responses
     const maxRetries = 3;
     let lastError: any;
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        // Increase timeout on each retry: 20s, 30s, 40s
-        const timeout = 20000 + (attempt * 10000);
+        // ✅ OPTIMIZATION: Use consistent timeout (20s is sufficient)
+        const timeout = 20000;
         console.log(`🔍 SerpAPI shopping attempt ${attempt + 1}/${maxRetries} (timeout: ${timeout}ms)...`);
         
         const res = await axios.get(serpUrl, { params, timeout });
@@ -225,8 +225,8 @@ export class SerpApiProvider implements BaseProvider<ShoppingProduct> {
         const isTimeout = error.message?.includes("timeout") || error.code === "ECONNABORTED";
         
         if (isTimeout && attempt < maxRetries - 1) {
-          // Exponential backoff: 1s, 2s, 3s
-          const backoffDelay = (attempt + 1) * 1000;
+          // ✅ OPTIMIZATION: Reduced backoff delays (100ms, 200ms instead of 1s, 2s, 3s)
+          const backoffDelay = (attempt + 1) * 100;
           console.warn(`⚠️ SerpAPI timeout (attempt ${attempt + 1}), retrying in ${backoffDelay}ms...`);
           await new Promise(resolve => setTimeout(resolve, backoffDelay));
           continue;

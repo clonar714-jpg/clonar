@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
+import 'dart:convert';
 import 'dart:async';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../services/AgentService.dart';
+import '../core/api_client.dart';
 import 'ShoppingResultsScreen.dart';
 import 'TravelScreen.dart';
 
@@ -27,16 +31,23 @@ class _ShopScreenState extends State<ShopScreen> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   final stt.SpeechToText _speech = stt.SpeechToText();
+  final ImagePicker _imagePicker = ImagePicker();
   bool _isVoiceModeActive = false; // Track voice mode state
   bool _hasText = false; // Track if text field has content
   bool _isListening = false; // Track if currently listening
   bool _isSpeechAvailable = false; // Track if speech recognition is available
   String _lastWords = ''; // Store last recognized words
+  bool _isWebSearchMode = false; // Track if web search mode is active
+  String? _uploadedImageUrl; // ✅ Store uploaded image URL in state
   
   // Autocomplete suggestions
   List<String> _suggestions = [];
   bool _isLoadingSuggestions = false;
   Timer? _debounceTimer;
+  
+  // ✅ FIX 1: Flags to prevent recursion & rebuild storm
+  bool _isProgrammaticUpdate = false;
+  bool _isSuggestionRequestOngoing = false;
 
   @override
   void initState() {
@@ -46,15 +57,29 @@ class _ShopScreenState extends State<ShopScreen> {
       _searchController.text = widget.preloadedQuery!;
       _hasText = widget.preloadedQuery!.isNotEmpty;
     }
-    // Listen to text changes
+    // Pre-load image URL if provided
+    if (widget.imageUrl != null) {
+      _uploadedImageUrl = widget.imageUrl;
+    }
+    // ✅ FIX 2: Modified listener to STOP firing during speech + rapid typing
     _searchController.addListener(() {
-      setState(() {
-        _hasText = _searchController.text.trim().isNotEmpty;
-      });
-      // Debounce autocomplete requests
+      if (_isProgrammaticUpdate) return; // ⛔ prevents infinite loops
+      
+      final text = _searchController.text.trim();
+      final hasTextNow = text.isNotEmpty;
+      
+      if (_hasText != hasTextNow) {
+        setState(() {
+          _hasText = hasTextNow;
+        });
+      }
+      
+      // Debounce autocomplete
       _debounceTimer?.cancel();
       _debounceTimer = Timer(const Duration(milliseconds: 300), () {
-        _fetchSuggestions(_searchController.text);
+        if (mounted && !_isSuggestionRequestOngoing && text.length >= 2) {
+          _fetchSuggestions(text);
+        }
       });
     });
     // Listen to focus changes
@@ -80,7 +105,10 @@ class _ShopScreenState extends State<ShopScreen> {
           if (status == 'done' || status == 'notListening') {
             // When speech recognition stops, update the text field
             if (_lastWords.isNotEmpty && _isVoiceModeActive) {
+              // ✅ FIX 4: Prevent speech-to-text from refiring listener infinitely
+              _isProgrammaticUpdate = true;
               _searchController.text = _lastWords;
+              _isProgrammaticUpdate = false;
               _lastWords = '';
             }
           }
@@ -145,24 +173,28 @@ class _ShopScreenState extends State<ShopScreen> {
     super.dispose();
   }
 
+  // ✅ FIX 3: Modified _fetchSuggestions() to avoid UI jank & duplicate calls
   Future<void> _fetchSuggestions(String query) async {
-    if (query.trim().length < 2) {
-      setState(() {
-        _suggestions = [];
-      });
-      return;
-    }
-
-    setState(() {
-      _isLoadingSuggestions = true;
-    });
-
+    if (query.trim().length < 2) return;
+    
+    // ⛔ Prevent multiple API calls at once
+    if (_isSuggestionRequestOngoing) return;
+    _isSuggestionRequestOngoing = true;
+    
     try {
-      final suggestions = await AgentService.getAutocompleteSuggestions(query);
-      if (mounted) {
+      setState(() {
+        _isLoadingSuggestions = true;
+      });
+      
+      final results = await AgentService.getAutocompleteSuggestions(query)
+          .timeout(const Duration(seconds: 4), onTimeout: () => []);
+      
+      if (!mounted) return;
+      
+      // Only update UI if suggestions still match current query
+      if (_searchController.text.trim() == query.trim()) {
         setState(() {
-          _suggestions = suggestions;
-          _isLoadingSuggestions = false;
+          _suggestions = results.take(8).toList(); // Limit results ⛑️ prevents heavy rebuild
         });
       }
     } catch (e) {
@@ -170,9 +202,15 @@ class _ShopScreenState extends State<ShopScreen> {
       if (mounted) {
         setState(() {
           _suggestions = [];
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
           _isLoadingSuggestions = false;
         });
       }
+      _isSuggestionRequestOngoing = false;
     }
   }
 
@@ -232,11 +270,17 @@ class _ShopScreenState extends State<ShopScreen> {
             _lastWords = result.recognizedWords;
             // Update text field in real-time with partial results
             if (result.recognizedWords.isNotEmpty) {
+              // ✅ FIX 4: Prevent speech-to-text from refiring listener infinitely
+              _isProgrammaticUpdate = true;
               _searchController.text = result.recognizedWords;
+              _isProgrammaticUpdate = false;
             }
             if (result.finalResult) {
               // When final result is received, ensure text is set
+              // ✅ FIX 4: Prevent speech-to-text from refiring listener infinitely
+              _isProgrammaticUpdate = true;
               _searchController.text = result.recognizedWords;
+              _isProgrammaticUpdate = false;
               _isListening = false;
               // If voice mode is active, keep it active for continuous listening
               if (!_isVoiceModeActive) {
@@ -297,6 +341,258 @@ class _ShopScreenState extends State<ShopScreen> {
     }
   }
 
+  // ✅ Show plus menu (Take photo, Add photos & files, Web search)
+  void _showPlusMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade600,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Menu options
+            _buildMenuOption(
+              icon: Icons.camera_alt,
+              label: 'Take photo',
+              onTap: () {
+                Navigator.pop(context);
+                _handleTakePhoto();
+              },
+            ),
+            _buildMenuOption(
+              icon: Icons.attach_file,
+              label: 'Add photos & files',
+              onTap: () {
+                Navigator.pop(context);
+                _handleAddPhotosAndFiles();
+              },
+            ),
+            _buildMenuOption(
+              icon: Icons.language,
+              label: 'Web search',
+              onTap: () {
+                Navigator.pop(context);
+                _handleWebSearch();
+              },
+              isSelected: _isWebSearchMode,
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Helper to build menu option
+  Widget _buildMenuOption({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool isSelected = false,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              color: isSelected ? AppColors.primary : AppColors.iconPrimary,
+              size: 24,
+            ),
+            const SizedBox(width: 16),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 16,
+                color: isSelected ? AppColors.primary : AppColors.textPrimary,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+            const Spacer(),
+            if (isSelected)
+              Icon(
+                Icons.check,
+                color: AppColors.primary,
+                size: 20,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Handle "Take photo" option
+  Future<void> _handleTakePhoto() async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1920,
+        maxHeight: 1080,
+        imageQuality: 85,
+      );
+      
+      if (image != null) {
+        await _processImageForSearch(File(image.path), 'Camera photo');
+      }
+    } catch (e) {
+      print('❌ Error taking photo: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to take photo. Please check camera permissions.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Handle "Add photos & files" option
+  Future<void> _handleAddPhotosAndFiles() async {
+    try {
+      final List<XFile>? images = await _imagePicker.pickMultiImage(
+        maxWidth: 1920,
+        maxHeight: 1080,
+        imageQuality: 85,
+      );
+      
+      if (images != null && images.isNotEmpty) {
+        // Process the first image for search (you can extend this to handle multiple)
+        await _processImageForSearch(File(images[0].path), 'Gallery photo');
+        
+        if (images.length > 1 && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Using first image. ${images.length - 1} more image(s) selected.'),
+              backgroundColor: AppColors.primary,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Error selecting photos: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to select photos. Please check permissions.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // ✅ Process image: Upload and perform image search
+  Future<void> _processImageForSearch(File imageFile, String source) async {
+    if (!mounted) return;
+    
+    // Show loading indicator
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+    
+    try {
+      print('📤 Uploading image from $source: ${imageFile.path}');
+      
+      // Step 1: Upload image to get URL
+      final uploadResponse = await ApiClient.upload('/upload/single', imageFile, 'image');
+      final uploadBody = await uploadResponse.stream.bytesToString();
+      
+      if (uploadResponse.statusCode != 200) {
+        throw Exception('Image upload failed: ${uploadResponse.statusCode}');
+      }
+      
+      final uploadData = jsonDecode(uploadBody);
+      final imageUrl = uploadData['url'] as String?;
+      
+      if (imageUrl == null || imageUrl.isEmpty) {
+        throw Exception('No image URL returned from upload');
+      }
+      
+      print('✅ Image uploaded successfully: $imageUrl');
+      
+      // Close loading dialog
+      if (mounted) Navigator.pop(context);
+      
+      // ✅ Store image URL in state and show preview (don't navigate yet)
+      // ✅ FIX: Clear previous image URL first to ensure fresh search
+      if (mounted) {
+        setState(() {
+          _uploadedImageUrl = null; // Clear old image first
+        });
+        // Set new image URL in next frame to ensure state is cleared
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              _uploadedImageUrl = imageUrl;
+            });
+          }
+        });
+        // Note: No success message - image preview in search bar is sufficient feedback
+      }
+    } catch (e) {
+      print('❌ Error processing image: $e');
+      
+      // Close loading dialog
+      if (mounted) Navigator.pop(context);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to process image: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // Handle "Web search" option
+  void _handleWebSearch() {
+    setState(() {
+      _isWebSearchMode = !_isWebSearchMode;
+    });
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _isWebSearchMode 
+              ? 'Web search mode enabled' 
+              : 'Web search mode disabled'
+          ),
+          backgroundColor: AppColors.primary,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+    
+    print('🌐 Web search mode: ${_isWebSearchMode ? "ON" : "OFF"}');
+    // TODO: Use _isWebSearchMode flag when submitting search to enable web search
+  }
+
   void _onSearchSubmitted() {
     final query = _searchController.text.trim();
     print('ShopScreen submitting query: "$query"');
@@ -305,17 +601,97 @@ class _ShopScreenState extends State<ShopScreen> {
     setState(() {
       _suggestions = []; // Clear suggestions when submitting
     });
-    if (query.isNotEmpty) {
+    
+    // ✅ Only navigate if there's a query OR an image
+    if (query.isNotEmpty || _uploadedImageUrl != null) {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => ShoppingResultsScreen(query: query),
+          builder: (context) => ShoppingResultsScreen(
+            query: query.isNotEmpty ? query : 'Find similar items',
+            imageUrl: _uploadedImageUrl, // ✅ Pass uploaded image URL
+          ),
         ),
       ).then((_) {
-        // Clear search text when returning from ShoppingResultsScreen
+        // Clear search text and image when returning from ShoppingResultsScreen
         _searchController.clear();
+        setState(() {
+          _uploadedImageUrl = null;
+        });
       });
     }
+  }
+
+  // ✅ Remove uploaded image
+  void _removeImage() {
+    setState(() {
+      _uploadedImageUrl = null;
+    });
+  }
+
+  // ✅ Build image preview (ChatGPT style)
+  Widget _buildImagePreview() {
+    final imageUrl = _uploadedImageUrl ?? widget.imageUrl;
+    if (imageUrl == null) return const SizedBox.shrink();
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Stack(
+        children: [
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: AppColors.border.withOpacity(0.3),
+                width: 1,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(7),
+              child: Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => Container(
+                  color: AppColors.surfaceVariant,
+                  child: const Icon(
+                    Icons.image_not_supported,
+                    color: AppColors.textSecondary,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Remove button (X) in top-right corner
+          Positioned(
+            top: -4,
+            right: -4,
+            child: GestureDetector(
+              onTap: _removeImage,
+              child: Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: AppColors.border,
+                    width: 1,
+                  ),
+                ),
+                child: const Icon(
+                  Icons.close,
+                  size: 14,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildSuggestionsList() {
@@ -527,6 +903,10 @@ class _ShopScreenState extends State<ShopScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              // ✅ Image Preview (if uploaded) - ChatGPT style
+              if (_uploadedImageUrl != null || widget.imageUrl != null)
+                _buildImagePreview(),
+              
               // Top Layer: Text Field (Enter here) + Send Button (rightmost)
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -569,13 +949,15 @@ class _ShopScreenState extends State<ShopScreen> {
               
                   // Send Button (rightmost in same layer as text field)
               GestureDetector(
-                onTap: _onSearchSubmitted,
+                onTap: (_hasText || _uploadedImageUrl != null || widget.imageUrl != null) 
+                    ? _onSearchSubmitted 
+                    : null,
                 child: Container(
                       width: 28,
                       height: 28,
                   decoration: BoxDecoration(
-                        color: _hasText 
-                          ? AppColors.primary // Blue when there's text
+                        color: (_hasText || _uploadedImageUrl != null || widget.imageUrl != null)
+                          ? AppColors.primary // Blue when there's text or image
                           : AppColors.surfaceVariant, // Grey when empty
                         borderRadius: BorderRadius.circular(7),
                   ),
@@ -599,42 +981,45 @@ class _ShopScreenState extends State<ShopScreen> {
                   // Left: Plus and Search icons
                   Row(
                     children: [
-                      // Plus icon
-                      widget.imageUrl != null
-                          ? Container(
-                              width: 20,
-                              height: 20,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(4),
-                                border: Border.all(color: AppColors.primary, width: 1.5),
-                              ),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(3),
-                                child: Image.network(
-                                  widget.imageUrl!,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) => const Icon(
-                                    Icons.image,
-                                    color: AppColors.iconPrimary,
-                                    size: 14,
+                      // Plus icon - clickable (show image preview if uploaded)
+                      GestureDetector(
+                        onTap: _showPlusMenu,
+                        child: (_uploadedImageUrl != null || widget.imageUrl != null)
+                            ? Container(
+                                width: 20,
+                                height: 20,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: AppColors.primary, width: 1.5),
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(3),
+                                  child: Image.network(
+                                    _uploadedImageUrl ?? widget.imageUrl!,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) => const Icon(
+                                      Icons.image,
+                                      color: AppColors.iconPrimary,
+                                      size: 14,
+                                    ),
                                   ),
                                 ),
+                              )
+                            : const Icon(
+                                Icons.add,
+                                color: AppColors.iconPrimary,
+                                size: 20,
                               ),
-                            )
-                          : const Icon(
-                              Icons.add,
-                              color: AppColors.iconPrimary,
-                              size: 20,
-                            ),
+                      ),
                       
                       const SizedBox(width: 12),
                       
-                      // Search icon
-                      const Icon(
-                        Icons.search,
-                        color: AppColors.iconPrimary,
-                    size: 20,
-                  ),
+                      // Search icon - shows web search state
+                      Icon(
+                        _isWebSearchMode ? Icons.language : Icons.search,
+                        color: _isWebSearchMode ? AppColors.primary : AppColors.iconPrimary,
+                        size: 20,
+                      ),
                     ],
                 ),
                   

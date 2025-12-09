@@ -18,22 +18,55 @@ export async function rerankFollowUps(
   }
 
   try {
-    // Get query embedding once
-    const qEmb = await getEmbedding(query);
+    // ✅ FIX: Get query embedding once with retry logic
+    let qEmb;
+    try {
+      qEmb = await getEmbedding(query);
+    } catch (err: any) {
+      console.error("❌ Failed to get query embedding:", err.message);
+      // Fallback: return first N candidates without reranking
+      return candidates.slice(0, topN);
+    }
 
-    // Score each candidate
-    const scored = await Promise.all(
-      candidates.map(async (candidate) => {
-        if (!candidate || candidate.trim().length === 0) {
-          return { candidate, score: -1 };
+    // ✅ FIX: Score candidates with error handling and rate limit protection
+    // Process in smaller batches to avoid overwhelming the API
+    const BATCH_SIZE = 5;
+    const scored: Array<{ candidate: string; score: number }> = [];
+    
+    for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+      const batch = candidates.slice(i, i + BATCH_SIZE);
+      
+      const batchResults = await Promise.allSettled(
+        batch.map(async (candidate) => {
+          if (!candidate || candidate.trim().length === 0) {
+            return { candidate, score: -1 };
+          }
+
+          try {
+            const candidateEmb = await getEmbedding(candidate);
+            const similarity = cosine(qEmb, candidateEmb);
+            return { candidate, score: similarity };
+          } catch (err: any) {
+            console.warn(`⚠️ Failed to get embedding for candidate "${candidate.substring(0, 30)}...":`, err.message);
+            return { candidate, score: -1 };
+          }
+        })
+      );
+      
+      // Extract successful results
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          scored.push(result.value);
+        } else {
+          console.warn("⚠️ Candidate scoring failed:", result.reason);
         }
-
-        const candidateEmb = await getEmbedding(candidate);
-        const similarity = cosine(qEmb, candidateEmb);
-
-        return { candidate, score: similarity };
-      })
-    );
+      }
+      
+      // ✅ FIX: Small delay between batches to avoid rate limits
+      if (i + BATCH_SIZE < candidates.length) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+      }
+    }
 
     // Sort by score (highest first) and return top N
     const ranked = scored

@@ -21,6 +21,10 @@ late final SharedPreferences _prefs;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // ✅ PATCH E1: Add image cache size limits (prevents RAM overflow and UI blocking)
+  PaintingBinding.instance.imageCache.maximumSize = 100; // default 1000+ (too big)
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 50 << 20; // 50 MB
+  
   // ✅ Perplexity-style: Initialize persistent cache
   await CacheService.initialize();
   await CacheService.cleanExpired(); // Clean expired entries on startup

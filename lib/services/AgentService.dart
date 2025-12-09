@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'CacheService.dart';
@@ -54,6 +55,12 @@ class AgentService {
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'query': query}),
+      ).timeout(
+        const Duration(seconds: 5), // 5 second timeout for autocomplete
+        onTimeout: () {
+          print('⏱️ Autocomplete timeout after 5 seconds');
+          throw TimeoutException('Autocomplete timeout');
+        },
       );
 
       if (response.statusCode == 200) {
@@ -64,6 +71,9 @@ class AgentService {
         print('❌ Autocomplete API error: ${response.statusCode}');
         return [];
       }
+    } on TimeoutException {
+      print('⏱️ Autocomplete request timed out');
+      return [];
     } catch (e) {
       print('❌ Error fetching autocomplete suggestions: $e');
       return [];
@@ -83,6 +93,12 @@ class AgentService {
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'query': query}),
+      ).timeout(
+        const Duration(seconds: 5), // 5 second timeout for location autocomplete
+        onTimeout: () {
+          print('⏱️ Location autocomplete timeout after 5 seconds');
+          throw TimeoutException('Location autocomplete timeout');
+        },
       );
 
       if (response.statusCode == 200) {
@@ -105,6 +121,9 @@ class AgentService {
         print('❌ Location Autocomplete API error: ${response.statusCode}');
         return [];
       }
+    } on TimeoutException {
+      print('⏱️ Location autocomplete request timed out');
+      return [];
     } catch (e) {
       print('❌ Error fetching location autocomplete: $e');
       return [];
@@ -307,6 +326,7 @@ class AgentService {
   /// [previousContext] - Optional context from previous session (intent, cardType, slots, sessionId)
   /// [lastFollowUp] - The last follow-up question that was clicked (for deduplication)
   /// [parentQuery] - The original query that generated the follow-ups
+  /// [imageUrl] - Optional image URL for image-based search
   static Future<Map<String, dynamic>> askAgent(
     String query, {
     bool stream = false,
@@ -314,6 +334,7 @@ class AgentService {
     Map<String, dynamic>? previousContext,
     String? lastFollowUp,
     String? parentQuery,
+    String? imageUrl, // ✅ NEW: Image URL for image search
     bool useCache = true, // ✅ Allow bypassing cache if needed
   }) async {
     // ✅ Perplexity-style persistent caching
@@ -368,6 +389,12 @@ class AgentService {
         "conversationHistory": conversationHistory ?? [],
       };
       
+      // ✅ NEW: Add imageUrl for image search
+      if (imageUrl != null && imageUrl.isNotEmpty) {
+        body['imageUrl'] = imageUrl;
+        print('🖼️ Sending image search with URL: $imageUrl');
+      }
+      
       // ✅ FOLLOW-UP PATCH: Add lastFollowUp and parentQuery
       if (lastFollowUp != null && lastFollowUp.isNotEmpty) {
         body['lastFollowUp'] = lastFollowUp;
@@ -401,7 +428,14 @@ class AgentService {
       
       request.body = jsonEncode(body);
 
-      final response = await request.send();
+      // ✅ Add timeout to prevent hanging (60 seconds max)
+      final response = await request.send().timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          print('⏱️ Request timeout after 60 seconds');
+          throw TimeoutException('Request timeout after 60 seconds');
+        },
+      );
 
     if (response.statusCode == 200) {
         if (stream && response.headers['content-type']?.contains('text/event-stream') == true) {
@@ -434,13 +468,39 @@ class AgentService {
         throw Exception(
             "Agent API failed: ${response.statusCode} $errorBody");
       }
+    } on TimeoutException catch (e) {
+      print('⏱️ Request timeout: $e');
+      // Return a safe fallback response instead of crashing
+      return {
+        'success': false,
+        'error': 'Request timeout',
+        'summary': 'The request took too long to complete. Please try again.',
+        'intent': 'answer',
+        'results': [],
+        'sources': [],
+      };
     } on SocketException catch (e) {
       print('⚠️ Connection error: $e');
-      throw Exception(
-          'Agent API connection failed: ${e.message} (Check if Node server is running on port 4000)');
+      // Return a safe fallback response instead of crashing
+      return {
+        'success': false,
+        'error': 'Connection failed',
+        'summary': 'Unable to connect to the server. Please try again.',
+        'intent': 'answer',
+        'results': [],
+        'sources': [],
+      };
     } catch (e) {
       print('⚠️ Unknown error calling Agent API: $e');
-      throw Exception('Unexpected error: $e');
+      // Return a safe fallback response instead of crashing
+      return {
+        'success': false,
+        'error': 'Request failed',
+        'summary': 'An error occurred while processing your request. Please try again.',
+        'intent': 'answer',
+        'results': [],
+        'sources': [],
+      };
   }
   }
 

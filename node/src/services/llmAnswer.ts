@@ -108,8 +108,8 @@ Produce clean, concise, factual answers using CURRENT, LIVE information from the
 FORMAT RULES:
 - NO markdown symbols like **, ##, *, >
 - NO code blocks
-- Short summary first (2–4 lines)
-- Then a simple bullet list (plain text only)
+- Short summary first (1–2 lines, MAX 50 words)
+- Then a simple bullet list (plain text only, MAX 3-4 bullets)
 - Include factual data
 - NEVER mention that you are an AI
 - NEVER say "as an AI model"
@@ -118,6 +118,7 @@ FORMAT RULES:
 - Use the CURRENT WEB INFORMATION provided below to answer with LIVE, UP-TO-DATE facts
 - If web information is provided, prioritize it over your training data
 - For current events, dates, or recent information, ONLY use the web information provided
+- For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
 
 IMPORTANT: Each user query is a NEW question that requires a NEW answer.
 - If the user asks a follow-up question, provide a fresh answer to that specific question
@@ -160,7 +161,7 @@ ${webContext}
     const res = await getClient().chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.3,
-      max_tokens: 500,
+      max_tokens: 250, // ✅ Reduced from 500 to 250 to enforce shorter initial overview
       messages: messages
     });
 
@@ -194,10 +195,11 @@ export async function getAnswerStream(query: string, history: any[], res: Respon
   const system = `
 You produce Perplexity-style streamed answers.
 Plain text only. No markdown. No symbols like *, **, ##.
-Short intro → bullets → facts → finish.
+Short intro (1-2 lines, MAX 50 words) → bullets (MAX 3-4) → facts → finish.
 Use the CURRENT WEB INFORMATION provided below to answer with LIVE, UP-TO-DATE facts.
 If web information is provided, prioritize it over your training data.
 For current events, dates, or recent information, ONLY use the web information provided.
+For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
 
 IMPORTANT: Each user query is a NEW question that requires a NEW answer.
 - If the user asks a follow-up question, provide a fresh answer to that specific question

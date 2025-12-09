@@ -13,6 +13,7 @@ import { buildPlacesCards } from "../services/placesCardEngine";
 import { extractLocationFromQuery } from "../services/brightDataPlaces";
 import { searchPlaces } from "../services/placesSearch";
 import { searchMovies } from "../services/tmdbService";
+import { enhanceQueryWithImage, analyzeImage } from "../services/imageAnalysis";
 
 import { getAnswerStream, getAnswerNonStream } from "../services/llmAnswer";
 import { rerankCards } from "../reranker/cardReranker";
@@ -20,7 +21,7 @@ import { applyLexicalFilters } from "../filters/productFilters";
 import { applyAttributeFilters } from "../filters/attributeFilters";
 import { correctCards } from "../correctors/llmCardCorrector";
 import { filterHotelsByLocation, filterRestaurantsByLocation, filterPlacesByLocation } from "../filters/locationFilters";
-import { saveSession, getSession } from "../memory/sessionMemory";
+import { saveSession, getSession, clearSession } from "../memory/sessionMemory";
 import { refineQueryWithMemory } from "../memory/refineQuery";
 import { detectGender } from "../memory/genderDetector";
 import { refineQuery as refineQueryC11 } from "../refinement/refineQuery";
@@ -32,20 +33,218 @@ import { analyzeCardNeed } from "../followup/cardAnalyzer";
 
 const router = express.Router();
 
-/**
- * MAIN AGENT ENDPOINT
- * Handles:
- * - First queries
- * - Follow-up queries
- * - Streaming or non-stream
- */
-router.post("/", async (req: Request, res: Response) => {
-  try {
-    const { query, conversationHistory, stream, sessionId, conversationId, userId, lastFollowUp, parentQuery } = req.body;
-    const cleanQuery = query?.trim();
+// ✅ FIX: Request queue to prevent overwhelming the system with concurrent requests
+interface QueuedRequest {
+  req: Request;
+  res: Response;
+  resolve: () => void;
+}
 
-    if (!cleanQuery || typeof cleanQuery !== "string") {
-      return res.status(400).json({ error: "Invalid query" });
+let requestQueue: QueuedRequest[] = [];
+let processingCount = 0;
+const MAX_CONCURRENT_REQUESTS = 5; // Maximum concurrent requests
+const MAX_QUEUE_SIZE = 20; // Maximum queue size
+
+/**
+ * ✅ FIX: Process queued requests
+ */
+async function processQueue(): Promise<void> {
+  if (processingCount >= MAX_CONCURRENT_REQUESTS || requestQueue.length === 0) {
+    return;
+  }
+
+  const next = requestQueue.shift();
+  if (!next) return;
+
+  processingCount++;
+  next.resolve(); // Release the request to be processed
+
+  // Process the request
+  try {
+    await handleRequest(next.req, next.res);
+  } catch (err: any) {
+    console.error("❌ Request processing error:", err);
+    if (!next.res.headersSent) {
+      next.res.status(500).json({ error: "Request processing failed", detail: err.message });
+    }
+  } finally {
+    processingCount--;
+    // Process next in queue
+    processQueue();
+  }
+}
+
+/**
+ * ✅ FIX: Main request handler (extracted from router.post)
+ */
+async function handleRequest(req: Request, res: Response): Promise<void> {
+  try {
+    const { query, conversationHistory, stream, sessionId, conversationId, userId, lastFollowUp, parentQuery, imageUrl } = req.body;
+    let cleanQuery = query?.trim();
+
+    // ✅ DEBUG: Log received imageUrl
+    if (imageUrl) {
+      console.log(`📸 Received imageUrl in request: ${typeof imageUrl}, value: ${imageUrl?.substring?.(0, 80) || imageUrl}`);
+    } else {
+      console.log(`📸 No imageUrl in request body`);
+    }
+
+    // ✅ NEW: Support image search - if imageUrl is provided, enhance query with image analysis
+    let imageAnalysis: { description: string; keywords: string[]; enhancedQuery?: string } | null = null;
+    if (imageUrl && typeof imageUrl === "string" && imageUrl.trim().length > 0) {
+      console.log(`🖼️ Image search request: query="${cleanQuery || '(no text)'}", imageUrl="${imageUrl.substring(0, 60)}..."`);
+      
+      try {
+        // Analyze the image to get description and keywords
+        imageAnalysis = await analyzeImage(imageUrl);
+        console.log(`✅ Image analyzed: ${imageAnalysis.description.substring(0, 100)}...`);
+        
+        // ✅ BIG TECH STRATEGY: Multi-level intent detection (like ChatGPT/Perplexity)
+        const hasUserText = cleanQuery && cleanQuery.trim().length > 0 && 
+                            cleanQuery.toLowerCase() !== 'find similar items';
+        
+        // Level 1: Explicit user intent (highest priority)
+        const explicitExplain = cleanQuery && (
+          cleanQuery.toLowerCase().includes('explain') || 
+          cleanQuery.toLowerCase().includes('what is') ||
+          cleanQuery.toLowerCase().includes('describe') ||
+          cleanQuery.toLowerCase().includes('tell me about') ||
+          cleanQuery.toLowerCase().includes('what does this show') ||
+          cleanQuery.toLowerCase().includes('what place is this') ||
+          cleanQuery.toLowerCase().includes('where is this')
+        );
+        
+        const explicitSearch = cleanQuery && (
+          cleanQuery.toLowerCase().includes('find similar') ||
+          cleanQuery.toLowerCase().includes('search for') ||
+          cleanQuery.toLowerCase().includes('show me similar') ||
+          cleanQuery.toLowerCase().includes('where to buy') ||
+          cleanQuery.toLowerCase().includes('similar') ||
+          cleanQuery.toLowerCase().includes('like this')
+        );
+        
+        // Level 2: Image content analysis (when intent is ambiguous)
+        const imageDescription = imageAnalysis.description.toLowerCase();
+        const isProductImage = imageDescription.includes('dress') || 
+                              imageDescription.includes('shirt') ||
+                              imageDescription.includes('hoodie') ||
+                              imageDescription.includes('sweatshirt') ||
+                              imageDescription.includes('jacket') ||
+                              imageDescription.includes('product') ||
+                              imageDescription.includes('item') ||
+                              imageDescription.includes('clothing') ||
+                              imageDescription.includes('apparel') ||
+                              imageDescription.includes('garment') ||
+                              imageDescription.includes('furniture') ||
+                              imageDescription.includes('shoes') ||
+                              imageDescription.includes('bag') ||
+                              imageDescription.includes('accessory') ||
+                              imageDescription.includes('reebok') ||
+                              imageDescription.includes('nike') ||
+                              imageDescription.includes('adidas') ||
+                              imageDescription.includes('brand') ||
+                              imageDescription.includes('logo') ||
+                              imageDescription.includes('coral') && (imageDescription.includes('zip') || imageDescription.includes('zipper'));
+        
+        const isPlaceImage = imageDescription.includes('place') ||
+                            imageDescription.includes('location') ||
+                            imageDescription.includes('landmark') ||
+                            imageDescription.includes('building') ||
+                            imageDescription.includes('hotel') ||
+                            imageDescription.includes('restaurant') ||
+                            imageDescription.includes('beach') ||
+                            imageDescription.includes('mountain') ||
+                            imageDescription.includes('park') ||
+                            imageDescription.includes('attraction');
+        
+        const isDocumentImage = imageDescription.includes('text') ||
+                               imageDescription.includes('document') ||
+                               imageDescription.includes('screenshot') ||
+                               imageDescription.includes('map') ||
+                               imageDescription.includes('interface') ||
+                               imageDescription.includes('menu') ||
+                               imageDescription.includes('screen');
+        
+        // Decision logic (ChatGPT/Perplexity-style)
+        if (explicitExplain) {
+          // ✅ Explicit explain → Always explain (ignore image type)
+          cleanQuery = `${cleanQuery}. Image shows: ${imageAnalysis.description}`;
+          console.log(`🔍 EXPLAIN mode (explicit): "${cleanQuery.substring(0, 100)}..."`);
+        } else if (explicitSearch) {
+          // ✅ Explicit search → Always search (ignore image type)
+          if (imageAnalysis.enhancedQuery) {
+            let cleanedEnhancedQuery = imageAnalysis.enhancedQuery
+              .replace(/^```json\s*/i, '')
+              .replace(/\s*```$/i, '')
+              .replace(/```/g, '')
+              .trim();
+            cleanQuery = `${cleanQuery} ${cleanedEnhancedQuery}`;
+          } else if (imageAnalysis.keywords.length > 0) {
+            const keywords = imageAnalysis.keywords.join(' ');
+            cleanQuery = `${cleanQuery} ${keywords}`;
+          }
+          console.log(`🔍 SEARCH mode (explicit): "${cleanQuery}"`);
+        } else if (!hasUserText) {
+          // ✅ No text → Use image content analysis
+          if (isProductImage) {
+            // Product → Search for similar
+            if (imageAnalysis.enhancedQuery) {
+              let cleanedEnhancedQuery = imageAnalysis.enhancedQuery
+                .replace(/^```json\s*/i, '')
+                .replace(/\s*```$/i, '')
+                .replace(/```/g, '')
+                .trim();
+              cleanQuery = `Find similar items. ${cleanedEnhancedQuery}`;
+            } else {
+              cleanQuery = `Find similar items. ${imageAnalysis.keywords.join(' ')}`;
+            }
+            console.log(`🔍 SEARCH mode (auto-detected product): "${cleanQuery}"`);
+          } else {
+            // Place/Document/Screenshot → Explain
+            cleanQuery = `Explain what is shown in this image. Image content: ${imageAnalysis.description}`;
+            console.log(`🔍 EXPLAIN mode (auto-detected place/document): "${cleanQuery.substring(0, 100)}..."`);
+          }
+        } else {
+          // ✅ Ambiguous text → Default to explain (safer)
+          cleanQuery = `${cleanQuery}. Image shows: ${imageAnalysis.description}`;
+          console.log(`🔍 EXPLAIN mode (default for ambiguous): "${cleanQuery.substring(0, 100)}..."`);
+        }
+        
+        // ✅ Final cleanup: remove any markdown artifacts from the final query
+        cleanQuery = cleanQuery
+          .replace(/```json/gi, '')
+          .replace(/```/g, '')
+          .replace(/\s{2,}/g, ' ') // Remove extra spaces
+          .trim();
+      } catch (error: any) {
+        console.error('❌ Image analysis failed, continuing with original query:', error.message);
+        console.error('❌ Error stack:', error.stack);
+        // Continue with original query if image analysis fails
+        if (!cleanQuery || cleanQuery.trim().length === 0) {
+          cleanQuery = "Find similar items";
+        }
+        // Set imageAnalysis to null to indicate failure
+        imageAnalysis = null;
+      }
+    }
+
+    if (!cleanQuery || typeof cleanQuery !== "string" || cleanQuery.trim().length === 0) {
+      res.status(400).json({ error: "Invalid query" });
+      return;
+    }
+
+    // ✅ FIX: When image is provided, COMPLETELY CLEAR conversation history to prevent old image context
+    let filteredConversationHistory = conversationHistory || [];
+    if (imageUrl && imageAnalysis) {
+      console.log(`🖼️ ========== CLEARING CONVERSATION HISTORY ==========`);
+      console.log(`🖼️ Original history length: ${(conversationHistory || []).length}`);
+      
+      // ✅ AGGRESSIVE FIX: For image searches, completely clear conversation history
+      // This ensures no previous image search context interferes
+      filteredConversationHistory = [];
+      
+      console.log(`✅ Conversation history completely cleared for image search (was ${(conversationHistory || []).length} turns)`);
+      console.log(`🖼️ Using empty conversation history to ensure fresh results`);
     }
 
     // ==================================================================
@@ -54,7 +253,7 @@ router.post("/", async (req: Request, res: Response) => {
     
     // Handle streaming requests separately
     if (stream === "true" || stream === true) {
-      return getAnswerStream(cleanQuery, conversationHistory || [], res);
+      return getAnswerStream(cleanQuery, filteredConversationHistory, res);
     }
 
     // 1️⃣ ALWAYS generate LLM answer (but don't block for shopping/hotels)
@@ -63,7 +262,7 @@ router.post("/", async (req: Request, res: Response) => {
     let answerData: any;
     
     // Start answer generation (non-blocking for shopping/hotels)
-    const answerPromise = getAnswerNonStream(cleanQuery, conversationHistory || []).catch((err: any) => {
+    const answerPromise = getAnswerNonStream(cleanQuery, filteredConversationHistory).catch((err: any) => {
       console.error("❌ LLM answer generation error:", err.message);
       return {
         summary: `I understand you're asking about "${cleanQuery}". Let me help you with that.`,
@@ -79,8 +278,8 @@ router.post("/", async (req: Request, res: Response) => {
     // 2️⃣ UNIFIED ROUTING ENGINE
     // ⚠️ CRITICAL: Route with ORIGINAL query first to get correct intent
     // DO NOT add memory/context before intent classification!
-    const lastTurn = conversationHistory?.length
-      ? conversationHistory[conversationHistory.length - 1]
+    const lastTurn = filteredConversationHistory?.length
+      ? filteredConversationHistory[filteredConversationHistory.length - 1]
       : null;
 
     // Route with original query to get correct intent classification
@@ -101,12 +300,42 @@ router.post("/", async (req: Request, res: Response) => {
     // 🧠 C11.3 — Final Query Refiner (Memory + LLM)
     const sessionIdForMemory = conversationId ?? userId ?? sessionId ?? "global";
     
+    // ✅ FIX: When image is provided, ALWAYS clear session memory to prevent cached results
+    if (imageUrl && imageAnalysis) {
+      console.log(`🖼️ ========== IMAGE SEARCH DETECTED ==========`);
+      console.log(`🖼️ New image URL: ${imageUrl.substring(0, 80)}...`);
+      
+      // ✅ AGGRESSIVE FIX: Always completely DELETE session for image searches (not just reset)
+      const session = getSession(sessionIdForMemory);
+      if (session) {
+        console.log(`🧹 FORCE DELETING session: domain=${session.domain}, brand=${session.brand}, lastImageUrl=${session.lastImageUrl?.substring(0, 40) || 'none'}...`);
+        // Completely delete the session (not just reset)
+        clearSession(sessionIdForMemory);
+      }
+      
+      // ✅ ALWAYS create completely fresh session for image searches
+      saveSession(sessionIdForMemory, {
+        domain: "general",
+        brand: null,
+        category: null,
+        price: null,
+        city: null,
+        gender: null,
+        intentSpecific: {},
+        lastQuery: cleanQuery,
+        lastAnswer: "",
+        lastImageUrl: imageUrl, // ✅ Track the current image URL
+      });
+      
+      console.log(`✅ Session completely deleted and recreated for new image search`);
+    }
+    
     // ✅ FIX: Only apply memory/context enhancement for shopping/hotels/flights/restaurants/places
     // DO NOT enhance informational queries (answer/general) - they should stay as-is
     const finalIntent = routing.finalIntent || "";
     const isShoppingIntent = finalIntent === "shopping" || routing.finalCardType === "shopping";
     const isTravelIntent = ["hotels", "flights", "restaurants", "places", "location"].includes(finalIntent);
-    const isMovieIntent = finalIntent === "movies" || routing.finalCardType === "movies";
+    const isMovieIntent = (finalIntent as string) === "movies" || (routing.finalCardType as string) === "movies";
     const shouldEnhanceQuery = isShoppingIntent || isTravelIntent || isMovieIntent;
     
     let queryForRefinement = cleanQuery;
@@ -151,7 +380,7 @@ router.post("/", async (req: Request, res: Response) => {
     
     // Only refine query if it's a shopping/travel intent (NOT movies)
     // ✅ Movies should NOT be refined with price filters - use original query
-    const refinedQuery = (shouldEnhanceQuery && routing.finalCardType !== "movies")
+    const refinedQuery = (shouldEnhanceQuery && (routing.finalCardType as string) !== "movies")
       ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
       : cleanQuery; // ✅ Keep original query for answer/general/movies intents
     
@@ -174,7 +403,7 @@ router.post("/", async (req: Request, res: Response) => {
         // 5. LLM-based correction to remove mismatches
         // ⚡ Get real answer now (should be ready by this point)
         const answerData = await answerPromise;
-        llmAnswer = answerData.summary || answerData.answer || cleanQuery;
+        llmAnswer = answerData.summary || (answerData as any).answer || cleanQuery;
         console.log(`⏱️ LLM answer generation took: ${Date.now() - answerStartTime}ms`);
         
         results = await correctCards(refinedQuery, llmAnswer, results);
@@ -201,7 +430,7 @@ router.post("/", async (req: Request, res: Response) => {
         // 4. Rerank using embeddings (C7)
         results = await rerankCards(refinedQuery, rawHotelCards, "hotels");
         // 5. LLM-based correction (skipped for hotels - all hotels in location are relevant)
-        results = await correctCards(refinedQuery, llmAnswer, results, "hotels");
+        results = await correctCards(refinedQuery, llmAnswer, results);
         // 6. Generate descriptions ONLY for final displayed results (after all filtering)
         if (results.length > 0) {
           results = await enrichHotelsWithThemesAndDescriptions(results);
@@ -285,7 +514,7 @@ router.post("/", async (req: Request, res: Response) => {
           results = [];
         }
         break;
-      case "movies":
+      case "movies" as any:
         // 🎬 Movies Search using TMDB API
         try {
           // Preprocess query: Remove common phrases but preserve movie titles
@@ -464,7 +693,7 @@ router.post("/", async (req: Request, res: Response) => {
           rawHotelCards2 = filterHotelsByLocation(rawHotelCards2, queryForCardSearch);
           rawHotelCards2 = await applyAttributeFilters(queryForCardSearch, rawHotelCards2);
           results = await rerankCards(queryForCardSearch, rawHotelCards2, "hotels");
-          results = await correctCards(queryForCardSearch, llmAnswer, results, "hotels");
+          results = await correctCards(queryForCardSearch, llmAnswer, results);
           // Generate descriptions ONLY for final displayed results
           if (results.length > 0) {
             results = await enrichHotelsWithThemesAndDescriptions(results);
@@ -510,7 +739,7 @@ router.post("/", async (req: Request, res: Response) => {
         }
         break;
     }
-              
+               
     // Use routing result for response metadata
     const responseIntent = routing.finalIntent;
     console.log(`🎯 Response intent: ${responseIntent}, Card type: ${routing.finalCardType}, Results count: ${results.length}`);
@@ -608,7 +837,7 @@ router.post("/", async (req: Request, res: Response) => {
           enforcedRaw = filterHotelsByLocation(enforcedRaw, mergedQuery);
           enforcedRaw = await applyAttributeFilters(mergedQuery, enforcedRaw);
           enforcedCards = await rerankCards(mergedQuery, enforcedRaw, "hotels");
-          enforcedCards = await correctCards(mergedQuery, llmAnswer, enforcedCards, "hotels");
+          enforcedCards = await correctCards(mergedQuery, llmAnswer, enforcedCards);
           // Generate descriptions ONLY for final displayed results
           if (enforcedCards.length > 0) {
             enforcedCards = await enrichHotelsWithThemesAndDescriptions(enforcedCards);
@@ -754,12 +983,12 @@ router.post("/", async (req: Request, res: Response) => {
       responseIntent === "restaurants" ||
       responseIntent === "places" ||
       responseIntent === "location" ||
-      responseIntent === "movies" || // ✅ Add movies to mustShowCards
+      (responseIntent as string) === "movies" || // ✅ Add movies to mustShowCards
       shouldReturnCards; // follow-up ask
 
     // 🧠 C9.4 — Memory-Aware Card Filtering
     // ⚠️ Skip memory filtering for places/location/movies (they don't have brand/category/price/gender)
-    const isPlacesOrLocationOrMovies = responseIntent === "places" || responseIntent === "location" || responseIntent === "movies";
+    const isPlacesOrLocationOrMovies = responseIntent === "places" || responseIntent === "location" || (responseIntent as string) === "movies";
     let memoryFilteredCards = finalCards;
     
     if (!isPlacesOrLocationOrMovies) {
@@ -936,6 +1165,15 @@ router.post("/", async (req: Request, res: Response) => {
     responseData.sources = finalAnswerData.sources || [];
     responseData.locations = finalAnswerData.locations || [];
     responseData.destination_images = finalAnswerData.destination_images || [];
+    
+    // ✅ NEW: Include image analysis data if image was provided
+    if (imageAnalysis) {
+      responseData.imageAnalysis = {
+        description: imageAnalysis.description,
+        keywords: imageAnalysis.keywords,
+      };
+      console.log(`🖼️ Image analysis included in response: ${imageAnalysis.description.substring(0, 60)}...`);
+    }
 
     // 🧠 C9.1 — Memory Update After EACH Query
     const detectedGender = detectGender(cleanQuery);
@@ -957,11 +1195,55 @@ router.post("/", async (req: Request, res: Response) => {
       lastAnswer: llmAnswer,
     });
 
-    return res.json(responseData);
+    res.json(responseData);
+    return;
 
   } catch (err: any) {
     console.error("❌ Agent error:", err);
-    return res.status(500).json({ error: "Agent failed", detail: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Agent failed", detail: err.message });
+      return;
+    }
+  }
+}
+
+/**
+ * MAIN AGENT ENDPOINT
+ * Handles:
+ * - First queries
+ * - Follow-up queries
+ * - Streaming or non-stream
+ * ✅ FIX: Added request queuing to prevent overwhelming the system
+ */
+router.post("/", async (req: Request, res: Response) => {
+  // ✅ FIX: Check queue size
+  if (requestQueue.length >= MAX_QUEUE_SIZE) {
+    return res.status(503).json({ 
+      error: "Server busy", 
+      message: "Too many requests in queue. Please try again in a moment." 
+    });
+  }
+
+  // ✅ FIX: If we have capacity, process immediately
+  if (processingCount < MAX_CONCURRENT_REQUESTS) {
+    processingCount++;
+    try {
+      await handleRequest(req, res);
+    } catch (err: any) {
+      console.error("❌ Request error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Request failed", detail: err.message });
+      }
+    } finally {
+      processingCount--;
+      processQueue();
+    }
+  } else {
+    // ✅ FIX: Queue the request
+    await new Promise<void>((resolve) => {
+      requestQueue.push({ req, res, resolve });
+      processQueue();
+    });
   }
 });
 

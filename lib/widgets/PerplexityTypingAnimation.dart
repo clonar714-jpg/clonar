@@ -13,6 +13,8 @@ class PerplexityTypingAnimation extends StatefulWidget {
   final TextStyle? textStyle;
   final Duration animationDuration;
   final int wordsPerTick;
+  final bool animate;
+  final VoidCallback? onAnimationComplete;
 
   const PerplexityTypingAnimation({
     Key? key,
@@ -21,6 +23,8 @@ class PerplexityTypingAnimation extends StatefulWidget {
     this.textStyle,
     this.animationDuration = const Duration(milliseconds: 30),
     this.wordsPerTick = 1,
+    this.animate = true,
+    this.onAnimationComplete,
   }) : super(key: key);
 
   @override
@@ -184,6 +188,10 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
           _cursorController.stop();
           _cursorController.value = 0.0;
         }
+        // ✅ PATCH 2: Call onAnimationComplete callback
+        if (widget.onAnimationComplete != null) {
+          widget.onAnimationComplete!();
+        }
       }
     });
   }
@@ -197,6 +205,11 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
 
   @override
   Widget build(BuildContext context) {
+    // ✅ PATCH 2: If animate=false, instantly show full text (prevents freeze)
+    if (!widget.animate) {
+      return Text(widget.text, style: widget.textStyle);
+    }
+    
     // ✅ Always use displayed text for animation
     // This ensures smooth word-by-word appearance
     final displayText = _displayedText;

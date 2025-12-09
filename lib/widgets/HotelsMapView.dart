@@ -6,6 +6,9 @@ import '../theme/AppColors.dart';
 import '../services/GeocodingService.dart';
 import 'RatingBubbleMarker.dart';
 
+// ✅ PATCH A: Add stable map key for full screen map
+const hotelFullMapKey = ValueKey("hotel_fullscreen_static_map");
+
 class HotelsMapView extends StatefulWidget {
   final List<Map<String, dynamic>> hotels;
   final List<Map<String, dynamic>>? mapPoints; // Optional: Direct map points from backend
@@ -35,7 +38,11 @@ class _HotelsMapViewState extends State<HotelsMapView> {
   @override
   void initState() {
     super.initState();
-    _initializeMap();
+    // ✅ PATCH C: Create markers asynchronously (prevents blocking UI)
+    Future.microtask(() async {
+      await _createMarkers();
+      _fitBounds();
+    });
     _getUserLocation();
   }
 
@@ -136,14 +143,14 @@ class _HotelsMapViewState extends State<HotelsMapView> {
       
       print('✅ Created ${_markers.length} markers');
       
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        }); // Update UI with new markers
+      // ✅ PATCH D: Guard setState calls for performance (prevents unnecessary rebuilds)
+      if (mounted && _isLoading) {
+        setState(() => _isLoading = false);
       }
     } catch (e) {
       print('❌ Error creating markers: $e');
-      if (mounted) {
+      // ✅ PATCH D: Guard setState calls for performance
+      if (mounted && _isLoading) {
         setState(() {
           _isLoading = false;
           _errorMessage = 'Error loading map: $e';
@@ -291,46 +298,49 @@ class _HotelsMapViewState extends State<HotelsMapView> {
     
     return Stack(
       children: [
-        // Map
-        GoogleMap(
-          initialCameraPosition: const CameraPosition(
-            target: LatLng(40.7608, -111.8910), // Salt Lake City default
-            zoom: 12.0,
-          ),
-          markers: Set<Marker>.from(_markers.values),
-          zoomControlsEnabled: true,
-          zoomGesturesEnabled: true,
-          scrollGesturesEnabled: true,
-          rotateGesturesEnabled: true,
-          tiltGesturesEnabled: true,
-          mapType: MapType.normal,
-          onMapCreated: (GoogleMapController controller) async {
-            print('🗺️ Map created successfully');
-            _mapController = controller;
+        // ✅ PATCH B: Wrap GoogleMap in RepaintBoundary and add stable key (prevents unnecessary rebuilds)
+        RepaintBoundary(
+          child: GoogleMap(
+            key: hotelFullMapKey, // 🔥 IMPORTANT: Stable key prevents recreation
+            initialCameraPosition: const CameraPosition(
+              target: LatLng(40.7608, -111.8910), // Salt Lake City default
+              zoom: 12.0,
+            ),
+            markers: Set<Marker>.from(_markers.values),
+            zoomControlsEnabled: true,
+            zoomGesturesEnabled: true,
+            scrollGesturesEnabled: true,
+            rotateGesturesEnabled: true,
+            tiltGesturesEnabled: true,
+            mapType: MapType.normal,
+            onMapCreated: (GoogleMapController controller) async {
+              _mapController = controller;
+              print('✅ Full map created successfully');
+              // Temporarily disable custom style to test tile loading
+              // try {
+              //   await _setMapStyle();
+              //   print('✅ Map style applied');
+              // } catch (e) {
+              //   print('⚠️ Error setting map style: $e');
+              // }
+              print('🗺️ Using default map style (custom style disabled for testing)');
+              // Wait for markers to be created, then fit bounds
+              Future.delayed(const Duration(milliseconds: 1000), () {
+                if (_mapController != null && _markers.isNotEmpty) {
+                  _fitBounds();
+                  print('✅ Map bounds fitted');
+                }
+              });
+            },
+            onCameraMoveStarted: () {
+              print('📷 Camera move started');
+            },
+            onCameraIdle: () {
+              print('📷 Full map idle');
+            },
             // Temporarily disable custom style to test tile loading
-            // try {
-            //   await _setMapStyle();
-            //   print('✅ Map style applied');
-            // } catch (e) {
-            //   print('⚠️ Error setting map style: $e');
-            // }
-            print('🗺️ Using default map style (custom style disabled for testing)');
-            // Wait for markers to be created, then fit bounds
-            Future.delayed(const Duration(milliseconds: 1000), () {
-              if (_mapController != null && _markers.isNotEmpty) {
-                _fitBounds();
-                print('✅ Map bounds fitted');
-              }
-            });
-          },
-          onCameraMoveStarted: () {
-            print('📷 Camera move started');
-          },
-          onCameraIdle: () {
-            print('📷 Camera idle');
-          },
-          // Temporarily disable custom style to test tile loading
-          // style: _getDarkMapStyle(),
+            // style: _getDarkMapStyle(),
+          ),
         ),
         
         // Hotel card overlay at bottom

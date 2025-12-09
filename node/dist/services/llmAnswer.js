@@ -1,0 +1,258 @@
+// =======================================================================
+// C4 — ANSWER ENGINE (Perplexity-grade): ALWAYS RETURNS TEXT + STRUCTURE
+// =======================================================================
+import OpenAI from "openai";
+import { SSE } from "../utils/sse";
+import axios from "axios";
+let client = null;
+function getClient() {
+    if (!client) {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+            throw new Error("Missing OPENAI_API_KEY environment variable");
+        }
+        client = new OpenAI({
+            apiKey: apiKey,
+        });
+    }
+    return client;
+}
+// =======================================================================
+// WEB SEARCH (For Live Results)
+// =======================================================================
+/**
+ * Search the web using SerpAPI to get live, current information
+ */
+async function searchWeb(query) {
+    const serpKey = process.env.SERPAPI_KEY;
+    if (!serpKey) {
+        console.warn("⚠️ SERPAPI_KEY not found, skipping web search");
+        return { snippets: [], sources: [] };
+    }
+    try {
+        const serpUrl = "https://serpapi.com/search.json";
+        const params = {
+            engine: "google",
+            q: query,
+            api_key: serpKey,
+            num: 5, // Get top 5 results
+            hl: "en",
+            gl: "us",
+        };
+        console.log(`🔍 Searching web for: "${query}"`);
+        const response = await axios.get(serpUrl, { params, timeout: 10000 });
+        const organicResults = response.data.organic_results || [];
+        const snippets = [];
+        const sources = [];
+        // Extract snippets and sources from search results
+        for (const result of organicResults.slice(0, 5)) {
+            if (result.snippet) {
+                snippets.push(result.snippet);
+            }
+            if (result.title && result.link) {
+                sources.push({
+                    title: result.title,
+                    link: result.link,
+                });
+            }
+        }
+        console.log(`✅ Found ${snippets.length} web search results`);
+        return { snippets, sources };
+    }
+    catch (error) {
+        console.error("❌ Web search failed:", error.message);
+        return { snippets: [], sources: [] };
+    }
+}
+// =======================================================================
+// FALLBACK BUILDER
+// =======================================================================
+function buildFallbackAnswer(query) {
+    return {
+        answer: `Here's a helpful overview regarding "${query}".`,
+        summary: `Here's a helpful overview regarding "${query}".`,
+        sources: [],
+        locations: [],
+        destination_images: [],
+    };
+}
+// =======================================================================
+// NON-STREAMED ANSWER
+// =======================================================================
+export async function getAnswerNonStream(query, history) {
+    // ✅ STEP 1: Search the web for live, current information
+    const webResults = await searchWeb(query);
+    const webContext = webResults.snippets.length > 0
+        ? `\n\nCURRENT WEB INFORMATION:\n${webResults.snippets.join('\n\n')}\n`
+        : '';
+    const system = `
+You are a Perplexity-style answer engine.
+Produce clean, concise, factual answers using CURRENT, LIVE information from the web.
+
+FORMAT RULES:
+- NO markdown symbols like **, ##, *, >
+- NO code blocks
+- Short summary first (1–2 lines, MAX 50 words)
+- Then a simple bullet list (plain text only, MAX 3-4 bullets)
+- Include factual data
+- NEVER mention that you are an AI
+- NEVER say "as an AI model"
+- Do not hallucinate numbers
+- Keep it crisp and neutral
+- Use the CURRENT WEB INFORMATION provided below to answer with LIVE, UP-TO-DATE facts
+- If web information is provided, prioritize it over your training data
+- For current events, dates, or recent information, ONLY use the web information provided
+- For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
+
+IMPORTANT: Each user query is a NEW question that requires a NEW answer.
+- If the user asks a follow-up question, provide a fresh answer to that specific question
+- Do NOT repeat the previous answer
+- Do NOT say "as mentioned before" or "as I said earlier"
+- Treat each query independently and provide a complete answer
+${webContext}
+`;
+    try {
+        // ✅ FIX: Format conversation history properly (user query + assistant answer pairs)
+        const messages = [
+            { role: "system", content: system }
+        ];
+        // Build proper conversation history with alternating user/assistant messages
+        if (history && history.length > 0) {
+            for (const h of history) {
+                // Add user query
+                if (h.query) {
+                    messages.push({
+                        role: "user",
+                        content: h.query
+                    });
+                }
+                // Add assistant answer (if available)
+                if (h.summary || h.answer) {
+                    messages.push({
+                        role: "assistant",
+                        content: h.summary || h.answer || ""
+                    });
+                }
+            }
+        }
+        // Add current query
+        messages.push({ role: "user", content: query });
+        const res = await getClient().chat.completions.create({
+            model: "gpt-4o-mini",
+            temperature: 0.3,
+            max_tokens: 250, // ✅ Reduced from 500 to 250 to enforce shorter initial overview
+            messages: messages
+        });
+        const content = res.choices[0]?.message?.content || "";
+        if (!content.trim())
+            return buildFallbackAnswer(query);
+        return {
+            answer: content,
+            summary: content,
+            sources: webResults.sources, // ✅ Include web search sources
+            locations: [],
+            destination_images: [],
+        };
+    }
+    catch (err) {
+        console.error("❌ Answer generation failed:", err);
+        return buildFallbackAnswer(query);
+    }
+}
+// =======================================================================
+// STREAMING ANSWER (PERPLEXITY-STYLE)
+// =======================================================================
+export async function getAnswerStream(query, history, res) {
+    // ✅ STEP 1: Search the web for live, current information
+    const webResults = await searchWeb(query);
+    const webContext = webResults.snippets.length > 0
+        ? `\n\nCURRENT WEB INFORMATION:\n${webResults.snippets.join('\n\n')}\n`
+        : '';
+    const system = `
+You produce Perplexity-style streamed answers.
+Plain text only. No markdown. No symbols like *, **, ##.
+Short intro (1-2 lines, MAX 50 words) → bullets (MAX 3-4) → facts → finish.
+Use the CURRENT WEB INFORMATION provided below to answer with LIVE, UP-TO-DATE facts.
+If web information is provided, prioritize it over your training data.
+For current events, dates, or recent information, ONLY use the web information provided.
+For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
+
+IMPORTANT: Each user query is a NEW question that requires a NEW answer.
+- If the user asks a follow-up question, provide a fresh answer to that specific question
+- Do NOT repeat the previous answer
+- Do NOT say "as mentioned before" or "as I said earlier"
+- Treat each query independently and provide a complete answer
+${webContext}
+`;
+    const sse = new SSE(res);
+    sse.init();
+    try {
+        // ✅ FIX: Format conversation history properly (user query + assistant answer pairs)
+        const messages = [
+            { role: "system", content: system }
+        ];
+        // Build proper conversation history with alternating user/assistant messages
+        if (history && history.length > 0) {
+            for (const h of history) {
+                // Add user query
+                if (h.query) {
+                    messages.push({
+                        role: "user",
+                        content: h.query
+                    });
+                }
+                // Add assistant answer (if available)
+                if (h.summary || h.answer) {
+                    messages.push({
+                        role: "assistant",
+                        content: h.summary || h.answer || ""
+                    });
+                }
+            }
+        }
+        // Add current query
+        messages.push({ role: "user", content: query });
+        const stream = await getClient().chat.completions.create({
+            model: "gpt-4o-mini",
+            stream: true,
+            temperature: 0.3,
+            messages: messages
+        });
+        let fullAnswer = "";
+        for await (const chunk of stream) {
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (delta) {
+                fullAnswer += delta;
+                sse.send("message", delta);
+            }
+        }
+        // Send end event with complete answer
+        sse.send("end", {
+            intent: "answer",
+            summary: fullAnswer || `Here's a quick overview of "${query}".`,
+            answer: fullAnswer || `Here's a quick overview of "${query}".`,
+            sources: webResults.sources, // ✅ Include web search sources
+            locations: [],
+            destination_images: [],
+            cards: [],
+            cardType: null,
+        });
+        sse.close();
+    }
+    catch (err) {
+        console.error("❌ Streaming failed:", err);
+        const fallbackText = `Here's a quick overview of "${query}".`;
+        sse.send("message", fallbackText);
+        sse.send("end", {
+            intent: "answer",
+            summary: fallbackText,
+            answer: fallbackText,
+            sources: webResults.sources, // ✅ Include web search sources even on error
+            locations: [],
+            destination_images: [],
+            cards: [],
+            cardType: null,
+        });
+        sse.close();
+    }
+}

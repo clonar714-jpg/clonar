@@ -226,15 +226,9 @@ export async function enrichProductsWithDescriptions(products: any[]): Promise<v
   
   console.log(`📝 Generating LLM descriptions for ${products.length} products...`);
   
-  // Process products in batches of 5 to avoid rate limits
-  const BATCH_SIZE = 5;
-  const BATCH_DELAY_MS = 200; // 200ms delay between batches
-  
-  for (let i = 0; i < products.length; i += BATCH_SIZE) {
-    const batch = products.slice(i, i + BATCH_SIZE);
-    
-    // Process batch in parallel
-    const batchPromises = batch.map(async (product) => {
+  // ✅ OPTIMIZATION: Process all products in parallel (removed batching delays)
+  // OpenAI API can handle concurrent requests, and we have timeout protection
+  const descriptionPromises = products.map(async (product) => {
       try {
         // Extract features from extensions, tag, or snippet
         const features: string[] = [];
@@ -287,14 +281,8 @@ export async function enrichProductsWithDescriptions(products: any[]): Promise<v
       }
     });
     
-    // Wait for batch to complete
-    await Promise.allSettled(batchPromises);
-    
-    // Add delay between batches (except for the last batch)
-    if (i + BATCH_SIZE < products.length) {
-      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
-    }
-  }
+  // Wait for all descriptions to complete in parallel
+  await Promise.allSettled(descriptionPromises);
   
   console.log(`✅ Finished generating descriptions`);
 }

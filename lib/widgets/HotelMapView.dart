@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../theme/AppColors.dart';
 
+// ✅ PATCH A: Add static key for stable map instance
+const hotelPreviewMapKey = ValueKey("hotel_preview_static_map");
+
 class HotelMapView extends StatefulWidget {
   final List<dynamic> points;
   final double? height;
@@ -27,10 +30,8 @@ class _HotelMapViewState extends State<HotelMapView> {
   @override
   void initState() {
     super.initState();
-    // Initialize map data asynchronously to avoid blocking UI
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializeMap();
-    });
+    // ✅ PATCH C: Initialize map asynchronously using microtask (prevents blocking UI)
+    Future.microtask(_initializeMap);
   }
 
   void _initializeMap() {
@@ -38,7 +39,10 @@ class _HotelMapViewState extends State<HotelMapView> {
       print('🗺️ HotelMapView: Initializing with ${widget.points.length} points');
       if (widget.points.isEmpty) {
         print('⚠️ HotelMapView: No points provided');
-        setState(() => _isMapReady = true);
+        // ✅ PATCH D: Avoid setState if nothing changed
+        if (!_isMapReady && mounted) {
+          setState(() => _isMapReady = true);
+        }
         return;
       }
 
@@ -52,7 +56,10 @@ class _HotelMapViewState extends State<HotelMapView> {
       print('🗺️ HotelMapView: ${validPoints.length} valid points out of ${widget.points.length}');
       if (validPoints.isEmpty) {
         print('⚠️ HotelMapView: No valid points after filtering');
-        setState(() => _isMapReady = true);
+        // ✅ PATCH D: Avoid setState if nothing changed
+        if (!_isMapReady && mounted) {
+          setState(() => _isMapReady = true);
+        }
         return;
       }
 
@@ -87,13 +94,15 @@ class _HotelMapViewState extends State<HotelMapView> {
 
       print('✅ HotelMapView: Created ${_markers.length} markers, center at ${_center!.latitude}, ${_center!.longitude}');
 
-      if (mounted) {
+      // ✅ PATCH D: Avoid setState if nothing changed (prevents unnecessary rebuilds)
+      if (!_isMapReady && mounted) {
         setState(() => _isMapReady = true);
         print('✅ HotelMapView: Map marked as ready');
       }
     } catch (e) {
       print('❌ HotelMapView initialization error: $e');
-      if (mounted) {
+      // ✅ PATCH D: Avoid setState if nothing changed
+      if (!_isMapReady && mounted) {
         setState(() => _isMapReady = true);
       }
     }
@@ -129,57 +138,61 @@ class _HotelMapViewState extends State<HotelMapView> {
 
     // Show map once ready - wrapped in error boundary
     try {
-      Widget mapWidget = ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: SizedBox(
-          height: widget.height ?? 220,
-          child: Stack(
-          children: [
-              GoogleMap(
-                initialCameraPosition: CameraPosition(
-                  target: _center!,
-                  zoom: 12.5,
+      // ✅ PATCH B: Wrap map in RepaintBoundary and add stable key (prevents unnecessary rebuilds)
+      Widget mapWidget = RepaintBoundary(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: SizedBox(
+            height: widget.height ?? 220,
+            child: Stack(
+              children: [
+                GoogleMap(
+                  key: hotelPreviewMapKey, // 🔥 IMPORTANT: Stable key prevents recreation
+                  initialCameraPosition: CameraPosition(
+                    target: _center!,
+                    zoom: 12.5,
+                  ),
+                  markers: _markers,
+                  zoomControlsEnabled: false,
+                  myLocationButtonEnabled: false,
+                  mapType: MapType.normal,
+                  liteModeEnabled: false, // Disable lite mode to prevent issues
+                  // Disable all gestures if onTap is provided (to allow overlay to capture taps)
+                  zoomGesturesEnabled: widget.onTap == null,
+                  scrollGesturesEnabled: widget.onTap == null,
+                  rotateGesturesEnabled: widget.onTap == null,
+                  tiltGesturesEnabled: widget.onTap == null,
+                  onMapCreated: (GoogleMapController controller) {
+                    _mapController = controller;
+                    print('✅ HotelMapView: Map created with ${_markers.length} markers');
+                    print('🗺️ HotelMapView: Center at ${_center!.latitude}, ${_center!.longitude}');
+                  },
+                  onCameraIdle: () {
+                    print('🗺️ HotelMapView: Camera idle - map should be fully loaded');
+                  },
+                  onTap: (LatLng position) {
+                    // Trigger onTap when map is tapped (not markers)
+                    if (widget.onTap != null) {
+                      widget.onTap!();
+                    }
+                  },
                 ),
-                markers: _markers,
-                zoomControlsEnabled: false,
-                myLocationButtonEnabled: false,
-                mapType: MapType.normal,
-                liteModeEnabled: false, // Disable lite mode to prevent issues
-                // Disable all gestures if onTap is provided (to allow overlay to capture taps)
-                zoomGesturesEnabled: widget.onTap == null,
-                scrollGesturesEnabled: widget.onTap == null,
-                rotateGesturesEnabled: widget.onTap == null,
-                tiltGesturesEnabled: widget.onTap == null,
-                onMapCreated: (GoogleMapController controller) {
-                  _mapController = controller;
-                  print('✅ HotelMapView: Map created with ${_markers.length} markers');
-                  print('🗺️ HotelMapView: Center at ${_center!.latitude}, ${_center!.longitude}');
-                },
-                onCameraIdle: () {
-                  print('🗺️ HotelMapView: Camera idle - map should be fully loaded');
-                },
-                onTap: (LatLng position) {
-                  // Trigger onTap when map is tapped (not markers)
-                  if (widget.onTap != null) {
-                    widget.onTap!();
-                  }
-                },
-              ),
-              // Full transparent overlay to capture all taps when onTap is provided
-              if (widget.onTap != null)
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: widget.onTap,
-                    behavior: HitTestBehavior.translucent,
-                    child: Container(
-                      color: Colors.transparent,
+                // Full transparent overlay to capture all taps when onTap is provided
+                if (widget.onTap != null)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: widget.onTap,
+                      behavior: HitTestBehavior.translucent,
+                      child: Container(
+                        color: Colors.transparent,
+                      ),
                     ),
                   ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
-    );
+      );
 
       // Wrap in GestureDetector if onTap is provided
       if (widget.onTap != null) {

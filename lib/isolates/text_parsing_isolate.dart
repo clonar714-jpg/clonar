@@ -176,6 +176,139 @@ class ParsedContent {
       );
 }
 
+// ✅ PATCH SET A: Helper functions for preprocessing (isolate-safe)
+String cleanDescription(String? desc) {
+  if (desc == null || desc.isEmpty) return '';
+  return desc
+      .replaceAll(RegExp(r'\*\*'), '')
+      .replaceAll(RegExp(r'[_~>`#-]'), '')
+      .replaceAll(RegExp(r'[0-9]+\.\s*'), '')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .trim();
+}
+
+String generateSummary(Map<String, dynamic> rawAnswer) {
+  final summary = rawAnswer['summary']?.toString() ?? 
+                  rawAnswer['answer']?.toString() ?? 
+                  '';
+  return cleanDescription(summary);
+}
+
+String summarizeHotel(Map<String, dynamic> hotel) {
+  final name = hotel['name']?.toString() ?? '';
+  final location = hotel['location']?.toString() ?? '';
+  final rating = hotel['rating'];
+  final desc = hotel['description']?.toString() ?? '';
+  
+  if (desc.isNotEmpty && desc.length > 20) {
+    return desc;
+  }
+  
+  if (rating is num && rating >= 4.5) {
+    return 'A ${rating >= 4.5 ? 4 : 3}-star luxury hotel${location.isNotEmpty ? ' in $location' : ''}';
+  } else if (rating is num && rating >= 4.0) {
+    return 'A ${rating >= 4.0 ? 3 : 2}-star hotel${location.isNotEmpty ? ' in $location' : ''}';
+  } else {
+    return 'A modern property${location.isNotEmpty ? ' in $location' : ''}';
+  }
+}
+
+List<Map<String, dynamic>> preprocessHotels(Map<String, dynamic> raw) {
+  final list = raw['hotels'] ?? raw['hotelResults'] ?? [];
+  if (list is! List) return [];
+  
+  return List<Map<String, dynamic>>.from(list).map((h) {
+    return {
+      ...h,
+      'cleanDesc': cleanDescription(h['description']?.toString()),
+      'shortDesc': summarizeHotel(h),
+    };
+  }).toList();
+}
+
+List<Map<String, dynamic>> preprocessPlaces(Map<String, dynamic> raw) {
+  final list = raw['places'] ?? [];
+  if (list is! List) return [];
+  
+  return List<Map<String, dynamic>>.from(list).map((p) {
+    return {
+      ...p,
+      'cleanDesc': cleanDescription(p['description']?.toString()),
+    };
+  }).toList();
+}
+
+List<Map<String, dynamic>> preprocessProducts(Map<String, dynamic> raw) {
+  final list = raw['products'] ?? [];
+  if (list is! List) return [];
+  
+  return List<Map<String, dynamic>>.from(list).map((p) {
+    return {
+      ...p,
+      'cleanDesc': cleanDescription(p['description']?.toString()),
+    };
+  }).toList();
+}
+
+List<Map<String, dynamic>> preprocessMovies(Map<String, dynamic> raw) {
+  final list = raw['movies'] ?? [];
+  if (list is! List) return [];
+  
+  return List<Map<String, dynamic>>.from(list);
+}
+
+List<Map<String, dynamic>> preprocessLocations(Map<String, dynamic> raw) {
+  final list = raw['locations'] ?? [];
+  if (list is! List) return [];
+  
+  return List<Map<String, dynamic>>.from(list);
+}
+
+List<Map<String, dynamic>> preprocessSections(List<dynamic> sections) {
+  if (sections.isEmpty) return [];
+  
+  return sections.map((sec) {
+    if (sec is! Map) return <String, dynamic>{};
+    return {
+      'title': sec['title']?.toString() ?? '',
+      'body': cleanDescription(sec['body']?.toString() ?? sec['description']?.toString()),
+    };
+  }).toList();
+}
+
+/// ✅ PATCH 2: Comprehensive parse function for entire agent response
+Map<String, dynamic> parseAgentResponseIsolate(Map<String, dynamic> input) {
+  final rawAnswer = input['rawAnswer'] ?? <String, dynamic>{};
+  final rawResults = input['rawResults'] ?? <String, dynamic>{};
+  final rawSections = input['rawSections'] ?? [];
+  final intent = input['intent']?.toString() ?? 'unknown';
+  final cardType = input['cardType']?.toString() ?? 'unknown';
+
+  // Heavy summary generation moved here
+  final summary = generateSummary(rawAnswer);
+
+  // Heavy hotel/place preprocessing moved here
+  final hotels = preprocessHotels(rawResults);
+  final places = preprocessPlaces(rawResults);
+  final products = preprocessProducts(rawResults);
+  final movies = preprocessMovies(rawResults);
+  final locations = preprocessLocations(rawResults);
+
+  // Process Perplexity-style sections
+  final parsedSections = preprocessSections(rawSections is List ? rawSections : []);
+
+  return {
+    'summary': summary,
+    'sections': parsedSections,
+    'answer': rawAnswer,
+    'hotels': hotels,
+    'places': places,
+    'products': products,
+    'movies': movies,
+    'locations': locations,
+  };
+}
+
 /// ENTRY POINT — isolate function
 /// This runs in a separate isolate, off the UI thread
 ParsedContent parseAnswerIsolate(Map<String, dynamic> map) {
