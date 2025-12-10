@@ -14,17 +14,33 @@ function getClient() {
     }
     return client;
 }
-// ✅ PHASE 3: Redis cache for geocoding and place details (with in-memory fallback)
-import { getCached, setCached } from './redisCache';
+const GEOCODE_CACHE = new Map();
+const PLACE_DETAILS_CACHE = new Map();
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 function getCacheKey(placeName, location) {
     return `${placeName.toLowerCase().trim()}|${location.toLowerCase().trim()}`;
 }
+function getCached(cache, key) {
+    const entry = cache.get(key);
+    if (entry && Date.now() - entry.timestamp < CACHE_TTL) {
+        return entry.data;
+    }
+    if (entry) {
+        cache.delete(key); // Remove expired entry
+    }
+    return null;
+}
+function setCached(cache, key, data) {
+    cache.set(key, {
+        data,
+        timestamp: Date.now(),
+    });
+}
 // Helper to geocode an address using Google Maps Geocoding API
 async function geocodeAddress(address, placeName) {
-    // ✅ PHASE 3: Check Redis cache first (with in-memory fallback)
-    const cacheKey = `geocode:${getCacheKey(placeName, address)}`;
-    const cached = await getCached(cacheKey);
+    // ✅ PHASE 3: Check cache first
+    const cacheKey = getCacheKey(placeName, address);
+    const cached = getCached(GEOCODE_CACHE, cacheKey);
     if (cached) {
         console.log(`💾 Cache hit for geocoding: ${placeName}`);
         return cached;
@@ -45,8 +61,8 @@ async function geocodeAddress(address, placeName) {
                 latitude: location.lat,
                 longitude: location.lng,
             };
-            // ✅ PHASE 3: Cache the result in Redis (with in-memory fallback)
-            await setCached(cacheKey, result, CACHE_TTL);
+            // ✅ PHASE 3: Cache the result
+            setCached(GEOCODE_CACHE, cacheKey, result);
             return result;
         }
         else if (response.data.status === 'REQUEST_DENIED') {
@@ -66,9 +82,9 @@ async function geocodeAddress(address, placeName) {
 // ✅ PHASE 4: Optimized to only call Details API if website/phone/images is needed
 async function getPlaceDetails(placeName, location, needWebsite = false, needPhone = false, needImages = true // ✅ FIX: Always fetch images by default to get all photos
 ) {
-    // ✅ PHASE 3: Check Redis cache first (with in-memory fallback)
-    const cacheKey = `place_details:${getCacheKey(placeName, location)}`;
-    const cached = await getCached(cacheKey);
+    // ✅ PHASE 3: Check cache first
+    const cacheKey = getCacheKey(placeName, location);
+    const cached = getCached(PLACE_DETAILS_CACHE, cacheKey);
     if (cached) {
         console.log(`💾 Cache hit for place details: ${placeName}`);
         return cached;
@@ -152,8 +168,8 @@ async function getPlaceDetails(placeName, location, needWebsite = false, needPho
                 website: website,
                 phone: phone,
             };
-            // ✅ PHASE 3: Cache the result in Redis (with in-memory fallback)
-            await setCached(cacheKey, result, CACHE_TTL);
+            // ✅ PHASE 3: Cache the result
+            setCached(PLACE_DETAILS_CACHE, cacheKey, result);
             return result;
         }
         else if (searchResponse.data.status === 'REQUEST_DENIED') {

@@ -28,7 +28,9 @@ import autocompleteRoutes from '@/routes/autocomplete';
 import moviesRoutes from '@/routes/movies';
 import geocodeRoutes from '@/routes/geocode';
 import hotelRoomsRoutes from '@/routes/hotelRooms';
+import chatsRoutes from '@/routes/chats';
 import { connectDatabase } from '@/services/database';
+import { startBackgroundJob } from '@/services/personalization/backgroundAggregator';
 console.log("DEBUG: SUPABASE_URL =", process.env.SUPABASE_URL);
 console.log("DEBUG: SUPABASE_ANON_KEY =", process.env.SUPABASE_ANON_KEY ? "Loaded ✅" : "Missing ❌");
 console.log("DEBUG: SUPABASE_SERVICE_ROLE_KEY =", process.env.SUPABASE_SERVICE_ROLE_KEY ? "Loaded ✅" : "Missing ❌");
@@ -126,6 +128,8 @@ app.use('/api/autocomplete', autocompleteRoutes);
 app.use('/api/movies', moviesRoutes);
 app.use('/api/geocode', geocodeRoutes);
 console.log('✅ Geocode route registered at /api/geocode');
+app.use('/api/chats', chatsRoutes);
+console.log('✅ Chats route registered at /api/chats');
 
 // Error handling middleware
 app.use(notFoundHandler);
@@ -145,6 +149,9 @@ const startServer = async () => {
       if (process.env.NODE_ENV === 'development') {
         console.log('⚙️  Dev Mode Active: Authentication checks are skipped for all routes');
       }
+
+      // ✅ PHASE 4: Start background aggregation job
+      startBackgroundJob();
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);

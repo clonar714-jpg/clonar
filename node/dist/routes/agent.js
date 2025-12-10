@@ -16,12 +16,18 @@ import { applyLexicalFilters } from "../filters/productFilters";
 import { applyAttributeFilters } from "../filters/attributeFilters";
 import { correctCards } from "../correctors/llmCardCorrector";
 import { filterHotelsByLocation, filterRestaurantsByLocation, filterPlacesByLocation } from "../filters/locationFilters";
-import { saveSession, getSession } from "../memory/sessionMemory";
+import { saveSession, getSession, clearSession } from "../memory/sessionMemory";
 import { detectGender } from "../memory/genderDetector";
 import { refineQuery as refineQueryC11 } from "../refinement/refineQuery";
 import { mergeQueryWithContext } from "../followup/context";
 // ✅ Follow-up engine imports
 import { getFollowUpSuggestions } from "../followup";
+// ✅ Personalization imports
+import { extractPreferenceSignals } from "../services/personalization/preferenceExtractor";
+import { storePreferenceSignal, getUserPreferences } from "../services/personalization/preferenceStorage";
+import { enhanceQueryWithPreferences, extractCategoryFromQuery } from "../services/personalization/queryEnhancer";
+import { matchItemsToPreferences, hybridRerank } from "../services/personalization/preferenceMatcher";
+import { incrementConversationCount, aggregateIfNeeded } from "../services/personalization/backgroundAggregator";
 const router = express.Router();
 let requestQueue = [];
 let processingCount = 0;
@@ -114,7 +120,8 @@ async function handleRequest(req, res) {
                     imageDescription.includes('nike') ||
                     imageDescription.includes('adidas') ||
                     imageDescription.includes('brand') ||
-                    imageDescription.includes('logo');
+                    imageDescription.includes('logo') ||
+                    imageDescription.includes('coral') && (imageDescription.includes('zip') || imageDescription.includes('zipper'));
                 const isPlaceImage = imageDescription.includes('place') ||
                     imageDescription.includes('location') ||
                     imageDescription.includes('landmark') ||
@@ -201,21 +208,33 @@ async function handleRequest(req, res) {
             }
         }
         if (!cleanQuery || typeof cleanQuery !== "string" || cleanQuery.trim().length === 0) {
-            return res.status(400).json({ error: "Invalid query" });
+            res.status(400).json({ error: "Invalid query" });
+            return;
+        }
+        // ✅ FIX: When image is provided, COMPLETELY CLEAR conversation history to prevent old image context
+        let filteredConversationHistory = conversationHistory || [];
+        if (imageUrl && imageAnalysis) {
+            console.log(`🖼️ ========== CLEARING CONVERSATION HISTORY ==========`);
+            console.log(`🖼️ Original history length: ${(conversationHistory || []).length}`);
+            // ✅ AGGRESSIVE FIX: For image searches, completely clear conversation history
+            // This ensures no previous image search context interferes
+            filteredConversationHistory = [];
+            console.log(`✅ Conversation history completely cleared for image search (was ${(conversationHistory || []).length} turns)`);
+            console.log(`🖼️ Using empty conversation history to ensure fresh results`);
         }
         // ==================================================================
         // ✅ FIX: ALWAYS GENERATE LLM ANSWER FIRST (Perplexity-style)
         // ==================================================================
         // Handle streaming requests separately
         if (stream === "true" || stream === true) {
-            return getAnswerStream(cleanQuery, conversationHistory || [], res);
+            return getAnswerStream(cleanQuery, filteredConversationHistory, res);
         }
         // 1️⃣ ALWAYS generate LLM answer (but don't block for shopping/hotels)
         // ⚡ OPTIMIZATION: Start answer generation in parallel, don't wait for shopping/hotels
         const answerStartTime = Date.now();
         let answerData;
         // Start answer generation (non-blocking for shopping/hotels)
-        const answerPromise = getAnswerNonStream(cleanQuery, conversationHistory || []).catch((err) => {
+        const answerPromise = getAnswerNonStream(cleanQuery, filteredConversationHistory).catch((err) => {
             console.error("❌ LLM answer generation error:", err.message);
             return {
                 summary: `I understand you're asking about "${cleanQuery}". Let me help you with that.`,
@@ -229,8 +248,8 @@ async function handleRequest(req, res) {
         // 2️⃣ UNIFIED ROUTING ENGINE
         // ⚠️ CRITICAL: Route with ORIGINAL query first to get correct intent
         // DO NOT add memory/context before intent classification!
-        const lastTurn = conversationHistory?.length
-            ? conversationHistory[conversationHistory.length - 1]
+        const lastTurn = filteredConversationHistory?.length
+            ? filteredConversationHistory[filteredConversationHistory.length - 1]
             : null;
         // Route with original query to get correct intent classification
         const routing = await routeQuery({
@@ -246,26 +265,31 @@ async function handleRequest(req, res) {
         // 🟦 C8.4 — FINAL PIPELINE: Filter → Rerank → Correct
         // 🧠 C11.3 — Final Query Refiner (Memory + LLM)
         const sessionIdForMemory = conversationId ?? userId ?? sessionId ?? "global";
-        // ✅ FIX: When image is provided, clear session memory to prevent cached results
+        // ✅ FIX: When image is provided, ALWAYS clear session memory to prevent cached results
         if (imageUrl && imageAnalysis) {
-            console.log(`🖼️ Image query detected - clearing session memory for fresh results`);
-            // Clear the session to prevent using cached hotel/shopping results
+            console.log(`🖼️ ========== IMAGE SEARCH DETECTED ==========`);
+            console.log(`🖼️ New image URL: ${imageUrl.substring(0, 80)}...`);
+            // ✅ AGGRESSIVE FIX: Always completely DELETE session for image searches (not just reset)
             const session = getSession(sessionIdForMemory);
             if (session) {
-                console.log(`🧹 Clearing cached session: domain=${session.domain}, brand=${session.brand}`);
-                // Reset session to prevent interference
-                saveSession(sessionIdForMemory, {
-                    domain: "general",
-                    brand: null,
-                    category: null,
-                    price: null,
-                    city: null,
-                    gender: null,
-                    intentSpecific: {},
-                    lastQuery: cleanQuery,
-                    lastAnswer: "",
-                });
+                console.log(`🧹 FORCE DELETING session: domain=${session.domain}, brand=${session.brand}, lastImageUrl=${session.lastImageUrl?.substring(0, 40) || 'none'}...`);
+                // Completely delete the session (not just reset)
+                clearSession(sessionIdForMemory);
             }
+            // ✅ ALWAYS create completely fresh session for image searches
+            saveSession(sessionIdForMemory, {
+                domain: "general",
+                brand: null,
+                category: null,
+                price: null,
+                city: null,
+                gender: null,
+                intentSpecific: {},
+                lastQuery: cleanQuery,
+                lastAnswer: "",
+                lastImageUrl: imageUrl, // ✅ Track the current image URL
+            });
+            console.log(`✅ Session completely deleted and recreated for new image search`);
         }
         // ✅ FIX: Only apply memory/context enhancement for shopping/hotels/flights/restaurants/places
         // DO NOT enhance informational queries (answer/general) - they should stay as-is
@@ -276,37 +300,167 @@ async function handleRequest(req, res) {
         const shouldEnhanceQuery = isShoppingIntent || isTravelIntent || isMovieIntent;
         let queryForRefinement = cleanQuery;
         let contextAwareQuery = cleanQuery;
-        // Only merge context for shopping/travel intents
-        if (shouldEnhanceQuery && parentQuery) {
-            const { analyzeCardNeed } = await import("../followup/cardAnalyzer");
-            const parentSlots = analyzeCardNeed(parentQuery);
-            const qLower = cleanQuery.toLowerCase();
-            // Merge brand if parent has it and follow-up doesn't
-            if (parentSlots.brand && !qLower.includes(parentSlots.brand.toLowerCase())) {
-                contextAwareQuery = `${parentSlots.brand} ${contextAwareQuery}`;
+        // ✅ PERSONALIZATION: Detect "of my type" / "of my taste" queries and use user preferences
+        const isPersonalizationQuery = /\b(of my (type|taste|style|preference)|in my style|for me|my kind)\b/i.test(cleanQuery);
+        if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+            console.log(`🎯 Personalization query detected: "${cleanQuery}"`);
+            try {
+                const userPrefs = await getUserPreferences(userId);
+                if (userPrefs && userPrefs.confidence_score && userPrefs.confidence_score >= 0.3) {
+                    console.log(`✅ Found user preferences (confidence: ${userPrefs.confidence_score})`);
+                    // Extract category from query (e.g., "glasses of my type" → "glasses")
+                    const categoryMatch = cleanQuery.match(/^(.+?)\s+(?:of my|in my|for me|my kind)/i);
+                    const baseCategory = categoryMatch ? categoryMatch[1].trim() : cleanQuery.replace(/\b(of my|in my|for me|my kind).*$/i, '').trim();
+                    // Build personalized query
+                    let personalizedQuery = baseCategory;
+                    // Add brand preferences if available
+                    if (userPrefs.brand_preferences && userPrefs.brand_preferences.length > 0) {
+                        const topBrand = userPrefs.brand_preferences[0];
+                        if (!personalizedQuery.toLowerCase().includes(topBrand.toLowerCase())) {
+                            personalizedQuery = `${topBrand} ${personalizedQuery}`;
+                        }
+                    }
+                    // Add style keywords if available
+                    if (userPrefs.style_keywords && userPrefs.style_keywords.length > 0) {
+                        const topStyle = userPrefs.style_keywords[0];
+                        if (!personalizedQuery.toLowerCase().includes(topStyle.toLowerCase())) {
+                            personalizedQuery = `${personalizedQuery} ${topStyle}`;
+                        }
+                    }
+                    // Add price range if available (for shopping)
+                    if (isShoppingIntent && userPrefs.price_range_max) {
+                        personalizedQuery = `${personalizedQuery} under $${userPrefs.price_range_max}`;
+                    }
+                    // Add category-specific preferences
+                    if (userPrefs.category_preferences) {
+                        const categoryPrefs = userPrefs.category_preferences;
+                        const relevantCategory = baseCategory.toLowerCase();
+                        // Check if we have preferences for this category
+                        for (const [cat, prefs] of Object.entries(categoryPrefs)) {
+                            if (relevantCategory.includes(cat) || cat.includes(relevantCategory)) {
+                                if (prefs.brands && Array.isArray(prefs.brands) && prefs.brands.length > 0) {
+                                    const topBrand = prefs.brands[0];
+                                    if (!personalizedQuery.toLowerCase().includes(topBrand.toLowerCase())) {
+                                        personalizedQuery = `${topBrand} ${personalizedQuery}`;
+                                    }
+                                }
+                                if (prefs.style && !personalizedQuery.toLowerCase().includes(prefs.style.toLowerCase())) {
+                                    personalizedQuery = `${personalizedQuery} ${prefs.style}`;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (personalizedQuery !== cleanQuery) {
+                        contextAwareQuery = personalizedQuery;
+                        queryForRefinement = personalizedQuery;
+                        console.log(`🎯 Personalized query: "${cleanQuery}" → "${personalizedQuery}"`);
+                    }
+                    else {
+                        console.log(`⚠️ User preferences found but couldn't enhance query`);
+                    }
+                }
+                else {
+                    console.log(`ℹ️ No user preferences found or confidence too low (${userPrefs?.confidence_score || 0})`);
+                }
             }
-            // Merge category if parent has it and follow-up doesn't
-            if (parentSlots.category && !qLower.includes(parentSlots.category.toLowerCase())) {
-                contextAwareQuery = `${contextAwareQuery} ${parentSlots.category}`;
+            catch (err) {
+                console.error(`❌ Error retrieving user preferences: ${err.message}`);
+                // Continue with normal flow if personalization fails
             }
-            // Merge city if parent has it and follow-up doesn't
-            if (parentSlots.city && !qLower.includes(parentSlots.city.toLowerCase())) {
-                contextAwareQuery = `${contextAwareQuery} in ${parentSlots.city}`;
-            }
-            // Merge price if parent has it and follow-up doesn't
-            if (parentSlots.price && !qLower.includes(parentSlots.price.toLowerCase())) {
-                contextAwareQuery = `${contextAwareQuery} ${parentSlots.price}`;
-            }
-            if (contextAwareQuery !== cleanQuery) {
-                console.log(`📍 Merged context for ${routing.finalIntent}: "${cleanQuery}" → "${contextAwareQuery}"`);
-            }
-            queryForRefinement = contextAwareQuery;
         }
-        else {
+        // ✅ PHASE 2: Enhance query with user preferences (for all relevant queries)
+        if (shouldEnhanceQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+            try {
+                const category = extractCategoryFromQuery(cleanQuery, finalIntent);
+                const preferenceEnhanced = await enhanceQueryWithPreferences(cleanQuery, userId, {
+                    intent: finalIntent,
+                    category: category,
+                    minConfidence: 0.3, // Only apply if confidence >= 30%
+                });
+                if (preferenceEnhanced !== cleanQuery) {
+                    contextAwareQuery = preferenceEnhanced;
+                    queryForRefinement = preferenceEnhanced;
+                    console.log(`🎯 Phase 2: Preference-enhanced query: "${cleanQuery}" → "${preferenceEnhanced}"`);
+                }
+            }
+            catch (err) {
+                console.error(`❌ Error in Phase 2 query enhancement: ${err.message}`);
+                // Continue with normal flow if enhancement fails
+            }
+        }
+        // ✅ NEW: Extract parent query from conversation history if not provided
+        let extractedParentQuery = parentQuery;
+        if (!extractedParentQuery && filteredConversationHistory && filteredConversationHistory.length > 0) {
+            // Get the last conversation turn
+            const lastTurn = filteredConversationHistory[filteredConversationHistory.length - 1];
+            if (lastTurn && lastTurn.query) {
+                extractedParentQuery = lastTurn.query;
+                console.log(`📚 Extracted parent query from conversation history: "${extractedParentQuery}"`);
+            }
+        }
+        // 🚀 PRODUCTION-GRADE: LLM-Based Context Understanding (replaces brittle keyword matching)
+        // Similar to how ChatGPT, Perplexity, and Cursor handle context intelligently
+        if (shouldEnhanceQuery && extractedParentQuery) {
+            try {
+                const { extractContextWithLLM, mergeQueryContextWithLLM } = await import("../services/llmContextExtractor");
+                // Step 1: Extract context from current query using LLM (handles all edge cases)
+                const extractedContext = await extractContextWithLLM(cleanQuery, extractedParentQuery, filteredConversationHistory);
+                // Step 2: Intelligently merge with parent query using LLM
+                const mergedQuery = await mergeQueryContextWithLLM(cleanQuery, extractedParentQuery, extractedContext, finalIntent);
+                if (mergedQuery !== cleanQuery) {
+                    contextAwareQuery = mergedQuery;
+                    queryForRefinement = mergedQuery;
+                    console.log(`🧠 LLM Context Merging: "${cleanQuery}" → "${mergedQuery}"`);
+                }
+                else {
+                    // LLM determined no merging needed
+                    queryForRefinement = cleanQuery;
+                }
+            }
+            catch (err) {
+                console.error(`❌ LLM context extraction failed, falling back to rule-based: ${err.message}`);
+                // Fallback to rule-based merging (existing logic)
+                const { analyzeCardNeed } = await import("../followup/cardAnalyzer");
+                const parentSlots = analyzeCardNeed(extractedParentQuery);
+                const qLower = cleanQuery.toLowerCase();
+                // Detect refinement queries
+                const isRefinementQuery = /^(only|just|show|find|get|give me|i want|i need)\s+.*/i.test(cleanQuery.trim()) ||
+                    /\b(only|just|more|less|cheaper|expensive|costlier|luxury|budget|premium|star|stars)\b/i.test(cleanQuery) ||
+                    /\b(\d+)\s*(star|stars)\b/i.test(cleanQuery);
+                // Merge brand if parent has it and follow-up doesn't
+                if (parentSlots.brand && !qLower.includes(parentSlots.brand.toLowerCase())) {
+                    contextAwareQuery = `${parentSlots.brand} ${contextAwareQuery}`;
+                }
+                // Merge category if parent has it and follow-up doesn't
+                if (parentSlots.category && !qLower.includes(parentSlots.category.toLowerCase())) {
+                    contextAwareQuery = `${contextAwareQuery} ${parentSlots.category}`;
+                }
+                // Merge city if parent has it and follow-up doesn't
+                const isTravelIntentForLocation = ["hotels", "flights", "restaurants", "places", "location"].includes(finalIntent);
+                if (parentSlots.city && !qLower.includes(parentSlots.city.toLowerCase())) {
+                    if (isTravelIntentForLocation || isRefinementQuery) {
+                        contextAwareQuery = `${contextAwareQuery} in ${parentSlots.city}`;
+                        console.log(`📍 Fallback: Merged location from parent: "${parentSlots.city}" → "${contextAwareQuery}"`);
+                    }
+                }
+                // Merge price if parent has it and follow-up doesn't
+                if (parentSlots.price && !qLower.includes(parentSlots.price.toLowerCase())) {
+                    contextAwareQuery = `${contextAwareQuery} ${parentSlots.price}`;
+                }
+                if (contextAwareQuery !== cleanQuery) {
+                    console.log(`📍 Fallback: Merged context for ${routing.finalIntent}: "${cleanQuery}" → "${contextAwareQuery}"`);
+                }
+                queryForRefinement = contextAwareQuery;
+            }
+        }
+        else if (!isPersonalizationQuery) {
             // For answer/general queries, use original query without enhancement
+            // BUT: If it's a personalization query, we already set queryForRefinement above
             console.log(`ℹ️ Skipping memory enhancement for ${routing.finalIntent} intent (informational query)`);
             queryForRefinement = cleanQuery;
         }
+        // Note: If isPersonalizationQuery is true, queryForRefinement was already set above
         // Only refine query if it's a shopping/travel intent (NOT movies)
         // ✅ Movies should NOT be refined with price filters - use original query
         const refinedQuery = (shouldEnhanceQuery && routing.finalCardType !== "movies")
@@ -326,8 +480,22 @@ async function handleRequest(req, res) {
                 rawShoppingCards = applyLexicalFilters(refinedQuery, rawShoppingCards);
                 // 3. Soft attribute filters
                 rawShoppingCards = await applyAttributeFilters(refinedQuery, rawShoppingCards);
-                // 4. Rerank using embeddings (C7)
-                results = await rerankCards(refinedQuery, rawShoppingCards, "shopping");
+                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                const category = extractCategoryFromQuery(cleanQuery, finalIntent);
+                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: "Of My Taste" - Match items to preferences using embeddings
+                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                    results = await matchItemsToPreferences(rawShoppingCards, userId, finalIntent, category);
+                }
+                else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                    results = await hybridRerank(rawShoppingCards, refinedQuery, userId, finalIntent, category, 0.6, 0.4);
+                }
+                else {
+                    // Regular reranking (no preferences)
+                    results = await rerankCards(refinedQuery, rawShoppingCards, "shopping");
+                }
                 // 5. LLM-based correction to remove mismatches
                 // ⚡ Get real answer now (should be ready by this point)
                 const answerData = await answerPromise;
@@ -354,10 +522,23 @@ async function handleRequest(req, res) {
                 rawHotelCards = filterHotelsByLocation(rawHotelCards, refinedQuery);
                 // 3. Soft attribute filters
                 rawHotelCards = await applyAttributeFilters(refinedQuery, rawHotelCards);
-                // 4. Rerank using embeddings (C7)
-                results = await rerankCards(refinedQuery, rawHotelCards, "hotels");
+                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: "Of My Taste" - Match hotels to preferences using embeddings
+                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                    results = await matchItemsToPreferences(rawHotelCards, userId, finalIntent, undefined);
+                }
+                else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                    results = await hybridRerank(rawHotelCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                }
+                else {
+                    // Regular reranking (no preferences)
+                    results = await rerankCards(refinedQuery, rawHotelCards, "hotels");
+                }
                 // 5. LLM-based correction (skipped for hotels - all hotels in location are relevant)
-                results = await correctCards(refinedQuery, llmAnswer, results, "hotels");
+                results = await correctCards(refinedQuery, llmAnswer, results);
                 // 6. Generate descriptions ONLY for final displayed results (after all filtering)
                 if (results.length > 0) {
                     results = await enrichHotelsWithThemesAndDescriptions(results);
@@ -378,8 +559,21 @@ async function handleRequest(req, res) {
                 rawRestaurantCards = filterRestaurantsByLocation(rawRestaurantCards, refinedQuery);
                 // 3. Soft attribute filters
                 rawRestaurantCards = await applyAttributeFilters(refinedQuery, rawRestaurantCards);
-                // 4. Rerank using embeddings (C7)
-                results = await rerankCards(refinedQuery, rawRestaurantCards, "restaurants");
+                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: "Of My Taste" - Match restaurants to preferences using embeddings
+                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                    results = await matchItemsToPreferences(rawRestaurantCards, userId, finalIntent, undefined);
+                }
+                else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                    results = await hybridRerank(rawRestaurantCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                }
+                else {
+                    // Regular reranking (no preferences)
+                    results = await rerankCards(refinedQuery, rawRestaurantCards, "restaurants");
+                }
                 // 5. LLM-based correction
                 results = await correctCards(refinedQuery, llmAnswer, results);
                 break;
@@ -396,8 +590,21 @@ async function handleRequest(req, res) {
                 rawFlightCards = applyLexicalFilters(refinedQuery, rawFlightCards);
                 // 3. Soft attribute filters
                 rawFlightCards = await applyAttributeFilters(refinedQuery, rawFlightCards);
-                // 4. Rerank using embeddings (C7)
-                results = await rerankCards(refinedQuery, rawFlightCards, "flights");
+                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: "Of My Taste" - Match flights to preferences using embeddings
+                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                    results = await matchItemsToPreferences(rawFlightCards, userId, finalIntent, undefined);
+                }
+                else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                    results = await hybridRerank(rawFlightCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                }
+                else {
+                    // Regular reranking (no preferences)
+                    results = await rerankCards(refinedQuery, rawFlightCards, "flights");
+                }
                 // 5. LLM-based correction
                 results = await correctCards(refinedQuery, llmAnswer, results);
                 break;
@@ -409,6 +616,15 @@ async function handleRequest(req, res) {
                     console.log(`✅ Places search: ${results.length} places found for query: "${placesQuery}"`);
                     // Apply location filters (downtown, airport, etc.) - NEW
                     results = filterPlacesByLocation(results, placesQuery);
+                    // ✅ PHASE 3: Preference matching for places
+                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                        results = await matchItemsToPreferences(results, userId, finalIntent, undefined);
+                    }
+                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                        results = await hybridRerank(results, placesQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                    }
                     if (results.length > 0) {
                         const sample = results[0];
                         console.log(`📋 Sample result:`, {
@@ -560,6 +776,15 @@ async function handleRequest(req, res) {
                     console.log(`✅ Movies search: ${results.length} movies found`);
                     const inTheatersCount = results.filter((m) => m.isInTheaters).length;
                     console.log(`🎬 ${inTheatersCount} of ${results.length} movies are currently in theaters`);
+                    // ✅ PHASE 3: Preference matching for movies
+                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                        results = await matchItemsToPreferences(results, userId, finalIntent, undefined);
+                    }
+                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                        results = await hybridRerank(results, movieQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                    }
                 }
                 catch (err) {
                     console.error("❌ Movies search error:", err.message);
@@ -613,7 +838,7 @@ async function handleRequest(req, res) {
                     rawHotelCards2 = filterHotelsByLocation(rawHotelCards2, queryForCardSearch);
                     rawHotelCards2 = await applyAttributeFilters(queryForCardSearch, rawHotelCards2);
                     results = await rerankCards(queryForCardSearch, rawHotelCards2, "hotels");
-                    results = await correctCards(queryForCardSearch, llmAnswer, results, "hotels");
+                    results = await correctCards(queryForCardSearch, llmAnswer, results);
                     // Generate descriptions ONLY for final displayed results
                     if (results.length > 0) {
                         results = await enrichHotelsWithThemesAndDescriptions(results);
@@ -754,7 +979,7 @@ async function handleRequest(req, res) {
                         enforcedRaw = filterHotelsByLocation(enforcedRaw, mergedQuery);
                         enforcedRaw = await applyAttributeFilters(mergedQuery, enforcedRaw);
                         enforcedCards = await rerankCards(mergedQuery, enforcedRaw, "hotels");
-                        enforcedCards = await correctCards(mergedQuery, llmAnswer, enforcedCards, "hotels");
+                        enforcedCards = await correctCards(mergedQuery, llmAnswer, enforcedCards);
                         // Generate descriptions ONLY for final displayed results
                         if (enforcedCards.length > 0) {
                             enforcedCards = await enrichHotelsWithThemesAndDescriptions(enforcedCards);
@@ -998,6 +1223,38 @@ async function handleRequest(req, res) {
         }
         console.log(`⏱️ Total LLM answer generation time: ${Date.now() - answerStartTime}ms`);
         console.log(`📤 Sending response - Intent: ${responseIntent}, Cards: ${safeCards.length}, CardType: ${routing.finalCardType}`);
+        // ✅ PERSONALIZATION: Store preference signals (non-blocking, async)
+        // Only store if we have cards and a valid user ID
+        if (safeCards.length > 0 && userId && userId !== "global" && userId !== "dev-user-id") {
+            // Extract signals in background (don't block response)
+            setImmediate(async () => {
+                try {
+                    const signals = extractPreferenceSignals(cleanQuery, responseIntent || "", safeCards);
+                    await storePreferenceSignal({
+                        user_id: userId,
+                        conversation_id: conversationId || undefined,
+                        query: cleanQuery,
+                        intent: responseIntent || undefined,
+                        style_keywords: signals.style_keywords,
+                        price_mentions: signals.price_mentions,
+                        brand_mentions: signals.brand_mentions,
+                        rating_mentions: signals.rating_mentions,
+                        cards_shown: safeCards.slice(0, 20), // Store top 20 cards
+                        user_interaction: {}, // Future: track clicks, time spent
+                    });
+                    // ✅ PHASE 4: Increment conversation count and check if aggregation is needed
+                    incrementConversationCount(userId);
+                    // Check if aggregation is needed (non-blocking)
+                    setImmediate(async () => {
+                        await aggregateIfNeeded(userId);
+                    });
+                }
+                catch (err) {
+                    // Silent fail - don't log errors for non-critical personalization
+                    console.error("⚠️ Preference signal storage failed (non-critical):", err.message);
+                }
+            });
+        }
         const responseData = {
             success: true,
             intent: responseIntent,
@@ -1091,12 +1348,14 @@ async function handleRequest(req, res) {
             lastQuery: cleanQuery,
             lastAnswer: llmAnswer,
         });
-        return res.json(responseData);
+        res.json(responseData);
+        return;
     }
     catch (err) {
         console.error("❌ Agent error:", err);
         if (!res.headersSent) {
-            return res.status(500).json({ error: "Agent failed", detail: err.message });
+            res.status(500).json({ error: "Agent failed", detail: err.message });
+            return;
         }
     }
 }

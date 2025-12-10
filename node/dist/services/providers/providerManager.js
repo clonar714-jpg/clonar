@@ -4,31 +4,32 @@
  * ✅ OPTIMIZED: Parallel provider calls + Caching (Perplexity-style)
  */
 import { QueryOptimizer, extractFilters, applyBackendFilters } from "./baseProvider";
-/**
- * Redis cache for query results (with in-memory fallback)
- */
-import { getCached, setCached } from '../redisCache';
 class QueryCache {
     constructor() {
+        this.cache = new Map();
         this.TTL = 3600000; // 1 hour
     }
     getKey(query, fieldType) {
         return `${fieldType}:${query.toLowerCase().trim()}`;
     }
-    async get(key) {
-        // ✅ Use Redis cache (with in-memory fallback)
-        const cacheKey = `provider:${key}`;
-        return await getCached(cacheKey);
+    get(key) {
+        const entry = this.cache.get(key);
+        if (!entry)
+            return null;
+        if (Date.now() - entry.timestamp > this.TTL) {
+            this.cache.delete(key);
+            return null;
+        }
+        return entry.data;
     }
-    async set(key, data) {
-        // ✅ Use Redis cache (with in-memory fallback)
-        const cacheKey = `provider:${key}`;
-        await setCached(cacheKey, data, this.TTL);
+    set(key, data) {
+        this.cache.set(key, {
+            data,
+            timestamp: Date.now(),
+        });
     }
-    async clear() {
-        // Note: Redis clear would require pattern matching
-        // For now, just log (individual keys will expire naturally)
-        console.log('⚠️ QueryCache.clear() called - keys will expire naturally');
+    clear() {
+        this.cache.clear();
     }
 }
 /**
@@ -60,7 +61,7 @@ export class ProviderManager {
         }
         // ✅ Check cache first (instant return for common queries)
         const cacheKey = this.cache.getKey(query, fieldType);
-        const cached = await this.cache.get(cacheKey);
+        const cached = this.cache.get(cacheKey);
         if (cached) {
             console.log(`⚡ Cache hit for "${query}" (${cached.length} results)`);
             return cached;
@@ -102,7 +103,7 @@ export class ProviderManager {
             const firstSuccess = await Promise.any(providerPromises);
             const finalResults = firstSuccess.results;
             // ✅ Cache successful results
-            await this.cache.set(cacheKey, finalResults);
+            this.cache.set(cacheKey, finalResults);
             console.log(`⚡ Using ${firstSuccess.provider} results (fastest successful - ${finalResults.length} items)`);
             return finalResults;
         }
@@ -118,7 +119,7 @@ export class ProviderManager {
                 if (results && results.length > 0) {
                     const filtered = applyBackendFilters(results, filters, fieldType);
                     if (filtered.length > 0) {
-                        await this.cache.set(cacheKey, filtered);
+                        this.cache.set(cacheKey, filtered);
                         return filtered;
                     }
                 }

@@ -10,8 +10,54 @@ import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../services/AgentService.dart';
 import '../core/api_client.dart';
+import '../services/ChatHistoryServiceCloud.dart';
 import 'ShoppingResultsScreen.dart';
 import 'TravelScreen.dart';
+
+// Chat history model
+class ChatHistoryItem {
+  final String id;
+  final String title;
+  final String query;
+  final DateTime timestamp;
+  final String? imageUrl;
+  final List<Map<String, dynamic>>? conversationHistory; // ✅ Store full conversation history
+
+  ChatHistoryItem({
+    required this.id,
+    required this.title,
+    required this.query,
+    required this.timestamp,
+    this.imageUrl,
+    this.conversationHistory, // ✅ Full conversation history
+  });
+  
+  // Convert to JSON for storage
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'query': query,
+      'timestamp': timestamp.toIso8601String(),
+      'imageUrl': imageUrl,
+      'conversationHistory': conversationHistory,
+    };
+  }
+  
+  // Create from JSON
+  factory ChatHistoryItem.fromJson(Map<String, dynamic> json) {
+    return ChatHistoryItem(
+      id: json['id'] as String,
+      title: json['title'] as String,
+      query: json['query'] as String,
+      timestamp: DateTime.parse(json['timestamp'] as String),
+      imageUrl: json['imageUrl'] as String?,
+      conversationHistory: json['conversationHistory'] != null
+          ? List<Map<String, dynamic>>.from(json['conversationHistory'] as List)
+          : null,
+    );
+  }
+}
 
 class ShopScreen extends StatefulWidget {
   final String? imageUrl;
@@ -32,6 +78,7 @@ class _ShopScreenState extends State<ShopScreen> {
   final FocusNode _searchFocusNode = FocusNode();
   final stt.SpeechToText _speech = stt.SpeechToText();
   final ImagePicker _imagePicker = ImagePicker();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _isVoiceModeActive = false; // Track voice mode state
   bool _hasText = false; // Track if text field has content
   bool _isListening = false; // Track if currently listening
@@ -48,6 +95,10 @@ class _ShopScreenState extends State<ShopScreen> {
   // ✅ FIX 1: Flags to prevent recursion & rebuild storm
   bool _isProgrammaticUpdate = false;
   bool _isSuggestionRequestOngoing = false;
+  
+  // Chat history storage
+  List<ChatHistoryItem> _chatHistory = [];
+  String _searchChatQuery = '';
 
   @override
   void initState() {
@@ -93,6 +144,26 @@ class _ShopScreenState extends State<ShopScreen> {
       _searchFocusNode.unfocus();
       _initializeSpeech();
     });
+    // ✅ Load chat history from persistent storage (async, non-blocking)
+    _loadChatHistoryFromStorage();
+  }
+  
+  /// ✅ Load chat history from persistent storage (async, non-blocking)
+  Future<void> _loadChatHistoryFromStorage() async {
+    try {
+      // Load from storage in background (non-blocking)
+      final chats = await ChatHistoryServiceCloud.loadChatHistory();
+      
+      if (mounted) {
+        setState(() {
+          _chatHistory = chats;
+        });
+        print('📚 Loaded ${chats.length} chats from storage');
+      }
+    } catch (e) {
+      print('❌ Error loading chat history: $e');
+      // Don't crash - just continue with empty list
+    }
   }
 
   Future<void> _initializeSpeech() async {
@@ -604,6 +675,33 @@ class _ShopScreenState extends State<ShopScreen> {
     
     // ✅ Only navigate if there's a query OR an image
     if (query.isNotEmpty || _uploadedImageUrl != null) {
+      // ✅ Save chat to history first (will be updated with conversation history when returning)
+      final chatId = DateTime.now().millisecondsSinceEpoch.toString();
+      final title = (query.isNotEmpty ? query : 'Find similar items').length > 50 
+          ? (query.isNotEmpty ? query : 'Find similar items').substring(0, 50) + '...' 
+          : (query.isNotEmpty ? query : 'Find similar items');
+      final chatItem = ChatHistoryItem(
+        id: chatId,
+        title: title.isEmpty ? 'New chat' : title,
+        query: query.isNotEmpty ? query : 'Find similar items',
+        timestamp: DateTime.now(),
+        imageUrl: _uploadedImageUrl,
+        conversationHistory: null, // Will be updated when returning
+      );
+      
+      setState(() {
+        _chatHistory.insert(0, chatItem);
+        // Keep only last 50 chats
+        if (_chatHistory.length > 50) {
+          _chatHistory.removeRange(50, _chatHistory.length);
+        }
+      });
+      
+      // ✅ Save to persistent storage (async, non-blocking) - Local cache + Cloud sync
+      ChatHistoryServiceCloud.saveChat(chatItem).catchError((e) {
+        print('❌ Error saving chat to storage: $e');
+      });
+      
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -612,7 +710,30 @@ class _ShopScreenState extends State<ShopScreen> {
             imageUrl: _uploadedImageUrl, // ✅ Pass uploaded image URL
           ),
         ),
-      ).then((_) {
+      ).then((returnedHistory) {
+        // ✅ Update chat history with conversation history if returned
+        if (returnedHistory != null && returnedHistory is List && returnedHistory.isNotEmpty) {
+          final chatIndex = _chatHistory.indexWhere((item) => item.id == chatId);
+          if (chatIndex != -1) {
+            final updatedChat = ChatHistoryItem(
+              id: _chatHistory[chatIndex].id,
+              title: _chatHistory[chatIndex].title,
+              query: _chatHistory[chatIndex].query,
+              timestamp: _chatHistory[chatIndex].timestamp,
+              imageUrl: _chatHistory[chatIndex].imageUrl,
+              conversationHistory: List<Map<String, dynamic>>.from(returnedHistory),
+            );
+            
+            setState(() {
+              _chatHistory[chatIndex] = updatedChat;
+            });
+            
+            // ✅ Save to persistent storage (async, non-blocking) - Local cache + Cloud sync
+            ChatHistoryServiceCloud.saveChat(updatedChat).catchError((e) {
+              print('❌ Error saving updated chat to storage: $e');
+            });
+          }
+        }
         // Clear search text and image when returning from ShoppingResultsScreen
         _searchController.clear();
         setState(() {
@@ -786,7 +907,9 @@ class _ShopScreenState extends State<ShopScreen> {
         FocusScope.of(context).unfocus();
       },
       child: Scaffold(
+        key: _scaffoldKey,
         backgroundColor: AppColors.background,
+        drawer: _buildDrawer(),
         body: SafeArea(
           child: Column(
             children: [
@@ -839,14 +962,29 @@ class _ShopScreenState extends State<ShopScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-          // Clonar name on top left
-              Text(
-                'Clonar',
-                style: AppTypography.headline1,
+        children: [
+          // Hamburger menu icon on top left (ChatGPT style - two horizontal lines)
+          GestureDetector(
+            onTap: () {
+              _scaffoldKey.currentState?.openDrawer();
+            },
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              child: Icon(
+                Icons.menu, // Two horizontal lines icon
+                color: AppColors.iconPrimary,
+                size: 24,
               ),
+            ),
+          ),
+          
+          // Clonar name in center
+          Text(
+            'Clonar',
+            style: AppTypography.headline1,
+          ),
         
-        // Top Right Icons
+          // Top Right Icons
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -857,9 +995,9 @@ class _ShopScreenState extends State<ShopScreen> {
                   FocusScope.of(context).unfocus();
                 },
                 child: FaIcon(
-                 FontAwesomeIcons.bell,
-                color: AppColors.iconPrimary,
-                size: 24,
+                  FontAwesomeIcons.bell,
+                  color: AppColors.iconPrimary,
+                  size: 24,
                 ),
               ),
               const SizedBox(width: 30),
@@ -870,17 +1008,477 @@ class _ShopScreenState extends State<ShopScreen> {
                   FocusScope.of(context).unfocus();
                 },
                 child: FaIcon(
-                FontAwesomeIcons.facebookMessenger,
-                color: AppColors.iconPrimary,
-                size: 24,
+                  FontAwesomeIcons.facebookMessenger,
+                  color: AppColors.iconPrimary,
+                  size: 24,
                 ),
               ),
             ],
-        ),
+          ),
       ],
       ),
     );
   }
+
+  // Build drawer/sidebar (ChatGPT style)
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: AppColors.background,
+      width: MediaQuery.of(context).size.width * 0.65, // 65% of screen width
+      child: SafeArea(
+        child: Column(
+          children: [
+            // Header with logo and close button (ChatGPT style)
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Clonar logo/text
+                  Text(
+                    'Clonar',
+                    style: AppTypography.headline2.copyWith(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  // Close button (X icon)
+                  IconButton(
+                    icon: Icon(
+                      Icons.close,
+                      color: AppColors.iconPrimary,
+                      size: 24,
+                    ),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+            ),
+            
+            const Divider(color: AppColors.border, height: 1),
+            
+            // Menu options (ChatGPT style)
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  // Add new chat
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: Icon(
+                      Icons.edit_outlined,
+                      color: AppColors.iconPrimary,
+                      size: 22,
+                    ),
+                    title: Text(
+                      'New chat',
+                      style: AppTypography.body1.copyWith(
+                        color: AppColors.textPrimary,
+                        fontSize: 15,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _startNewChat();
+                    },
+                  ),
+                  
+                  // Search chats
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: Icon(
+                      Icons.search,
+                      color: AppColors.iconPrimary,
+                      size: 22,
+                    ),
+                    title: Text(
+                      'Search chats',
+                      style: AppTypography.body1.copyWith(
+                        color: AppColors.textPrimary,
+                        fontSize: 15,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _showSearchChatsDialog();
+                    },
+                  ),
+                  
+                  // Library
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: Icon(
+                      Icons.library_books_outlined,
+                      color: AppColors.iconPrimary,
+                      size: 22,
+                    ),
+                    title: Text(
+                      'Library',
+                      style: AppTypography.body1.copyWith(
+                        color: AppColors.textPrimary,
+                        fontSize: 15,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      // TODO: Implement library functionality
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Library feature coming soon'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                  ),
+                  
+                  const Divider(color: AppColors.border, height: 1),
+                  
+                  // Your chats header
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Text(
+                      'Your chats',
+                      style: AppTypography.caption.copyWith(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  
+                  // Chat history list
+                  if (_chatHistory.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.all(32.0),
+                      child: Center(
+                        child: Text(
+                          'No chat history yet',
+                          style: AppTypography.body2.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    ..._chatHistory
+                        .where((chat) => _searchChatQuery.isEmpty || 
+                            chat.title.toLowerCase().contains(_searchChatQuery) ||
+                            chat.query.toLowerCase().contains(_searchChatQuery))
+                        .map((chat) => ListTile(
+                      title: Text(
+                        chat.title,
+                        style: AppTypography.body2.copyWith(
+                          color: AppColors.textPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        _formatTimestamp(chat.timestamp),
+                        style: AppTypography.caption.copyWith(
+                          color: AppColors.textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                      trailing: IconButton(
+                        icon: Icon(
+                          Icons.more_vert,
+                          color: AppColors.iconSecondary,
+                          size: 20,
+                        ),
+                        onPressed: () {
+                          _showChatOptions(chat);
+                        },
+                      ),
+                      onTap: () {
+                        Navigator.of(context).pop(); // Close drawer first
+                        // Small delay to ensure drawer is closed before navigation
+                        Future.delayed(const Duration(milliseconds: 100), () {
+                          _loadChat(chat);
+                        });
+                      },
+                    )).toList(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // Start new chat
+  void _startNewChat() {
+    setState(() {
+      _searchController.clear();
+      _uploadedImageUrl = null;
+      _hasText = false;
+    });
+    FocusScope.of(context).unfocus();
+  }
+  
+  // Show search chats dialog
+  void _showSearchChatsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.background,
+        title: Text(
+          'Search chats',
+          style: AppTypography.headline3.copyWith(
+            color: AppColors.textPrimary,
+          ),
+        ),
+        content: TextField(
+          style: AppTypography.body1.copyWith(
+            color: AppColors.textPrimary,
+          ),
+          decoration: InputDecoration(
+            hintText: 'Search your chats...',
+            hintStyle: AppTypography.body1.copyWith(
+              color: AppColors.textSecondary,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(color: AppColors.primary),
+            ),
+          ),
+          onChanged: (value) {
+            setState(() {
+              _searchChatQuery = value.toLowerCase();
+            });
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: Text(
+              'Cancel',
+              style: AppTypography.body1.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Show chat options menu
+  void _showChatOptions(ChatHistoryItem chat) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.background,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: AppColors.error),
+              title: Text(
+                'Delete chat',
+                style: AppTypography.body1.copyWith(
+                  color: AppColors.error,
+                ),
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                _deleteChat(chat);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.edit_outlined, color: AppColors.iconPrimary),
+              title: Text(
+                'Rename',
+                style: AppTypography.body1.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                _renameChat(chat);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // Load a chat from history
+  void _loadChat(ChatHistoryItem chat) {
+    print('📱 Loading chat: ${chat.title}, has history: ${chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty}');
+    // ✅ Navigate to ShoppingResultsScreen with conversation history
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ShoppingResultsScreen(
+          query: chat.query,
+          imageUrl: chat.imageUrl,
+          initialConversationHistory: chat.conversationHistory, // ✅ Pass conversation history (can be null for new chats)
+        ),
+      ),
+    ).then((returnedHistory) {
+      // ✅ Update chat history if conversation history was returned
+      if (returnedHistory != null && returnedHistory is List) {
+        print('💾 Saving conversation history for chat: ${chat.title}');
+        final index = _chatHistory.indexWhere((item) => item.id == chat.id);
+        if (index != -1) {
+          final updatedChat = ChatHistoryItem(
+            id: chat.id,
+            title: chat.title,
+            query: chat.query,
+            timestamp: chat.timestamp,
+            imageUrl: chat.imageUrl,
+            conversationHistory: List<Map<String, dynamic>>.from(returnedHistory),
+          );
+          
+          setState(() {
+            _chatHistory[index] = updatedChat;
+          });
+          
+          // ✅ Save to persistent storage (async, non-blocking) - Local cache + Cloud sync
+          ChatHistoryServiceCloud.saveChat(updatedChat).catchError((e) {
+            print('❌ Error saving conversation history to storage: $e');
+          });
+        }
+      }
+    });
+  }
+  
+  // Delete a chat
+  void _deleteChat(ChatHistoryItem chat) {
+    setState(() {
+      _chatHistory.removeWhere((item) => item.id == chat.id);
+    });
+    
+    // ✅ Delete from persistent storage (async, non-blocking) - Local cache + Cloud sync
+    ChatHistoryServiceCloud.deleteChat(chat.id).catchError((e) {
+      print('❌ Error deleting chat from storage: $e');
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Chat deleted'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+  
+  // Rename a chat
+  void _renameChat(ChatHistoryItem chat) {
+    final controller = TextEditingController(text: chat.title);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.background,
+        title: Text(
+          'Rename chat',
+          style: AppTypography.headline3.copyWith(
+            color: AppColors.textPrimary,
+          ),
+        ),
+        content: TextField(
+          controller: controller,
+          style: AppTypography.body1.copyWith(
+            color: AppColors.textPrimary,
+          ),
+          decoration: InputDecoration(
+            hintText: 'Enter new name',
+            hintStyle: AppTypography.body1.copyWith(
+              color: AppColors.textSecondary,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(color: AppColors.primary),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(
+              'Cancel',
+              style: AppTypography.body1.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                final index = _chatHistory.indexWhere((item) => item.id == chat.id);
+                if (index != -1) {
+                  final updatedChat = ChatHistoryItem(
+                    id: chat.id,
+                    title: controller.text.trim().isEmpty ? chat.title : controller.text.trim(),
+                    query: chat.query,
+                    timestamp: chat.timestamp,
+                    imageUrl: chat.imageUrl,
+                    conversationHistory: chat.conversationHistory, // ✅ Preserve conversation history
+                  );
+                  
+                  setState(() {
+                    _chatHistory[index] = updatedChat;
+                  });
+                  
+                  // ✅ Save to persistent storage (async, non-blocking) - Local cache + Cloud sync
+                  ChatHistoryServiceCloud.saveChat(updatedChat).catchError((e) {
+                    print('❌ Error saving renamed chat to storage: $e');
+                  });
+                }
+              });
+              Navigator.of(context).pop();
+            },
+            child: Text(
+              'Save',
+              style: AppTypography.body1.copyWith(
+                color: AppColors.primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Format timestamp
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final difference = now.difference(timestamp);
+    
+    if (difference.inDays == 0) {
+      if (difference.inHours == 0) {
+        if (difference.inMinutes == 0) {
+          return 'Just now';
+        }
+        return '${difference.inMinutes}m ago';
+      }
+      return '${difference.inHours}h ago';
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays}d ago';
+    } else {
+      return '${timestamp.day}/${timestamp.month}/${timestamp.year}';
+    }
+  }
+  
 
   Widget _buildSearchBar() {
     return Padding(

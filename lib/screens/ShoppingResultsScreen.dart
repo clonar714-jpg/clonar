@@ -212,11 +212,13 @@ List<Map<String, dynamic>> parseTextWithLocationsIsolate(Map<String, dynamic> da
 class ShoppingResultsScreen extends StatefulWidget {
   final String query;
   final String? imageUrl;
+  final List<Map<String, dynamic>>? initialConversationHistory; // ✅ Accept conversation history
 
   const ShoppingResultsScreen({
     super.key,
     required this.query,
     this.imageUrl,
+    this.initialConversationHistory, // ✅ Optional conversation history
   });
 
   @override
@@ -238,6 +240,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   final Map<String, bool> _hasAnimated = {};
   // ✅ PATCH C1: Preprocessed result cache (prevents heavy computation in build)
   Map<String, dynamic>? _processedResult;
+  // ✅ PATCH A: Prevent main-thread freeze
+  bool _isComputingResponse = false;
   // Token queue for smooth streaming display
   Timer? _streamTimer;
   String _displayedText = ''; // What's currently displayed (for animation)
@@ -289,21 +293,65 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     super.initState();
     WidgetsBinding.instance.addObserver(this); // register lifecycle listener
     print('ShoppingResultsScreen query: "${widget.query}"');
-    // Create initial QuerySession
-    final resultType = _detectResultType(widget.query);
-    final initialSession = QuerySession(
-      query: widget.query,
-      products: [],
-      hotelResults: [],
-      resultType: resultType,
-      isLoading: true,
-    );
-    conversationHistory.add(initialSession);
-    _queryKeys.add(GlobalKey());
+    
+    // ✅ If conversation history is provided, restore it
+    if (widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
+      print('📚 Restoring ${widget.initialConversationHistory!.length} previous conversation sessions');
+      for (final sessionData in widget.initialConversationHistory!) {
+        final resultType = sessionData['intent'] as String? ?? sessionData['cardType'] as String? ?? _detectResultType(sessionData['query'] as String);
+        final cardsData = sessionData['cards'] as List?;
+        final products = cardsData != null
+            ? cardsData.map((p) {
+                try {
+                  return Product.fromJson(Map<String, dynamic>.from(p));
+                } catch (e) {
+                  print('⚠️ Error parsing product: $e');
+                  return null;
+                }
+              }).whereType<Product>().toList()
+            : <Product>[];
+        
+        final restoredSession = QuerySession(
+          query: sessionData['query'] as String,
+          products: products,
+          hotelResults: (sessionData['results'] as List?)?.map((r) => Map<String, dynamic>.from(r)).toList() ?? [],
+          resultType: resultType,
+          isLoading: false,
+          summary: sessionData['summary'] as String?,
+          rawResults: (sessionData['results'] as List?)?.map((r) => Map<String, dynamic>.from(r)).toList() ?? [],
+          intent: sessionData['intent'] as String?,
+          cardType: sessionData['cardType'] as String?,
+          cards: (sessionData['cards'] as List?)?.map((c) => Map<String, dynamic>.from(c)).toList() ?? [],
+        );
+        conversationHistory.add(restoredSession);
+        _queryKeys.add(GlobalKey());
+      }
+    }
+    
+    // Create initial QuerySession for current query (only if it's not already in history)
+    final queryAlreadyInHistory = conversationHistory.any((session) => session.query == widget.query);
+    if (!queryAlreadyInHistory) {
+      final resultType = _detectResultType(widget.query);
+      final initialSession = QuerySession(
+        query: widget.query,
+        products: [],
+        hotelResults: [],
+        resultType: resultType,
+        isLoading: true,
+      );
+      conversationHistory.add(initialSession);
+      _queryKeys.add(GlobalKey());
+      // ✅ FIX: Use post-frame callback to avoid setState during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _loadResultsForSession(conversationHistory.length - 1); // Load results for the new session
+        }
+      });
+    }
+    
     _followUpController.addListener(() {
       print('Text changed: "${_followUpController.text}"');
     });
-    _loadResultsForSession(0);
   }
 
 
@@ -1423,13 +1471,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 final context = key.currentContext;
                 
                 if (context != null) {
-                  // Position query at TOP of viewport (alignment: 0.0 = top)
-                  Scrollable.ensureVisible(
-                    context,
-                    duration: const Duration(milliseconds: 0), // Instant!
-                    alignment: 0.0, // 0.0 = top of viewport
-                    curve: Curves.linear,
-                  );
+                  // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
+                  Future.delayed(const Duration(milliseconds: 1), () {
+                    if (!mounted) return;
+                    Scrollable.ensureVisible(
+                      context!,
+                      duration: const Duration(milliseconds: 1),
+                      alignment: 0.0, // 0.0 = top of viewport
+                      curve: Curves.linear,
+                    );
+                  });
                   print('✅ Positioned new query at TOP (index: $newQueryIndex)');
                   return;
                 }
@@ -1444,12 +1495,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   final context = key.currentContext;
                   
                   if (context != null) {
-                    Scrollable.ensureVisible(
-                      context,
-                      duration: const Duration(milliseconds: 0),
-                      alignment: 0.0,
-                      curve: Curves.linear,
-                    );
+                    // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
+                    Future.delayed(const Duration(milliseconds: 1), () {
+                      if (!mounted) return;
+                      Scrollable.ensureVisible(
+                        context!,
+                        duration: const Duration(milliseconds: 1),
+                        alignment: 0.0,
+                        curve: Curves.linear,
+                      );
+                    });
                     print('✅ Final attempt - positioned new query at TOP');
                   }
                 }
@@ -1469,12 +1524,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                     final key = _queryKeys[newQueryIndex];
                     final context = key.currentContext;
                     if (context != null) {
-                      Scrollable.ensureVisible(
-                        context,
-                        duration: const Duration(milliseconds: 0),
-                        alignment: 0.0,
-                        curve: Curves.linear,
-                      );
+                      // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
+                      Future.delayed(const Duration(milliseconds: 1), () {
+                        if (!mounted) return;
+                        Scrollable.ensureVisible(
+                          context!,
+                          duration: const Duration(milliseconds: 1),
+                          alignment: 0.0,
+                          curve: Curves.linear,
+                        );
+                      });
                       print('✅ Retry - positioned new query at TOP');
                     }
                   }
@@ -1521,13 +1580,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       final context = key.currentContext;
       
       if (context != null) {
-        // Use Scrollable.ensureVisible to position query title at TOP
-        Scrollable.ensureVisible(
-          context,
-          duration: const Duration(milliseconds: 200), // Faster for better UX
-          alignment: 0.0, // 0.0 = top of viewport
-          curve: Curves.easeOut,
-        );
+        // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
+        Future.delayed(const Duration(milliseconds: 1), () {
+          if (!mounted) return;
+          Scrollable.ensureVisible(
+            context!,
+            duration: const Duration(milliseconds: 1),
+            alignment: 0.0, // 0.0 = top of viewport
+            curve: Curves.easeOut,
+          );
+        });
         return; // Success!
       }
     }
@@ -1568,18 +1630,22 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         
         if (hasContext) {
           print('   ✅ Scrolling to query at index: $queryIndex');
-      try {
-        Scrollable.ensureVisible(
-              key.currentContext!,
-              duration: const Duration(milliseconds: 400),
-              alignment: 0.0, // 0.0 = top of viewport
-              curve: Curves.easeInOut,
-            );
-            print('   ✅ Scroll command executed successfully');
-            return;
-      } catch (e) {
-            print('   ❌ Scrollable.ensureVisible failed: $e');
-        }
+          // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
+          Future.delayed(const Duration(milliseconds: 1), () {
+            if (!mounted) return;
+            try {
+              Scrollable.ensureVisible(
+                key.currentContext!,
+                duration: const Duration(milliseconds: 1),
+                alignment: 0.0, // 0.0 = top of viewport
+                curve: Curves.easeInOut,
+              );
+              print('   ✅ Scroll command executed successfully');
+            } catch (e) {
+              print('   ❌ Scrollable.ensureVisible failed: $e');
+            }
+          });
+          return;
         } else {
           print('   ⚠️ Key context is null, will try fallback');
       }
@@ -2022,24 +2088,31 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           }
         }).toList();
         
-        // ✅ PATCH E3: Throttle setState calls (prevents rebuilding during frame rendering)
-        if (!mounted) return;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              conversationHistory[sessionIndex] = session.copyWith(
-                products: products,
-                resultType: resultType,
-                isLoading: false,
-                summary: cleanSummary,
-                intent: responseData['intent']?.toString(),
-                cardType: responseData['cardType']?.toString(),
-                cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
-                rawResults: (responseData['results'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
-                followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-              );
-            });
+        // ✅ PATCH A: Prevent main-thread freeze
+        if (_isComputingResponse) return;
+        _isComputingResponse = true;
+        
+        Future.microtask(() {
+          if (!mounted) {
+            _isComputingResponse = false;
+            return;
           }
+          
+          setState(() {
+            conversationHistory[sessionIndex] = session.copyWith(
+              products: products,
+              resultType: resultType,
+              isLoading: false,
+              summary: cleanSummary,
+              intent: responseData['intent']?.toString(),
+              cardType: responseData['cardType']?.toString(),
+              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
+              rawResults: (responseData['results'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
+              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+            );
+          });
+          
+          _isComputingResponse = false;
         });
       } else if (resultType == "hotel") {
         // ✅ Perplexity-style: Check if backend returned sections + map structure
@@ -2090,72 +2163,105 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         
         print('🏨 Hotel response: ${parsedSections.length} sections, ${hotelResults.length} total hotels, ${parsedMapPoints.length} map points');
         
-        // ✅ PATCH C2: Preprocess response ONCE after API returns
-        final processed = _preprocessResponse(responseData);
+        // ✅ PATCH A: Prevent main-thread freeze
+        if (_isComputingResponse) return;
+        _isComputingResponse = true;
         
-        setState(() {
-          _processedResult = processed;
-          conversationHistory[sessionIndex] = session.copyWith(
-            hotelResults: hotelResults,
-            resultType: resultType,
-            isLoading: false,
-            summary: cleanSummary,
-            intent: responseData['intent']?.toString(),
-            cardType: responseData['cardType']?.toString(),
-            cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            rawResults: hotelResults,
-            followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-            hotelSections: parsedSections.isNotEmpty ? parsedSections : null,
-            hotelMapPoints: parsedMapPoints.isNotEmpty ? parsedMapPoints : null,
-          );
+        Future.microtask(() {
+          // ✅ PATCH C2: Preprocess response ONCE after API returns
+          final processed = _preprocessResponse(responseData);
+          
+          if (!mounted) {
+            _isComputingResponse = false;
+            return;
+          }
+          
+          setState(() {
+            _processedResult = processed;
+            conversationHistory[sessionIndex] = session.copyWith(
+              hotelResults: hotelResults,
+              resultType: resultType,
+              isLoading: false,
+              summary: cleanSummary,
+              intent: responseData['intent']?.toString(),
+              cardType: responseData['cardType']?.toString(),
+              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              rawResults: hotelResults,
+              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+              hotelSections: parsedSections.isNotEmpty ? parsedSections : null,
+              hotelMapPoints: parsedMapPoints.isNotEmpty ? parsedMapPoints : null,
+            );
+          });
+          
+          _isComputingResponse = false;
         });
       } else if (resultType == "restaurants" || resultType == "flights" || resultType == "movies") {
         final List<Map<String, dynamic>> typedResults = results
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         
-        // ✅ PATCH E3: Throttle setState calls (prevents rebuilding during frame rendering)
-        if (!mounted) return;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              conversationHistory[sessionIndex] = session.copyWith(
-                rawResults: typedResults,
-                resultType: resultType,
-                isLoading: false,
-                summary: cleanSummary,
-                products: [],
-                hotelResults: [],
-                intent: responseData['intent']?.toString(),
-                cardType: responseData['cardType']?.toString(),
-                cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-                followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-              );
-            });
+        // ✅ PATCH A: Prevent main-thread freeze
+        if (_isComputingResponse) return;
+        _isComputingResponse = true;
+        
+        Future.microtask(() {
+          if (!mounted) {
+            _isComputingResponse = false;
+            return;
           }
+          
+          setState(() {
+            conversationHistory[sessionIndex] = session.copyWith(
+              rawResults: typedResults,
+              resultType: resultType,
+              isLoading: false,
+              summary: cleanSummary,
+              products: [],
+              hotelResults: [],
+              intent: responseData['intent']?.toString(),
+              cardType: responseData['cardType']?.toString(),
+              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+            );
+          });
+          
+          _isComputingResponse = false;
         });
       } else if (resultType == "location") {
         final List<Map<String, dynamic>> locationResults = results
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         
-        // ✅ PATCH C2: Preprocess response ONCE after API returns
-        final processed = _preprocessResponse(responseData);
+        // ✅ PATCH A: Prevent main-thread freeze
+        if (_isComputingResponse) return;
+        _isComputingResponse = true;
         
-        setState(() {
-          _processedResult = processed;
-          conversationHistory[sessionIndex] = session.copyWith(
-            locationCards: locationResults,
-            resultType: resultType,
-            isLoading: false,
-            summary: cleanSummary,
-            products: [],
-            hotelResults: [],
-            intent: responseData['intent']?.toString(),
-            cardType: responseData['cardType']?.toString(),
-            cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-          );
+        Future.microtask(() {
+          // ✅ PATCH C2: Preprocess response ONCE after API returns
+          final processed = _preprocessResponse(responseData);
+          
+          if (!mounted) {
+            _isComputingResponse = false;
+            return;
+          }
+          
+          setState(() {
+            _processedResult = processed;
+            conversationHistory[sessionIndex] = session.copyWith(
+              locationCards: locationResults,
+              resultType: resultType,
+              isLoading: false,
+              summary: cleanSummary,
+              products: [],
+              hotelResults: [],
+              intent: responseData['intent']?.toString(),
+              cardType: responseData['cardType']?.toString(),
+              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+            );
+          });
+          
+          _isComputingResponse = false;
         });
       } else if (resultType == "places") {
         // 🎯 Places results handling
@@ -2163,50 +2269,70 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         
-        // ✅ PATCH C2: Preprocess response ONCE after API returns
-        final processed = _preprocessResponse(responseData);
+        // ✅ PATCH A: Prevent main-thread freeze
+        if (_isComputingResponse) return;
+        _isComputingResponse = true;
         
-        // ✅ PATCH E3: Throttle setState calls (prevents rebuilding during frame rendering)
-        if (!mounted) return;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              _processedResult = processed;
-              conversationHistory[sessionIndex] = session.copyWith(
-                locationCards: placesResults, // Reuse locationCards for places
-                rawResults: placesResults, // Also store in rawResults
-                resultType: resultType,
-                isLoading: false,
-                summary: cleanSummary,
-                products: [],
-                hotelResults: [],
-                intent: responseData['intent']?.toString(),
-                cardType: responseData['cardType']?.toString(),
-                cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-                followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-              );
-            });
+        Future.microtask(() {
+          // ✅ PATCH C2: Preprocess response ONCE after API returns
+          final processed = _preprocessResponse(responseData);
+          
+          if (!mounted) {
+            _isComputingResponse = false;
+            return;
           }
+          
+          setState(() {
+            _processedResult = processed;
+            conversationHistory[sessionIndex] = session.copyWith(
+              locationCards: placesResults, // Reuse locationCards for places
+              rawResults: placesResults, // Also store in rawResults
+              resultType: resultType,
+              isLoading: false,
+              summary: cleanSummary,
+              products: [],
+              hotelResults: [],
+              intent: responseData['intent']?.toString(),
+              cardType: responseData['cardType']?.toString(),
+              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+            );
+          });
+          
+          _isComputingResponse = false;
         });
       } else {
         // ✅ Fix: Handle "answer" intent - display answer directly (not streaming)
         // The backend already generated the answer, so we just need to display it
-        setState(() {
-          conversationHistory[sessionIndex] = session.copyWith(
-            resultType: resultType, // Should be "answer"
-            isLoading: false,
-            summary: cleanSummary, // ✅ Use the answer from backend
-            products: [],
-            hotelResults: [],
-            intent: responseData['intent']?.toString(),
-            cardType: responseData['cardType']?.toString(),
-            cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            rawResults: [],
-            followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-            sources: (responseData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            locationCards: (responseData['locations'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            destinationImages: (responseData['destination_images'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [],
-          );
+        // ✅ PATCH A: Prevent main-thread freeze
+        if (_isComputingResponse) return;
+        _isComputingResponse = true;
+        
+        Future.microtask(() {
+          if (!mounted) {
+            _isComputingResponse = false;
+            return;
+          }
+          
+          setState(() {
+            conversationHistory[sessionIndex] = session.copyWith(
+              resultType: resultType, // Should be "answer"
+              isLoading: false,
+              summary: cleanSummary, // ✅ Use the answer from backend
+              products: [],
+              hotelResults: [],
+              intent: responseData['intent']?.toString(),
+              cardType: responseData['cardType']?.toString(),
+              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              rawResults: [],
+              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
+              sources: (responseData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              locationCards: (responseData['locations'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              destinationImages: (responseData['destination_images'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [],
+            );
+          });
+          
+          _isComputingResponse = false;
         });
       }
       
@@ -2230,13 +2356,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             final key = _queryKeys[sessionIndex];
             final context = key.currentContext;
             if (context != null) {
-              // Re-position the new query at TOP after results load
-              Scrollable.ensureVisible(
-                context,
-                duration: const Duration(milliseconds: 0),
-                alignment: 0.0, // Top of viewport
-                curve: Curves.linear,
-              );
+              // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
+              Future.delayed(const Duration(milliseconds: 1), () {
+                if (!mounted) return;
+                Scrollable.ensureVisible(
+                  context!,
+                  duration: const Duration(milliseconds: 1),
+                  alignment: 0.0, // Top of viewport
+                  curve: Curves.linear,
+                );
+              });
               print('✅ Re-positioned follow-up query at TOP after results loaded (index: $sessionIndex)');
             }
           }
@@ -2597,7 +2726,24 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           FocusScope.of(context).unfocus();
           // Small delay to ensure keyboard dismissal
           Future.delayed(const Duration(milliseconds: 100), () {
-            Navigator.pop(context);
+            // ✅ Return conversation history when navigating back
+            final historyToReturn = conversationHistory.map((session) {
+              return {
+                'query': session.query,
+                'summary': session.summary ?? '',
+                'intent': session.intent ?? session.resultType,
+                'cardType': session.cardType ?? session.resultType,
+                'cards': session.products.map((p) => {
+                  'title': p.title,
+                  'price': p.price,
+                  'rating': p.rating,
+                  'images': p.images,
+                  'source': p.source,
+                }).toList(),
+                'results': session.rawResults,
+              };
+            }).toList();
+            Navigator.pop(context, historyToReturn);
           });
         },
       ),
@@ -3143,7 +3289,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               child: Builder(
                 builder: (context) {
                   final animKey = 'answer-${session.query.hashCode}';
-                  final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                  // ✅ PATCH C: Prevent animation rebuild storms
+                  final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
                   return PerplexityTypingAnimation(
                     text: session.summary!,
                     isStreaming: session.isStreaming,
@@ -3435,7 +3582,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             Builder(
               builder: (context) {
                 final animKey = 'answer-${session.query.hashCode}';
-                final shouldAnimate = !_hasAnimated.containsKey(animKey);
+                // ✅ PATCH C: Prevent animation rebuild storms
+                final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
                 return PerplexityTypingAnimation(
                   text: session.summary!,
                   isStreaming: session.isStreaming,
@@ -3737,7 +3885,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       child: Builder(
         builder: (context) {
           final animKey = 'answer-${session.query.hashCode}';
-          final shouldAnimate = !_hasAnimated.containsKey(animKey);
+          // ✅ PATCH C: Prevent animation rebuild storms
+          final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
           return PerplexityTypingAnimation(
             text: summary,
             isStreaming: session.isStreaming,
@@ -4154,6 +4303,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             Builder(
               builder: (context) {
                 final animKey = 'product-desc-${product.id}';
+                // ✅ PATCH C: Prevent animation rebuild storms (pre-generated, no streaming)
                 final shouldAnimate = !_hasAnimated.containsKey(animKey);
                 return PerplexityTypingAnimation(
                   text: product.description,
@@ -4863,6 +5013,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 builder: (context, snapshot) {
                   final summary = snapshot.data ?? 'A modern property offering comfortable accommodations.';
                   final animKey = 'hotel-summary-${safeHotel['name']}';
+                  // ✅ PATCH C: Prevent animation rebuild storms (pre-generated, no streaming)
                   final shouldAnimate = !_hasAnimated.containsKey(animKey);
                   return PerplexityTypingAnimation(
                     text: summary,
@@ -5526,8 +5677,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     
     // 2) Briefing text with animation
     if (parsed.briefingText.isNotEmpty) {
-      // ✅ PATCH B3: Freeze-proof answer rendering
-      final shouldAnimate = session.isStreaming && !_hasAnimated.containsKey("main-answer");
+      // ✅ PATCH C: Prevent animation rebuild storms
+      final shouldAnimate = !_hasAnimated.containsKey("main-answer") && !session.isStreaming;
       widgets.add(
         PerplexityTypingAnimation(
           text: parsed.briefingText,
@@ -5551,7 +5702,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     // 3) Valid place names with animation
     if (parsed.placeNamesText.isNotEmpty) {
       final animKey = 'answer-${session.query.hashCode}-places';
-      final shouldAnimate = !_hasAnimated.containsKey(animKey);
+      // ✅ PATCH C: Prevent animation rebuild storms
+      final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
       widgets.add(
         PerplexityTypingAnimation(
           text: 'Top places to visit include: ${parsed.placeNamesText}.',
@@ -5580,7 +5732,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       
       if (text.isNotEmpty) {
         final animKey = 'answer-${session.query.hashCode}-segment-$i';
-        final shouldAnimate = !_hasAnimated.containsKey(animKey);
+        // ✅ PATCH C: Prevent animation rebuild storms
+        final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
         widgets.add(
           PerplexityTypingAnimation(
             text: text,
@@ -6366,6 +6519,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             Builder(
               builder: (context) {
                 final animKey = 'place-desc-$name';
+                // ✅ PATCH C: Prevent animation rebuild storms (pre-generated, no streaming)
                 final shouldAnimate = !_hasAnimated.containsKey(animKey);
                 return PerplexityTypingAnimation(
                   text: description,
@@ -6829,6 +6983,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 ? Builder(
                     builder: (context) {
                       final animKey = 'location-desc-$title';
+                      // ✅ PATCH C: Prevent animation rebuild storms
                       final shouldAnimate = !_hasAnimated.containsKey(animKey);
                       return PerplexityTypingAnimation(
                         text: description,

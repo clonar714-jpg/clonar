@@ -156,11 +156,22 @@ function extractPrice(text: string): string | null {
 
 /**
  * Strong city extractor for follow-ups.
+ * Handles both uppercase and lowercase city names.
  */
 function extractCity(text: string): string | null {
-  const regex = /\b(in|at|near|from)\s+([A-Z][a-zA-Z\s]+)/;
-  const m = text.match(regex);
+  // Try uppercase first (e.g., "hotels in New York")
+  let regex = /\b(in|at|near|from)\s+([A-Z][a-zA-Z\s]+)/;
+  let m = text.match(regex);
   if (m) return m[2].trim();
+  
+  // Try lowercase/case-insensitive (e.g., "hotels in bangkok")
+  regex = /\b(in|at|near|from)\s+([a-zA-Z][a-zA-Z\s]{2,})/;
+  m = text.match(regex);
+  if (m) {
+    const city = m[2].trim();
+    // Capitalize first letter of each word for consistency
+    return city.split(/\s+/).map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ');
+  }
   return null;
 }
 

@@ -173,8 +173,23 @@ export async function detectFollowUpIntent(
   }
 
   if (previousIntent === "hotels") {
+    // ✅ Check for location-related queries (near, downtown, airport, etc.)
+    // These are likely hotel refinements when previous intent was hotels
+    const locationKeywords = ["near", "downtown", "airport", "beach", "center", "district", "area", "close to", "around"];
+    if (locationKeywords.some(keyword => newQuery.includes(keyword))) {
+      console.log(`🧠 Hotel context: Location query "${newQuery}" inherits hotels intent`);
+      return "hotels";
+    }
+    
     const hotelScore = await matchCategory(newQuery, followUpHotelTriggers);
     if (hotelScore >= 0.40) return "hotels";
+    
+    // ✅ If query is vague/weak and previous was hotels, inherit hotels intent
+    if (queryIsWeak(newQuery)) {
+      console.log(`🧠 Hotel context: Weak query "${newQuery}" inherits hotels intent`);
+      return "hotels";
+    }
+    
     return explicit; // fall back to semanticIntent
   }
 

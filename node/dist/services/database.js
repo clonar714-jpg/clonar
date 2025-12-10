@@ -31,6 +31,10 @@ export const db = {
     personaItems: () => supabaseAdmin().from("persona_items"),
     collages: () => supabaseAdmin().from("collages"),
     collageItems: () => supabaseAdmin().from("collage_items"),
+    conversations: () => supabaseAdmin().from("conversations"),
+    conversationMessages: () => supabaseAdmin().from("conversation_messages"),
+    userPreferences: () => supabaseAdmin().from("user_preferences"),
+    preferenceSignals: () => supabaseAdmin().from("preference_signals"),
     storage: () => supabaseAdmin().storage,
 };
 export const connectDatabase = async () => {

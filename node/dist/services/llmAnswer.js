@@ -104,11 +104,14 @@ FORMAT RULES:
 - For current events, dates, or recent information, ONLY use the web information provided
 - For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
 
-IMPORTANT: Each user query is a NEW question that requires a NEW answer.
-- If the user asks a follow-up question, provide a fresh answer to that specific question
-- Do NOT repeat the previous answer
-- Do NOT say "as mentioned before" or "as I said earlier"
-- Treat each query independently and provide a complete answer
+IMPORTANT: Use conversation context for follow-up queries.
+- If the user asks a follow-up question (e.g., "show me luxury ones", "more costlier", "cheaper options", "the red one"), you MUST understand it in the context of the previous conversation
+- For follow-up queries, reference the previous query's topic/subject to provide a complete answer
+- Example: If previous query was "hand made chairs" and user asks "more costlier", understand it as "more costlier handmade chairs"
+- Example: If previous query was "hotels in Miami" and user asks "luxury ones", understand it as "luxury hotels in Miami"
+- Example: If previous query was "nike shoes" and user asks "under $100", understand it as "nike shoes under $100"
+- Only treat queries as independent if they are clearly starting a new topic (e.g., switching from "chairs" to "watches")
+- Provide a fresh answer that incorporates the context from previous messages
 ${webContext}
 `;
     try {
@@ -126,11 +129,19 @@ ${webContext}
                         content: h.query
                     });
                 }
-                // Add assistant answer (if available)
+                // Add assistant answer with context about what was shown
                 if (h.summary || h.answer) {
+                    let assistantContent = h.summary || h.answer || "";
+                    // ✅ Add context about what products/cards were shown (helps LLM understand follow-ups)
+                    if (h.cards && Array.isArray(h.cards) && h.cards.length > 0) {
+                        const cardTitles = h.cards.slice(0, 5).map((card) => card.title || card.name || '').filter(Boolean);
+                        if (cardTitles.length > 0) {
+                            assistantContent += `\n\n[Previous results included: ${cardTitles.join(', ')}]`;
+                        }
+                    }
                     messages.push({
                         role: "assistant",
-                        content: h.summary || h.answer || ""
+                        content: assistantContent
                     });
                 }
             }
@@ -177,11 +188,13 @@ If web information is provided, prioritize it over your training data.
 For current events, dates, or recent information, ONLY use the web information provided.
 For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
 
-IMPORTANT: Each user query is a NEW question that requires a NEW answer.
-- If the user asks a follow-up question, provide a fresh answer to that specific question
-- Do NOT repeat the previous answer
-- Do NOT say "as mentioned before" or "as I said earlier"
-- Treat each query independently and provide a complete answer
+IMPORTANT: Use conversation context for follow-up queries.
+- If the user asks a follow-up question (e.g., "show me luxury ones", "more costlier", "cheaper options"), you MUST understand it in the context of the previous conversation
+- For follow-up queries, reference the previous query's topic/subject to provide a complete answer
+- Example: If previous query was "hand made chairs" and user asks "more costlier", understand it as "more costlier handmade chairs"
+- Example: If previous query was "hotels in Miami" and user asks "luxury ones", understand it as "luxury hotels in Miami"
+- Only treat queries as independent if they are clearly starting a new topic
+- Provide a fresh answer that incorporates the context from previous messages
 ${webContext}
 `;
     const sse = new SSE(res);
@@ -201,11 +214,19 @@ ${webContext}
                         content: h.query
                     });
                 }
-                // Add assistant answer (if available)
+                // Add assistant answer with context about what was shown
                 if (h.summary || h.answer) {
+                    let assistantContent = h.summary || h.answer || "";
+                    // ✅ Add context about what products/cards were shown (helps LLM understand follow-ups)
+                    if (h.cards && Array.isArray(h.cards) && h.cards.length > 0) {
+                        const cardTitles = h.cards.slice(0, 5).map((card) => card.title || card.name || '').filter(Boolean);
+                        if (cardTitles.length > 0) {
+                            assistantContent += `\n\n[Previous results included: ${cardTitles.join(', ')}]`;
+                        }
+                    }
                     messages.push({
                         role: "assistant",
-                        content: h.summary || h.answer || ""
+                        content: assistantContent
                     });
                 }
             }
