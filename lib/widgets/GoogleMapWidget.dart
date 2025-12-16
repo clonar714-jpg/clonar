@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../theme/AppColors.dart';
 import '../services/GeocodingService.dart';
+import '../core/emulator_detector.dart';
 
 class GoogleMapWidget extends StatefulWidget {
   final double? latitude;
@@ -35,7 +37,16 @@ class _GoogleMapWidgetState extends State<GoogleMapWidget> {
   @override
   void initState() {
     super.initState();
-    _initializeLocation();
+    // ✅ EMULATOR FIX: Delay map initialization on emulator until UI is idle
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final isEmulator = await EmulatorDetector.isEmulator();
+      if (isEmulator && kDebugMode) {
+        await Future.delayed(const Duration(milliseconds: 1500));
+      }
+      if (mounted) {
+        _initializeLocation();
+      }
+    });
   }
 
   // Default location: Salt Lake City, UT

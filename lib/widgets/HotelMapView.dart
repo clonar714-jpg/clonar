@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../theme/AppColors.dart';
+import '../core/emulator_detector.dart';
 
 // ✅ PATCH A: Add static key for stable map instance
 const hotelPreviewMapKey = ValueKey("hotel_preview_static_map");
@@ -21,89 +23,159 @@ class HotelMapView extends StatefulWidget {
   State<HotelMapView> createState() => _HotelMapViewState();
 }
 
-class _HotelMapViewState extends State<HotelMapView> {
+class _HotelMapViewState extends State<HotelMapView> with AutomaticKeepAliveClientMixin {
   GoogleMapController? _mapController;
   bool _isMapReady = false;
   Set<Marker> _markers = {};
   LatLng? _center;
+  bool _isInitializing = false;
+
+  @override
+  bool get wantKeepAlive => true; // ✅ PRODUCTION: Keep map alive to prevent recreation
 
   @override
   void initState() {
     super.initState();
-    // ✅ PATCH C: Initialize map asynchronously using microtask (prevents blocking UI)
-    Future.microtask(_initializeMap);
+    // ✅ EMULATOR FIX: Delay map initialization on emulator until UI is idle
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final isEmulator = await EmulatorDetector.isEmulator();
+      final delay = isEmulator && kDebugMode 
+          ? const Duration(milliseconds: 1500) // Longer delay on emulator
+          : const Duration(milliseconds: 500);
+      
+      Future.delayed(delay, () {
+        if (mounted && !_isInitializing) {
+          _initializeMap();
+        }
+      });
+    });
   }
 
-  void _initializeMap() {
+  @override
+  void didUpdateWidget(HotelMapView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ✅ PRODUCTION: Only reinitialize if points actually changed
+    if (oldWidget.points.length != widget.points.length ||
+        !_arePointsEqual(oldWidget.points, widget.points)) {
+      if (!_isInitializing && mounted) {
+        _initializeMap();
+      }
+    }
+  }
+
+  bool _arePointsEqual(List<dynamic> oldPoints, List<dynamic> newPoints) {
+    if (oldPoints.length != newPoints.length) return false;
+    for (int i = 0; i < oldPoints.length; i++) {
+      final oldLat = oldPoints[i]["lat"] ?? oldPoints[i]["latitude"];
+      final newLat = newPoints[i]["lat"] ?? newPoints[i]["latitude"];
+      final oldLng = oldPoints[i]["lng"] ?? oldPoints[i]["longitude"];
+      final newLng = newPoints[i]["lng"] ?? newPoints[i]["longitude"];
+      if (oldLat != newLat || oldLng != newLng) return false;
+    }
+    return true;
+  }
+
+  void _initializeMap() async {
+    if (_isInitializing) return; // Prevent concurrent initialization
+    _isInitializing = true;
+    
     try {
-      print('🗺️ HotelMapView: Initializing with ${widget.points.length} points');
-      if (widget.points.isEmpty) {
-        print('⚠️ HotelMapView: No points provided');
-        // ✅ PATCH D: Avoid setState if nothing changed
-        if (!_isMapReady && mounted) {
-          setState(() => _isMapReady = true);
+      // ✅ PRODUCTION: Move heavy processing to isolate to prevent blocking
+      await Future(() async {
+        if (kDebugMode) {
+          debugPrint('🗺️ HotelMapView: Initializing with ${widget.points.length} points');
         }
-        return;
-      }
-
-      // Filter out invalid points
-      final validPoints = widget.points.where((p) {
-        final lat = p["lat"] ?? p["latitude"];
-        final lng = p["lng"] ?? p["longitude"];
-        return lat != null && lng != null;
-      }).toList();
-
-      print('🗺️ HotelMapView: ${validPoints.length} valid points out of ${widget.points.length}');
-      if (validPoints.isEmpty) {
-        print('⚠️ HotelMapView: No valid points after filtering');
-        // ✅ PATCH D: Avoid setState if nothing changed
-        if (!_isMapReady && mounted) {
-          setState(() => _isMapReady = true);
+        if (widget.points.isEmpty) {
+          if (kDebugMode) {
+            debugPrint('⚠️ HotelMapView: No points provided');
+          }
+          if (!_isMapReady && mounted) {
+            setState(() {
+              _isMapReady = true;
+              _isInitializing = false;
+            });
+          }
+          return;
         }
-        return;
-      }
 
-      // Create markers
-      _markers = validPoints.map((p) {
-        final lat = (p["lat"] ?? p["latitude"]) as num;
-        final lng = (p["lng"] ?? p["longitude"]) as num;
-        return Marker(
-          markerId: MarkerId(p["name"]?.toString() ?? "marker_${validPoints.indexOf(p)}"),
-          position: LatLng(
-            lat.toDouble(),
-            lng.toDouble(),
-          ),
-          infoWindow: InfoWindow(
-            title: p["name"]?.toString() ?? "Hotel",
-            snippet: "${p["rating"] ?? 0} ★",
-          ),
-        );
-      }).toSet();
+        // Filter out invalid points
+        final validPoints = widget.points.where((p) {
+          final lat = p["lat"] ?? p["latitude"];
+          final lng = p["lng"] ?? p["longitude"];
+          return lat != null && lng != null;
+        }).toList();
 
-      // Calculate center
-      final avgLat = validPoints
-              .map((p) => ((p["lat"] ?? p["latitude"]) as num).toDouble())
-              .reduce((a, b) => a + b) /
-          validPoints.length;
-      final avgLng = validPoints
-              .map((p) => ((p["lng"] ?? p["longitude"]) as num).toDouble())
-              .reduce((a, b) => a + b) /
-          validPoints.length;
+        if (kDebugMode) {
+          debugPrint('🗺️ HotelMapView: ${validPoints.length} valid points out of ${widget.points.length}');
+        }
+        if (validPoints.isEmpty) {
+          if (kDebugMode) {
+            debugPrint('⚠️ HotelMapView: No valid points after filtering');
+          }
+          if (!_isMapReady && mounted) {
+            setState(() {
+              _isMapReady = true;
+              _isInitializing = false;
+            });
+          }
+          return;
+        }
 
-      _center = LatLng(avgLat, avgLng);
+        // Create markers
+        final markers = validPoints.map((p) {
+          final lat = (p["lat"] ?? p["latitude"]) as num;
+          final lng = (p["lng"] ?? p["longitude"]) as num;
+          return Marker(
+            markerId: MarkerId(p["name"]?.toString() ?? "marker_${validPoints.indexOf(p)}"),
+            position: LatLng(
+              lat.toDouble(),
+              lng.toDouble(),
+            ),
+            infoWindow: InfoWindow(
+              title: p["name"]?.toString() ?? "Hotel",
+              snippet: "${p["rating"] ?? 0} ★",
+            ),
+          );
+        }).toSet();
 
-      print('✅ HotelMapView: Created ${_markers.length} markers, center at ${_center!.latitude}, ${_center!.longitude}');
+        // Calculate center
+        final avgLat = validPoints
+                .map((p) => ((p["lat"] ?? p["latitude"]) as num).toDouble())
+                .reduce((a, b) => a + b) /
+            validPoints.length;
+        final avgLng = validPoints
+                .map((p) => ((p["lng"] ?? p["longitude"]) as num).toDouble())
+                .reduce((a, b) => a + b) /
+            validPoints.length;
 
-      // ✅ PATCH D: Avoid setState if nothing changed (prevents unnecessary rebuilds)
-      if (!_isMapReady && mounted) {
-        setState(() => _isMapReady = true);
-        print('✅ HotelMapView: Map marked as ready');
-      }
+        final center = LatLng(avgLat, avgLng);
+
+        if (kDebugMode) {
+          debugPrint('✅ HotelMapView: Created ${markers.length} markers, center at ${center.latitude}, ${center.longitude}');
+        }
+
+        // ✅ PRODUCTION: Update state after processing (prevents blocking during processing)
+        if (mounted) {
+          setState(() {
+            _markers = markers;
+            _center = center;
+            _isMapReady = true;
+            _isInitializing = false;
+          });
+          if (kDebugMode) {
+            debugPrint('✅ HotelMapView: Map marked as ready');
+          }
+        }
+      });
     } catch (e) {
-      print('❌ HotelMapView initialization error: $e');
-      // ✅ PATCH D: Avoid setState if nothing changed
-      if (!_isMapReady && mounted) {
-        setState(() => _isMapReady = true);
+      if (kDebugMode) {
+        debugPrint('❌ HotelMapView initialization error: $e');
+      }
+      if (mounted) {
+        setState(() {
+          _isMapReady = true;
+          _isInitializing = false;
+        });
       }
     }
   }
@@ -116,10 +188,16 @@ class _HotelMapViewState extends State<HotelMapView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // ✅ PRODUCTION: Required for AutomaticKeepAliveClientMixin
+    
     // Always show placeholder initially to prevent blocking
-    print('🗺️ HotelMapView build: isMapReady=$_isMapReady, points=${widget.points.length}, markers=${_markers.length}, center=${_center != null}');
+    if (kDebugMode) {
+      debugPrint('🗺️ HotelMapView build: isMapReady=$_isMapReady, points=${widget.points.length}, markers=${_markers.length}, center=${_center != null}');
+    }
     if (!_isMapReady || widget.points.isEmpty || _markers.isEmpty || _center == null) {
-      print('⚠️ HotelMapView: Showing placeholder (not ready yet)');
+      if (kDebugMode) {
+        debugPrint('⚠️ HotelMapView: Showing placeholder (not ready yet)');
+      }
       return Container(
         height: widget.height ?? 200,
         decoration: BoxDecoration(
@@ -164,11 +242,15 @@ class _HotelMapViewState extends State<HotelMapView> {
                   tiltGesturesEnabled: widget.onTap == null,
                   onMapCreated: (GoogleMapController controller) {
                     _mapController = controller;
-                    print('✅ HotelMapView: Map created with ${_markers.length} markers');
-                    print('🗺️ HotelMapView: Center at ${_center!.latitude}, ${_center!.longitude}');
+                    if (kDebugMode) {
+                      debugPrint('✅ HotelMapView: Map created with ${_markers.length} markers');
+                      debugPrint('🗺️ HotelMapView: Center at ${_center!.latitude}, ${_center!.longitude}');
+                    }
                   },
                   onCameraIdle: () {
-                    print('🗺️ HotelMapView: Camera idle - map should be fully loaded');
+                    if (kDebugMode) {
+                      debugPrint('🗺️ HotelMapView: Camera idle - map should be fully loaded');
+                    }
                   },
                   onTap: (LatLng position) {
                     // Trigger onTap when map is tapped (not markers)
@@ -204,7 +286,9 @@ class _HotelMapViewState extends State<HotelMapView> {
 
     return mapWidget;
     } catch (e) {
-      print('❌ HotelMapView build error: $e');
+      if (kDebugMode) {
+        debugPrint('❌ HotelMapView build error: $e');
+      }
       // Fallback to placeholder on error
       return Container(
         height: widget.height ?? 200,

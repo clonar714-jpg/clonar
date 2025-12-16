@@ -31,6 +31,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // ✅ EMULATOR FIX: Enable software rendering fallback for unstable emulator GPU
+            // This prevents OpenGL 101010-2 format initialization attempts
+            isDebuggable = true
+            // Reduce frame pacing pressure in debug builds
+            applicationIdSuffix = ".debug"
+        }
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.

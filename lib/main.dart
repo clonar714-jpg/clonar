@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/ShopScreen.dart';
 import 'screens/FeedScreen.dart';
 import 'screens/WardrobeScreen.dart';
@@ -13,6 +15,8 @@ import 'theme/AppColors.dart';
 import 'theme/Typography.dart';
 import 'services/ApiService.dart';
 import 'services/CacheService.dart';
+import 'core/provider_observer.dart';
+import 'core/emulator_detector.dart';
 
 // Global theme data for reuse
 late final ThemeData _appTheme;
@@ -21,18 +25,40 @@ late final SharedPreferences _prefs;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // ✅ STARTUP FIX: Defer first frame to prevent blocking work from delaying UI
+  WidgetsBinding.instance.deferFirstFrame();
+  
   // ✅ PATCH E1: Add image cache size limits (prevents RAM overflow and UI blocking)
-  PaintingBinding.instance.imageCache.maximumSize = 100; // default 1000+ (too big)
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 50 << 20; // 50 MB
+  PaintingBinding.instance.imageCache.maximumSize = 500;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 100 << 20; // 100 MB
   
-  // ✅ Perplexity-style: Initialize persistent cache
-  await CacheService.initialize();
-  await CacheService.cleanExpired(); // Clean expired entries on startup
-  
-  // TEMP FIX — disable all preloading
-  // await _preloadCriticalAssets();
-  
+  // ✅ STARTUP FIX: Run app immediately - no blocking work before first frame
   runApp(const ClonarApp());
+  
+  // ✅ STARTUP FIX: Allow first frame immediately (UI renders first)
+  WidgetsBinding.instance.allowFirstFrame();
+  
+  // ✅ STARTUP FIX: Schedule ALL heavy work AFTER first frame is rendered
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    // ✅ WINDOW FIX: Defer emulator detection to prevent window tracking initialization
+    if (kDebugMode) {
+      Future(() => EmulatorDetector.isEmulator()).catchError((_) {
+        // Silent failure - not critical
+      });
+    }
+    
+    // ✅ STARTUP FIX: Initialize cache service AFTER first frame (disk IO + JSON parsing)
+    Future(() async {
+      try {
+        await CacheService.initialize();
+        await CacheService.cleanExpired();
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('⚠️ Cache initialization failed: $e');
+        }
+      }
+    });
+  });
 }
 
 // Preload critical assets to reduce startup time
@@ -126,39 +152,45 @@ Future<void> _preloadSystemUI() async {
 class ClonarApp extends StatelessWidget {
   const ClonarApp({super.key});
 
+  // ✅ GLOBAL FIX: Static ThemeData to prevent recreation on every build
+  static final _theme = ThemeData(
+    primarySwatch: Colors.blue,
+    brightness: Brightness.dark, // Dark theme
+    scaffoldBackgroundColor: AppColors.background,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: AppColors.background,
+      foregroundColor: AppColors.textPrimary,
+      elevation: 0,
+    ),
+    cardTheme: CardThemeData(
+      color: AppColors.surface,
+      elevation: 0,
+    ),
+    dividerColor: AppColors.border,
+  );
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      key: GlobalKey<NavigatorState>(),
-      title: 'Clonar',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        brightness: Brightness.dark, // Dark theme
-        scaffoldBackgroundColor: AppColors.background,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: AppColors.background,
-          foregroundColor: AppColors.textPrimary,
-          elevation: 0,
-        ),
-        cardTheme: CardThemeData(
-          color: AppColors.surface,
-          elevation: 0,
-        ),
-        dividerColor: AppColors.border,
+    return ProviderScope(
+      observers: [AppProviderObserver()],
+      child: MaterialApp(
+        // ✅ GLOBAL FIX: Removed GlobalKey - it was recreated on every build causing MaterialApp recreation
+        title: 'Clonar',
+        theme: _theme,
+        home: const AuthWrapper(),
+        onGenerateRoute: (settings) {
+          // Safe navigation fallback - prevents crashes during hot reload
+          return MaterialPageRoute(
+            builder: (_) => const AuthWrapper(),
+          );
+        },
+        routes: {
+          '/login': (context) => LoginPage(),
+          '/register': (context) => RegisterPage(),
+          '/account': (context) => const MainNavigationScreen(),
+        },
+        debugShowCheckedModeBanner: false,
       ),
-      home: const AuthWrapper(),
-      onGenerateRoute: (settings) {
-        // Safe navigation fallback - prevents crashes during hot reload
-        return MaterialPageRoute(
-          builder: (_) => const AuthWrapper(),
-        );
-      },
-      routes: {
-        '/login': (context) => LoginPage(),
-        '/register': (context) => RegisterPage(),
-        '/account': (context) => const MainNavigationScreen(),
-      },
-      debugShowCheckedModeBanner: false,
     );
   }
 }

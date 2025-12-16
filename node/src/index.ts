@@ -31,6 +31,9 @@ import hotelRoomsRoutes from '@/routes/hotelRooms';
 import chatsRoutes from '@/routes/chats';
 import { connectDatabase } from '@/services/database';
 import { startBackgroundJob } from '@/services/personalization/backgroundAggregator';
+// ✅ PHASE 10: Stability & Concurrency imports
+import { setupUnhandledRejectionHandler, setupUncaughtExceptionHandler, setupGracefulShutdown, requestTimeout, setServerInstance } from './stability/errorHandlers';
+import { startMemoryFlushScheduler } from './stability/memoryFlush';
 console.log("DEBUG: SUPABASE_URL =", process.env.SUPABASE_URL);
 console.log("DEBUG: SUPABASE_ANON_KEY =", process.env.SUPABASE_ANON_KEY ? "Loaded ✅" : "Missing ❌");
 console.log("DEBUG: SUPABASE_SERVICE_ROLE_KEY =", process.env.SUPABASE_SERVICE_ROLE_KEY ? "Loaded ✅" : "Missing ❌");
@@ -49,7 +52,7 @@ app.use(cors({
   credentials: true,
 }));
 
-// Rate limiting - disabled in dev mode
+// ✅ PHASE 10: Enhanced rate limiting - disabled in dev mode
 if (process.env.NODE_ENV !== "development") {
   // ✅ Keep protection in production
   app.use(
@@ -65,6 +68,9 @@ if (process.env.NODE_ENV !== "development") {
   // ✅ Disable all rate limiting in dev
   console.log("🧪 Dev mode: rate limiting disabled");
 }
+
+// ✅ PHASE 10: Request timeout middleware (15s default)
+app.use(requestTimeout(15000));
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -86,11 +92,36 @@ if (process.env.NODE_ENV === 'development') {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
+  console.log(`🏥 Health check requested from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: process.env.NODE_ENV,
+  });
+});
+
+// ✅ PRODUCTION-GRADE: Test endpoint to verify connectivity from emulator
+app.get('/api/test', (req, res) => {
+  console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
+  console.log(`   Headers: ${JSON.stringify(req.headers)}`);
+  res.status(200).json({
+    success: true,
+    message: 'Backend is reachable!',
+    timestamp: new Date().toISOString(),
+    ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
+  });
+});
+
+// ✅ PRODUCTION-GRADE: Test endpoint to verify connectivity
+app.get('/api/test', (req, res) => {
+  console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
+  console.log(`   Headers: ${JSON.stringify(req.headers)}`);
+  res.status(200).json({
+    success: true,
+    message: 'Backend is reachable!',
+    timestamp: new Date().toISOString(),
+    ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
   });
 });
 
@@ -135,16 +166,25 @@ console.log('✅ Chats route registered at /api/chats');
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+// ✅ PHASE 10: Setup global error handlers (before server start)
+setupUnhandledRejectionHandler();
+setupUncaughtExceptionHandler();
+setupGracefulShutdown();
+
 // Start server
 const startServer = async () => {
   try {
     // Connect to database
     await connectDatabase();
     
-    app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Server running on http://localhost:${PORT}`);
       console.log(`📊 Environment: ${process.env.NODE_ENV}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      console.log(`🌐 Listening on ALL interfaces (0.0.0.0:${PORT}) - accessible from emulator at 10.0.2.2:${PORT}`);
+      console.log(`🧪 Test endpoint: http://localhost:${PORT}/api/test`);
+      console.log(`🌐 Listening on ALL interfaces (0.0.0.0:${PORT}) - accessible from emulator at 10.0.2.2:${PORT}`);
+      console.log(`🧪 Test endpoint: http://localhost:${PORT}/api/test`);
       
       if (process.env.NODE_ENV === 'development') {
         console.log('⚙️  Dev Mode Active: Authentication checks are skipped for all routes');
@@ -152,24 +192,18 @@ const startServer = async () => {
 
       // ✅ PHASE 4: Start background aggregation job
       startBackgroundJob();
+      
+      // ✅ PHASE 10: Start memory flush scheduler
+      startMemoryFlushScheduler();
+      
+      // ✅ PHASE 10: Set server instance for graceful shutdown
+      setServerInstance(server);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 };
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err: Error) => {
-  console.error('Unhandled Promise Rejection:', err);
-  process.exit(1);
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (err: Error) => {
-  console.error('Uncaught Exception:', err);
-  process.exit(1);
-});
 
 startServer();
 

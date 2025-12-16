@@ -1,9 +1,25 @@
 // src/routes/agent.ts
 import express from "express";
 import { Request, Response } from "express";
-import { shouldFetchCards } from "../utils/semanticIntent";
-import { routeQuery } from "../followup/router";
+import { shouldFetchCards, detectSemanticIntent } from "../utils/semanticIntent";
+import { routeQuery, UnifiedIntent } from "../followup/router";
 import { refineQuery } from "../services/llmQueryRefiner";
+// ✅ PHASE 8: Agent Intelligence Upgrade imports
+import { normalizeIntent, detectMultipleIntents } from "../intent/normalizeIntent";
+import { healFollowUp, extractContextFromHistory } from "../context/healContext";
+import { extractSlots } from "../slots/extractSlots";
+import { generateSections } from "../format/sectionGenerator";
+// ✅ PHASE 9: Real-World Agent Tuning imports
+import { repairUserQuery, needsRepair } from "../query/repairQuery";
+import { filterOutIrrelevantCards, removeDuplicateCards, isValidCard } from "../cards/filterCards";
+import { fuseCardsInOrder } from "../cards/fuseCards";
+import { computeIntentConfidence, computeSlotConfidence, computeCardConfidence, computeOverallConfidence } from "../confidence/scorer";
+import { rankFollowUps } from "../followups/rankFollowUps";
+// ✅ PHASE 10: Stability & Concurrency imports
+import { agentRateLimiter } from "../stability/rateLimiter";
+import { agentCircuitBreaker, llmCircuitBreaker } from "../stability/circuitBreaker";
+import { userThrottleManager } from "../stability/userThrottle";
+import { streamingSessionManager } from "../stability/streamingSessionManager";
 
 import { searchProducts, enrichProductsWithDescriptions } from "../services/productSearch";
 import { searchHotels, enrichHotelsWithThemesAndDescriptions } from "../services/hotelSearch";
@@ -88,6 +104,9 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
   try {
     const { query, conversationHistory, stream, sessionId, conversationId, userId, lastFollowUp, parentQuery, imageUrl } = req.body;
     let cleanQuery = query?.trim();
+
+    // ✅ DEBUG: Log incoming request to detect duplicates
+    console.log(`📥 [${new Date().toISOString()}] Incoming agent request - Query: "${cleanQuery}", ImageUrl: ${imageUrl ? 'Yes' : 'No'}`);
 
     // ✅ DEBUG: Log received imageUrl
     if (imageUrl) {
@@ -260,6 +279,15 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     
     // Handle streaming requests separately
     if (stream === "true" || stream === true) {
+      // ✅ PHASE 10: Track streaming session in LRU cache
+      const streamSessionId = sessionId || conversationId || `stream_${Date.now()}`;
+      streamingSessionManager.set(streamSessionId, {
+        sessionId: streamSessionId,
+        userId: userId || "global",
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      });
+      
       return getAnswerStream(cleanQuery, filteredConversationHistory, res);
     }
 
@@ -300,6 +328,49 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     console.log(`📝 Original query: "${cleanQuery}"`);
     console.log(`🎯 Detected intent: ${routing.finalIntent}, Card type: ${routing.finalCardType}`);
 
+    // ✅ PHASE 8: Intent Normalization - fix misclassified intents
+    let normalizedIntent = normalizeIntent(routing.finalIntent || routing.finalCardType || "general", cleanQuery);
+    if (normalizedIntent !== routing.finalIntent) {
+      console.log(`🔧 Intent normalized: ${routing.finalIntent} → ${normalizedIntent}`);
+      routing.finalIntent = normalizedIntent as any; // Type assertion for UnifiedIntent compatibility
+      if (normalizedIntent === "hotels") routing.finalCardType = "hotel";
+      else if (normalizedIntent === "restaurants") routing.finalCardType = "restaurants";
+      else if (normalizedIntent === "shopping") routing.finalCardType = "shopping";
+      else if (normalizedIntent === "flights") routing.finalCardType = "flights";
+      else if (normalizedIntent === "places") routing.finalCardType = "places";
+    }
+
+    // ✅ PHASE 8: Multi-Intent Fusion - detect multiple intents
+    const multipleIntents = detectMultipleIntents(cleanQuery);
+    if (multipleIntents.length > 1) {
+      console.log(`🔀 Multiple intents detected: ${multipleIntents.join(", ")}`);
+      // Use primary intent but note secondary intents for card fetching
+    }
+
+    // ✅ PHASE 8: Context Healing - heal vague follow-ups
+    if (lastFollowUp || parentQuery) {
+      const healedQuery = healFollowUp(cleanQuery, filteredConversationHistory || []);
+      if (healedQuery !== cleanQuery) {
+        console.log(`💊 Query healed: "${cleanQuery}" → "${healedQuery}"`);
+        cleanQuery = healedQuery;
+        // Re-route with healed query
+        const healedRouting = await routeQuery({
+          query: cleanQuery,
+          lastTurn,
+          llmAnswer,
+        });
+        // Merge routing decisions
+        if (healedRouting.finalIntent) {
+          routing.finalIntent = healedRouting.finalIntent;
+          routing.finalCardType = healedRouting.finalCardType;
+        }
+      }
+    }
+
+    // ✅ PHASE 8: Slot Extraction
+    const extractedSlots = extractSlots(cleanQuery, normalizedIntent);
+    console.log(`🎰 Extracted slots:`, extractedSlots);
+
     // 3️⃣ Fetch cards based on routing decision
     let results: any[] = [];
 
@@ -313,15 +384,15 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
       console.log(`🖼️ New image URL: ${imageUrl.substring(0, 80)}...`);
       
       // ✅ AGGRESSIVE FIX: Always completely DELETE session for image searches (not just reset)
-      const session = getSession(sessionIdForMemory);
+      const session = await getSession(sessionIdForMemory);
       if (session) {
         console.log(`🧹 FORCE DELETING session: domain=${session.domain}, brand=${session.brand}, lastImageUrl=${session.lastImageUrl?.substring(0, 40) || 'none'}...`);
         // Completely delete the session (not just reset)
-        clearSession(sessionIdForMemory);
+        await clearSession(sessionIdForMemory);
       }
       
       // ✅ ALWAYS create completely fresh session for image searches
-      saveSession(sessionIdForMemory, {
+      await saveSession(sessionIdForMemory, {
         domain: "general",
         brand: null,
         category: null,
@@ -460,20 +531,73 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
       }
     }
     
-    // 🚀 PRODUCTION-GRADE: LLM-Based Context Understanding (replaces brittle keyword matching)
-    // Similar to how ChatGPT, Perplexity, and Cursor handle context intelligently
+    // 🚀 OPTIMIZED: Rule-Based First, LLM Fallback
+    // Use high-confidence rules for common patterns, LLM for edge cases
     if (shouldEnhanceQuery && extractedParentQuery) {
       try {
+        const { extractContextWithRules, mergeQueryWithRules } = await import("../services/refinementClassifier");
+        const { getCachedContext, setCachedContext } = await import("../services/llmContextCache");
         const { extractContextWithLLM, mergeQueryContextWithLLM } = await import("../services/llmContextExtractor");
         
-        // Step 1: Extract context from current query using LLM (handles all edge cases)
-        const extractedContext = await extractContextWithLLM(
+        let extractionResult: { context: any; confidence: number; method: string } | null = null;
+        
+        // Step 1: Try rule-based extraction first (fast, no LLM call)
+        const ruleResult = extractContextWithRules(cleanQuery, extractedParentQuery);
+        
+        if (ruleResult && ruleResult.confidence >= 0.85) {
+          // High-confidence rule match - use it directly
+          extractionResult = {
+            context: ruleResult.extractedContext,
+            confidence: ruleResult.confidence,
+            method: 'rules',
+          };
+          
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`✅ Rule-based extraction (confidence: ${ruleResult.confidence.toFixed(2)}): "${cleanQuery}"`);
+          }
+        } else {
+          // Check cache for LLM result
+          const cached = getCachedContext(cleanQuery, extractedParentQuery, filteredConversationHistory);
+          
+          if (cached) {
+            // Use cached LLM result
+            extractionResult = {
+              context: cached.context,
+              confidence: cached.confidence,
+              method: 'llm-cached',
+            };
+            
+            if (process.env.NODE_ENV === 'development') {
+              console.log(`💾 Cached LLM extraction (confidence: ${cached.confidence.toFixed(2)}): "${cleanQuery}"`);
+            }
+          } else {
+            // Call LLM (cache miss or no cache)
+            const llmResult = await extractContextWithLLM(
           cleanQuery,
           extractedParentQuery,
           filteredConversationHistory
         );
       
-        // ✅ FIX: Override intent if LLM extracted a different intent (e.g., hotels vs places)
+            extractionResult = llmResult;
+            
+            // Cache the result
+            setCachedContext(
+              cleanQuery,
+              extractedParentQuery,
+              filteredConversationHistory,
+              llmResult.context,
+              llmResult.confidence
+            );
+            
+            if (process.env.NODE_ENV === 'development') {
+              console.log(`🧠 LLM extraction (confidence: ${llmResult.confidence.toFixed(2)}, method: ${llmResult.method}): "${cleanQuery}"`);
+            }
+          }
+        }
+        
+        const extractedContext = extractionResult.context;
+      
+        // ✅ FIX: Override intent if extracted a different intent (e.g., hotels vs places)
         // This fixes cases where "near to downtown" is misclassified as places but should be hotels
         if (extractedContext.intent && extractedContext.intent !== finalIntent) {
           const intentMap: Record<string, string> = {
@@ -491,7 +615,7 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
           if (llmIntent && llmIntent !== finalIntent) {
             console.log(`🧠 LLM Intent Override: "${finalIntent}" → "${llmIntent}" (LLM extracted: ${extractedContext.intent})`);
             finalIntent = llmIntent as any;
-            routing.finalIntent = llmIntent;
+            routing.finalIntent = llmIntent as UnifiedIntent;
             // Update card type based on new intent
             if (llmIntent === 'hotels') routing.finalCardType = 'hotel';
             else if (llmIntent === 'restaurants') routing.finalCardType = 'restaurants';
@@ -508,20 +632,40 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
           }
         }
         
-        // Step 2: Intelligently merge with parent query using LLM
-        const mergedQuery = await mergeQueryContextWithLLM(
+        // Step 2: Merge query based on extraction method
+        let mergedQuery: string;
+        
+        if (extractionResult.method === 'rules') {
+          // Use rule-based merging for rule-based extraction
+          mergedQuery = mergeQueryWithRules(
           cleanQuery,
           extractedParentQuery,
           extractedContext,
           finalIntent
         );
+          
+          if (process.env.NODE_ENV === 'development' && mergedQuery !== cleanQuery) {
+            console.log(`✅ Rule-based merging: "${cleanQuery}" → "${mergedQuery}"`);
+          }
+        } else {
+          // Use LLM merging for LLM extraction (cached or fresh)
+          mergedQuery = await mergeQueryContextWithLLM(
+            cleanQuery,
+            extractedParentQuery,
+            extractedContext,
+            finalIntent
+          );
+          
+          if (process.env.NODE_ENV === 'development' && mergedQuery !== cleanQuery) {
+            console.log(`🧠 LLM merging: "${cleanQuery}" → "${mergedQuery}"`);
+          }
+        }
         
         if (mergedQuery !== cleanQuery) {
           contextAwareQuery = mergedQuery;
           queryForRefinement = mergedQuery;
-          console.log(`🧠 LLM Context Merging: "${cleanQuery}" → "${mergedQuery}"`);
         } else {
-          // LLM determined no merging needed
+          // No merging needed
           queryForRefinement = cleanQuery;
         }
       } catch (err: any) {
@@ -546,13 +690,31 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
         contextAwareQuery = `${contextAwareQuery} ${parentSlots.category}`;
       }
       
-      // Merge city if parent has it and follow-up doesn't
+      // ✅ PRODUCTION FIX: Merge city ONLY if:
+      // 1. Current query doesn't have any location
+      // 2. Current query doesn't explicitly mention a DIFFERENT location
         const isTravelIntentForLocation = ["hotels", "flights", "restaurants", "places", "location"].includes(finalIntent);
-      if (parentSlots.city && !qLower.includes(parentSlots.city.toLowerCase())) {
-          if (isTravelIntentForLocation || isRefinementQuery) {
+      
+      // Check if current query has a location (explicit or implicit)
+      const hasLocationInQuery = /\b(in|at|near|from|to)\s+[a-zA-Z][a-zA-Z\s]{2,}/i.test(cleanQuery);
+      
+      // Check if current query mentions a different city/location
+      const hasDifferentLocation = hasLocationInQuery && 
+        parentSlots.city && 
+        !qLower.includes(parentSlots.city.toLowerCase());
+      
+      // Only merge city if:
+      // - It's a travel intent AND (query is vague/refinement OR query has no location)
+      // - AND query doesn't have a different location
+      if (parentSlots.city && !hasDifferentLocation) {
+        if ((isTravelIntentForLocation && (isRefinementQuery || !hasLocationInQuery))) {
+          if (!qLower.includes(parentSlots.city.toLowerCase())) {
         contextAwareQuery = `${contextAwareQuery} in ${parentSlots.city}`;
             console.log(`📍 Fallback: Merged location from parent: "${parentSlots.city}" → "${contextAwareQuery}"`);
           }
+        }
+      } else if (hasDifferentLocation) {
+        console.log(`📍 Fallback: Skipping location merge - current query has different location: "${cleanQuery}"`);
       }
       
       // Merge price if parent has it and follow-up doesn't
@@ -935,6 +1097,19 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
           // Generate descriptions ONLY for final displayed results
           if (results.length > 0) {
             await enrichProductsWithDescriptions(results);
+            // ✅ FIX: Ensure all products have an ID for Flutter Product model
+            results = results.map((product: any, index: number) => {
+              if (!product.id) {
+                // Generate ID from title+price+link hash, or use index as fallback
+                const idSource = `${product.title || ''}_${product.price || ''}_${product.link || ''}`;
+                product.id = idSource.length > 0 ? Math.abs(idSource.split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)) : index + 1;
+              }
+              // ✅ FIX: Ensure description field exists (use snippet if description is missing)
+              if (!product.description && product.snippet) {
+                product.description = product.snippet;
+              }
+              return product;
+            });
           }
         } else if (cardTypeStr === "hotels") {
           let rawHotelCards2 = await searchHotels(queryForCardSearch);
@@ -1252,7 +1427,7 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     let memoryFilteredCards = finalCards;
     
     if (!isPlacesOrLocationOrMovies) {
-      const session = getSession(sessionIdForMemory);
+      const session = await getSession(sessionIdForMemory);
       
       if (session) {
         // Filter by brand if session has brand
@@ -1307,6 +1482,32 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     
     // ✅ C6 PATCH #8 — NEVER Return Empty Cards to Frontend
     let safeCards = mustShowCards ? (memoryFilteredCards && memoryFilteredCards.length > 0 ? memoryFilteredCards : finalCards) : [];
+
+    // ✅ PHASE 9: Card Relevance Filter - remove irrelevant cards
+    if (safeCards.length > 0) {
+      const multipleIntents = detectMultipleIntents(cleanQuery);
+      safeCards = filterOutIrrelevantCards(responseIntent, safeCards, multipleIntents);
+      console.log(`🎯 Filtered cards: ${finalCards.length} → ${safeCards.length} (removed ${finalCards.length - safeCards.length} irrelevant)`);
+    }
+
+    // ✅ PHASE 9: Remove duplicate cards
+    if (safeCards.length > 0) {
+      const beforeDedup = safeCards.length;
+      safeCards = removeDuplicateCards(safeCards);
+      if (safeCards.length < beforeDedup) {
+        console.log(`🔄 Removed ${beforeDedup - safeCards.length} duplicate cards`);
+      }
+    }
+
+    // ✅ PHASE 9: Validate cards
+    safeCards = safeCards.filter(card => isValidCard(card));
+
+    // ✅ PHASE 9: Card Fusion - order cards intelligently
+    // Note: sections will be generated later, so we pass undefined here
+    if (safeCards.length > 0) {
+      safeCards = fuseCardsInOrder(responseIntent, safeCards, undefined);
+      console.log(`🔀 Cards fused in optimal order for intent: ${responseIntent}`);
+    }
     
     // 🎯 Safety check: If mustShowCards is true but we have no cards, use finalCards directly
     if (mustShowCards && safeCards.length === 0 && finalCards.length > 0) {
@@ -1320,6 +1521,8 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     if (mustShowCards && safeCards.length === 0) {
       console.error(`❌ CRITICAL: mustShowCards=true but safeCards is empty! Response intent: ${responseIntent}, Card type: ${routing.finalCardType}`);
     }
+
+    // ✅ PHASE 9: Card filtering/fusion already done above (lines 1383-1406)
 
     // Build response - ALWAYS include answer, even if no cards
     // ⚡ Ensure we have the real answer (should be ready by now, but use timeout)
@@ -1349,6 +1552,15 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     }
     
     console.log(`⏱️ Total LLM answer generation time: ${Date.now() - answerStartTime}ms`);
+    
+    // ✅ PHASE 9: Compute confidence scores for debugging
+    const detectedMultipleIntents = detectMultipleIntents(cleanQuery);
+    const intentConfidence = computeIntentConfidence(cleanQuery, responseIntent, detectedMultipleIntents);
+    const slotConfidence = computeSlotConfidence(extractedSlots, responseIntent);
+    const cardConfidences = safeCards.map(card => computeCardConfidence(card, responseIntent));
+    const overallConfidence = computeOverallConfidence(intentConfidence, slotConfidence, cardConfidences);
+    
+    console.log(`📊 Confidence scores - Intent: ${intentConfidence.toFixed(2)}, Slots: ${slotConfidence.toFixed(2)}, Cards: ${(cardConfidences.length > 0 ? cardConfidences.reduce((a, b) => a + b, 0) / cardConfidences.length : 0).toFixed(2)}, Overall: ${overallConfidence.toFixed(2)}`);
     console.log(`📤 Sending response - Intent: ${responseIntent}, Cards: ${safeCards.length}, CardType: ${routing.finalCardType}`);
     
     // ✅ PERSONALIZATION: Store preference signals (non-blocking, async)
@@ -1386,28 +1598,86 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
       });
     }
     
+    // ✅ PHASE 8: Generate sections from answer
+    let answerText = finalAnswerData.summary || finalAnswerData.answer || `Here are the results for "${cleanQuery}".`;
+    
+    // ✅ PHASE 9: Edge Case Defense - ensure summary is non-empty and capped
+    if (!answerText || answerText.trim().length === 0) {
+      answerText = `Here are the results for "${cleanQuery}".`;
+    }
+    // Cap summary length (max 2000 chars)
+    if (answerText.length > 2000) {
+      answerText = answerText.substring(0, 1997) + "...";
+      console.log(`✂️ Summary capped to 2000 characters`);
+    }
+    
+    const generatedSections = generateSections(answerText, responseIntent, safeCards);
+
+    // ✅ PHASE 8: Unified Response Builder - match Flutter's DisplayContent model
     const responseData: any = {
       success: true,
       intent: responseIntent,
-      summary: finalAnswerData.summary || finalAnswerData.answer || `Here are the results for "${cleanQuery}".`,
-      answer: finalAnswerData.summary || finalAnswerData.answer || `Here are the results for "${cleanQuery}".`,
+      summary: answerText,
+      answer: answerText, // Keep for backward compatibility
       cardType: routing.finalCardType, // ✅ Use routing decision
+      resultType: responseIntent, // ✅ PHASE 8: Unified resultType
+      // ✅ PHASE 8: Unified cards field (matches DisplayContent.products/hotels/etc)
+      // ✅ PHASE 9: Sanitize empty cards (will be updated after fusion)
+      cards: safeCards,
+      results: safeCards, // Keep for backward compatibility
+      // ✅ PHASE 8: Unified images field
+      destination_images: (finalAnswerData.destination_images || []).filter((url: string) => {
+        // ✅ PHASE 9: Validate image URLs
+        if (!url || typeof url !== "string") return false;
+        try {
+          new URL(url);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+      // ✅ PHASE 8: Unified locations field
+      locationCards: (() => {
+        // ✅ PHASE 9: Remove duplicate locations
+        const locations = finalAnswerData.locations || [];
+        const seen = new Set<string>();
+        return locations.filter((loc: any) => {
+          const key = (loc.title || loc.name || JSON.stringify(loc)).toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      })(),
+      // ✅ PHASE 8: Unified sections field (will be merged with hotel sections if needed)
+      sections: generatedSections.map(s => ({
+        title: s.title,
+        content: s.content,
+        type: s.type,
+      })),
+      // ✅ PHASE 8: Unified sources field
+      sources: finalAnswerData.sources || [],
       // ✅ Follow-up engine data (Perplexity-style)
       followUps: followUpPayload.suggestions, // Main field
       followUpSuggestions: followUpPayload.suggestions, // Keep for backward compatibility
       followUpCardType: expectedCardType,
       shouldReturnCards: shouldReturnCards,
+      // ✅ PHASE 8: Enhanced slots with extracted data
       slots: {
-        brand: routing.brand || followUpPayload.slots.brand,
-        category: routing.category || followUpPayload.slots.category,
-        price: routing.price || followUpPayload.slots.price,
-        city: routing.city || followUpPayload.slots.city,
+        brand: routing.brand || followUpPayload.slots.brand || extractedSlots.brand,
+        category: routing.category || followUpPayload.slots.category || extractedSlots.category,
+        price: routing.price || followUpPayload.slots.price || extractedSlots.priceRange?.max,
+        city: routing.city || followUpPayload.slots.city || extractedSlots.city || extractedSlots.location,
+        location: extractedSlots.location || extractedSlots.city,
+        priceRange: extractedSlots.priceRange,
+        dates: extractedSlots.dates,
+        peopleCount: extractedSlots.peopleCount,
+        intentSpecific: extractedSlots.intentSpecific,
       },
       behavior: followUpPayload.behaviorState, // Main field
       behaviorState: followUpPayload.behaviorState, // Keep for backward compatibility
     };
 
-    // ✅ Perplexity-style: Group hotels AFTER all filtering/reranking/correction
+    // ✅ PHASE 8: Perplexity-style: Group hotels AFTER all filtering/reranking/correction
     if (routing.finalCardType === "hotel" && Array.isArray(safeCards) && safeCards.length > 0) {
       const { groupHotels } = await import("../services/hotelGrouping");
       const grouped = groupHotels(safeCards);
@@ -1422,44 +1692,56 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
           rating: h.rating || h.overall_rating || 0,
         }));
 
-      // Build sections array, filtering out empty sections
-      const sections: any[] = [];
+      // Build hotel sections array, filtering out empty sections
+      const hotelSections: any[] = [];
       
       if (grouped.luxury.length > 0) {
-        sections.push({ title: "Luxury hotels", items: grouped.luxury });
+        hotelSections.push({ title: "Luxury hotels", items: grouped.luxury });
       }
       if (grouped.midrange.length > 0) {
-        sections.push({ title: "Midrange hotels", items: grouped.midrange });
+        hotelSections.push({ title: "Midrange hotels", items: grouped.midrange });
       }
       if (grouped.boutique.length > 0) {
-        sections.push({ title: "Boutique hotels", items: grouped.boutique });
+        hotelSections.push({ title: "Boutique hotels", items: grouped.boutique });
       }
       if (grouped.budget.length > 0) {
-        sections.push({ title: "Budget options", items: grouped.budget });
+        hotelSections.push({ title: "Budget options", items: grouped.budget });
       }
 
+      // ✅ PHASE 8: Merge generated sections with hotel sections
+      const allSections = [
+        ...generatedSections.map(s => ({
+          title: s.title,
+          content: s.content,
+          type: s.type,
+        })),
+        ...hotelSections.map(hs => ({ title: hs.title, items: hs.items })),
+      ];
+
       // Set Perplexity-style response structure
-      responseData.sections = sections;
+      responseData.sections = allSections;
       responseData.map = mapPoints;
       
-      // Remove old flat card lists (Perplexity doesn't send them)
-      // Keep for backward compatibility if needed, but sections is the main field
-      // responseData.results = safeCards;
-      // responseData.products = safeCards;
-      // responseData.cards = safeCards;
+      // ✅ PHASE 9: Card Fusion - order cards intelligently for hotels
+      safeCards = fuseCardsInOrder(responseIntent, safeCards, allSections);
       
-      console.log(`🏨 Hotel response: ${sections.length} sections, ${safeCards.length} total hotels, ${mapPoints.length} map points`);
-    } else {
-      // Standard response (shopping, restaurants, etc.) - flat array
-      responseData.results = safeCards;
-      responseData.products = safeCards;
+      // ✅ PHASE 9: Sanitize empty cards after fusion
+      safeCards = safeCards.filter(card => card && (card.title || card.name || card.description));
       responseData.cards = safeCards;
+      responseData.results = safeCards;
+      
+      console.log(`🏨 Hotel response: ${allSections.length} sections (${generatedSections.length} generated + ${hotelSections.length} hotel), ${safeCards.length} total hotels, ${mapPoints.length} map points`);
+    } else {
+      // ✅ PHASE 9: Card Fusion - order cards intelligently for non-hotel responses
+      safeCards = fuseCardsInOrder(responseIntent, safeCards, responseData.sections);
+      
+      // ✅ PHASE 9: Sanitize empty cards after fusion
+      safeCards = safeCards.filter(card => card && (card.title || card.name || card.description));
+      responseData.cards = safeCards;
+      responseData.results = safeCards;
+      
+      console.log(`🔀 Cards fused in optimal order for intent: ${responseIntent}`);
     }
-
-    // ✅ ALWAYS include answer-specific fields (already fetched above)
-    responseData.sources = finalAnswerData.sources || [];
-    responseData.locations = finalAnswerData.locations || [];
-    responseData.destination_images = finalAnswerData.destination_images || [];
     
     // ✅ NEW: Include image analysis data if image was provided
     if (imageAnalysis) {
@@ -1476,7 +1758,7 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
       ? parseInt(followUpPayload.slots.price.toString().replace(/[^\d]/g, ""))
       : null;
     
-    saveSession(sessionIdForMemory, {
+    await saveSession(sessionIdForMemory, {
       domain: responseIntent as any,
       brand: routing.brand || followUpPayload.slots.brand || null,
       category: routing.category || followUpPayload.slots.category || null,
@@ -1490,7 +1772,121 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
       lastAnswer: llmAnswer,
     });
 
+    // ✅ TASK 2: Hard result size limit - truncate arrays before sending
+    const MAX_RESULTS = 40;
+    if (safeCards.length > MAX_RESULTS) {
+      console.log(`✂️ Truncating results: ${safeCards.length} → ${MAX_RESULTS} items`);
+      safeCards = safeCards.slice(0, MAX_RESULTS);
+    }
+    if (responseData.destination_images && responseData.destination_images.length > MAX_RESULTS) {
+      console.log(`✂️ Truncating destination_images: ${responseData.destination_images.length} → ${MAX_RESULTS} items`);
+      responseData.destination_images = responseData.destination_images.slice(0, MAX_RESULTS);
+    }
+    if (responseData.locationCards && responseData.locationCards.length > MAX_RESULTS) {
+      console.log(`✂️ Truncating locationCards: ${responseData.locationCards.length} → ${MAX_RESULTS} items`);
+      responseData.locationCards = responseData.locationCards.slice(0, MAX_RESULTS);
+    }
+    
+    // Update responseData with truncated cards
+    responseData.cards = safeCards;
+    responseData.results = safeCards;
+
+    // ✅ PHASE 9: Edge Case Defense - enforce DisplayContent schema integrity
+    // Ensure all required fields exist and are valid
+    if (!responseData.summary || responseData.summary.trim().length === 0) {
+      responseData.summary = `Here are the results for "${cleanQuery}".`;
+    }
+    if (!Array.isArray(responseData.cards)) {
+      responseData.cards = [];
+    }
+    if (!Array.isArray(responseData.destination_images)) {
+      responseData.destination_images = [];
+    }
+    if (!Array.isArray(responseData.locationCards)) {
+      responseData.locationCards = [];
+    }
+    if (!Array.isArray(responseData.sections)) {
+      responseData.sections = [];
+    }
+    if (!Array.isArray(responseData.sources)) {
+      responseData.sources = [];
+    }
+    if (!responseData.resultType) {
+      responseData.resultType = responseIntent || "general";
+    }
+
+    // ✅ PHASE 9: Add confidence scores to response metadata (optional, for debugging)
+    if (process.env.NODE_ENV === "development" || process.env.DEBUG === "true") {
+      responseData._metadata = {
+        confidence: {
+          intent: intentConfidence,
+          slots: slotConfidence,
+          cards: cardConfidences.length > 0 ? cardConfidences.reduce((a, b) => a + b, 0) / cardConfidences.length : 0,
+          overall: overallConfidence,
+        },
+        queryRepaired: needsRepair(cleanQuery),
+        cardsFiltered: finalCards.length - safeCards.length,
+      };
+    }
+
+    // ✅ TASK 1: Support partial response / streaming via query parameter or body flag
+    const shouldStream = req.query.stream === "true" || req.query.stream === true || req.body.stream === true || req.body.stream === "true";
+    
+    if (shouldStream && !res.headersSent) {
+      // Use SSE for streaming partial response
+      const { SSE } = await import("../utils/sse");
+      const sse = new SSE(res);
+      sse.init();
+      
+      // Send summary first (immediate) - allows UI to render text while cards are being processed
+      sse.send("summary", {
+        summary: responseData.summary,
+        answer: responseData.answer,
+        intent: responseData.intent,
+        cardType: responseData.cardType,
+        resultType: responseData.resultType,
+        sources: responseData.sources,
+      });
+      
+      // Send cards after (non-blocking, allows UI to render summary immediately)
+      // Use setImmediate to ensure summary is sent first, then cards follow
+      setImmediate(() => {
+        try {
+          sse.send("cards", {
+            cards: responseData.cards,
+            results: responseData.results,
+            destination_images: responseData.destination_images,
+            locationCards: responseData.locationCards,
+            sections: responseData.sections,
+            followUps: responseData.followUps,
+            followUpSuggestions: responseData.followUpSuggestions,
+            slots: responseData.slots,
+            behavior: responseData.behavior,
+            behaviorState: responseData.behaviorState,
+          });
+          
+          // Send end event to signal completion
+          sse.send("end", {
+            success: true,
+            intent: responseData.intent,
+          });
+          
+          sse.close();
+        } catch (err: any) {
+          console.error("❌ Error sending cards in stream:", err);
+          sse.close();
+        }
+      });
+      
+      return;
+    }
+
+    // ✅ FIX: Check if response was already sent (e.g., by timeout middleware)
+    if (!res.headersSent) {
     res.json(responseData);
+    } else {
+      console.warn("⚠️ Response already sent (likely timeout), skipping duplicate response");
+    }
     return;
 
   } catch (err: any) {
@@ -1511,8 +1907,20 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
  * ✅ FIX: Added request queuing to prevent overwhelming the system
  */
 router.post("/", async (req: Request, res: Response) => {
+  // ✅ PRODUCTION-GRADE: Log ALL incoming requests FIRST (before any processing)
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const timestamp = new Date().toISOString();
+  console.log(`\n📥 [${timestamp}] [${requestId}] ========== NEW REQUEST ==========`);
+  console.log(`   Method: POST /api/agent`);
+  console.log(`   Query: "${req.body?.query || 'MISSING'}"`);
+  console.log(`   Has conversationHistory: ${!!req.body?.conversationHistory}`);
+  console.log(`   ConversationHistory length: ${Array.isArray(req.body?.conversationHistory) ? req.body.conversationHistory.length : 'N/A'}`);
+  console.log(`   Headers: user-id=${req.headers['user-id'] || 'MISSING'}, content-type=${req.headers['content-type'] || 'MISSING'}`);
+  console.log(`   Body keys: ${Object.keys(req.body || {}).join(', ') || 'EMPTY'}`);
+  
   // ✅ FIX: Check queue size
   if (requestQueue.length >= MAX_QUEUE_SIZE) {
+    console.error(`❌ [${requestId}] Queue full (${requestQueue.length}/${MAX_QUEUE_SIZE}), rejecting`);
     return res.status(503).json({ 
       error: "Server busy", 
       message: "Too many requests in queue. Please try again in a moment." 
@@ -1521,11 +1929,13 @@ router.post("/", async (req: Request, res: Response) => {
 
   // ✅ FIX: If we have capacity, process immediately
   if (processingCount < MAX_CONCURRENT_REQUESTS) {
+    console.log(`✅ [${requestId}] Processing immediately (${processingCount}/${MAX_CONCURRENT_REQUESTS} active)`);
     processingCount++;
     try {
       await handleRequest(req, res);
+      console.log(`✅ [${requestId}] Request completed successfully`);
     } catch (err: any) {
-      console.error("❌ Request error:", err);
+      console.error(`❌ [${requestId}] Request error:`, err);
       if (!res.headersSent) {
         res.status(500).json({ error: "Request failed", detail: err.message });
       }
@@ -1535,6 +1945,7 @@ router.post("/", async (req: Request, res: Response) => {
     }
   } else {
     // ✅ FIX: Queue the request
+    console.log(`⏳ [${requestId}] Queued (${requestQueue.length} in queue, ${processingCount} processing)`);
     await new Promise<void>((resolve) => {
       requestQueue.push({ req, res, resolve });
       processQueue();

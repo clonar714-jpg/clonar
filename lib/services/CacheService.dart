@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
 
@@ -186,7 +187,9 @@ class CacheService {
         if (age > metadata.expiry) {
           final ageMinutes = age.inMinutes;
           final expiryMinutes = metadata.expiry.inMinutes;
-          print('⏰ Cache expired for key: $cacheKey (age: ${ageMinutes}min, expiry: ${expiryMinutes}min)');
+          if (kDebugMode) {
+            debugPrint('⏰ Cache expired for key: $cacheKey (age: ${ageMinutes}min, expiry: ${expiryMinutes}min)');
+          }
           await _remove(cacheKey);
           return null;
         }
@@ -201,9 +204,13 @@ class CacheService {
         metadata.lastAccessed = now;
         await _saveMetadata();
         
-        print('✅ Cache HIT for key: $cacheKey (age: ${ageMinutes}min, ${remainingMinutes}min remaining, accessed ${metadata.accessCount} times)');
+        if (kDebugMode) {
+          debugPrint('✅ Cache HIT for key: $cacheKey (age: ${ageMinutes}min, ${remainingMinutes}min remaining, accessed ${metadata.accessCount} times)');
+        }
       } else {
-        print('✅ Cache HIT for key: $cacheKey (no metadata)');
+        if (kDebugMode) {
+          debugPrint('✅ Cache HIT for key: $cacheKey (no metadata)');
+        }
       }
       
       // Load cached data
@@ -214,7 +221,9 @@ class CacheService {
       
       return jsonDecode(cachedData) as Map<String, dynamic>;
     } catch (e) {
-      print('❌ Cache get error: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Cache get error: $e');
+      }
       return null;
     }
   }
@@ -232,7 +241,9 @@ class CacheService {
       // If expiry is zero (no cache), don't store
       final finalExpiry = expiry ?? (query != null ? getSmartExpiry(query) : _defaultExpiry);
       if (finalExpiry == Duration.zero) {
-        print('⏭️ Skipping cache (no cache for this query type)');
+        if (kDebugMode) {
+          debugPrint('⏭️ Skipping cache (no cache for this query type)');
+        }
         return;
       }
       
@@ -273,12 +284,16 @@ class CacheService {
         expiryStr = '$expiryMinutes minute${expiryMinutes > 1 ? 's' : ''}';
       }
       
-      print('💾 Cached response: $cacheKey (${(dataSize / 1024).toStringAsFixed(2)} KB, expires in $expiryStr)');
-      if (query != null) {
-        print('   Query: "$query" → Smart expiry: $expiryStr');
+      if (kDebugMode) {
+        debugPrint('💾 Cached response: $cacheKey (${(dataSize / 1024).toStringAsFixed(2)} KB, expires in $expiryStr)', wrapWidth: 1024);
+        if (query != null) {
+          debugPrint('   Query: "$query" → Smart expiry: $expiryStr', wrapWidth: 1024);
+        }
       }
     } catch (e) {
-      print('❌ Cache set error: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Cache set error: $e');
+      }
     }
   }
   
@@ -291,7 +306,9 @@ class CacheService {
       _metadataCache?.remove(cacheKey);
       await _saveMetadata();
     } catch (e) {
-      print('❌ Cache remove error: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Cache remove error: $e');
+      }
     }
   }
   
@@ -324,7 +341,9 @@ class CacheService {
         final removedSize = _metadataCache![key]!.size;
         await _remove(key);
         totalSize -= removedSize;
-        print('🗑️ LRU eviction: Removed $key (${(removedSize / 1024).toStringAsFixed(2)} KB)');
+        if (kDebugMode) {
+          debugPrint('🗑️ LRU eviction: Removed $key (${(removedSize / 1024).toStringAsFixed(2)} KB)');
+        }
       } else {
         break;
       }
@@ -351,13 +370,19 @@ class CacheService {
         try {
           _metadataCache![key] = CacheMetadata.fromJson(value as Map<String, dynamic>);
         } catch (e) {
-          print('⚠️ Failed to parse metadata for $key: $e');
+          if (kDebugMode) {
+            debugPrint('⚠️ Failed to parse metadata for $key: $e');
+          }
         }
       });
       
-      print('📦 Loaded ${_metadataCache!.length} cache entries');
+      if (kDebugMode) {
+        debugPrint('📦 Loaded ${_metadataCache!.length} cache entries');
+      }
     } catch (e) {
-      print('❌ Failed to load metadata: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Failed to load metadata: $e');
+      }
       _metadataCache = {};
     }
   }
@@ -373,7 +398,9 @@ class CacheService {
       );
       await prefs.setString(_metadataKey, metadataJson);
     } catch (e) {
-      print('❌ Failed to save metadata: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Failed to save metadata: $e');
+      }
     }
   }
   
@@ -390,9 +417,13 @@ class CacheService {
       await prefs.remove(_metadataKey);
       _metadataCache = {};
       
-      print('🧹 Cache cleared');
+      if (kDebugMode) {
+        debugPrint('🧹 Cache cleared');
+      }
     } catch (e) {
-      print('❌ Cache clear error: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Cache clear error: $e');
+      }
     }
   }
   
@@ -437,7 +468,9 @@ class CacheService {
     }
     
     if (expiredKeys.isNotEmpty) {
-      print('🧹 Cleaned ${expiredKeys.length} expired cache entries');
+      if (kDebugMode) {
+        debugPrint('🧹 Cleaned ${expiredKeys.length} expired cache entries');
+      }
     }
   }
 }

@@ -229,17 +229,24 @@ function fastKeywordIntent(q) {
         return "movies";
     if (MOVIE_TERMS.some(k => lower.includes(k)))
         return "movies";
-    // ✅ STEP 4: Check shopping (after context checks)
+    // ✅ STEP 4: Check places FIRST (before shopping) for location-based queries
+    // This ensures "things to do in [city]" is correctly identified as places, not shopping
+    // Use fuzzy matching to handle typos like "thinds" → "things"
+    const placesMatch = PLACES_TERMS.some(k => {
+        const normalizedK = k.toLowerCase();
+        const normalizedQ = lower.replace(/thinds/g, 'things').replace(/vsiit/g, 'visit');
+        return normalizedQ.includes(normalizedK);
+    });
+    if (placesMatch)
+        return "places";
+    // ✅ STEP 5: Check shopping (after places to avoid false positives)
     if (SHOPPING_TERMS.some(k => lower.includes(k)))
         return "shopping";
-    // ✅ STEP 5: Check hotels
+    // ✅ STEP 6: Check hotels
     if (q.includes("hotels"))
         return "hotels";
     if (HOTEL_TERMS.some(k => lower.includes(k)))
         return "hotels";
-    // ✅ STEP 6: Check places (before restaurants)
-    if (PLACES_TERMS.some(k => lower.includes(k)))
-        return "places";
     // ✅ STEP 7: Check restaurants
     if (RESTAURANT_TERMS.some(k => lower.includes(k)))
         return "restaurants";

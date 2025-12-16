@@ -9,7 +9,7 @@ import { llmRewrite } from "./llmRewrite";
  */
 export async function refineQuery(query: string, sessionId: string): Promise<string> {
   // 1. Build memory-enhanced query
-  const memoryQ = buildRefinedQuery(query, sessionId);
+  const memoryQ = await buildRefinedQuery(query, sessionId);
 
   // 2. LLM rewrite for clarity/completeness
   try {

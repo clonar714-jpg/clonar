@@ -5,8 +5,8 @@ import { getSession } from "../memory/sessionMemory";
  * 🧠 C11.1 — MEMORY-AWARE QUERY BUILDER
  * Uses session state to build the strongest possible query
  */
-export function buildRefinedQuery(query: string, sessionId: string): string {
-  const s = getSession(sessionId);
+export async function buildRefinedQuery(query: string, sessionId: string): Promise<string> {
+  const s = await getSession(sessionId);
   if (!s) return query;
 
   let q = query.toLowerCase().trim();
@@ -41,8 +41,28 @@ export function buildRefinedQuery(query: string, sessionId: string): string {
   }
   // ❌ REMOVED: Don't add price from session memory automatically
 
-  if (s.city && !refined.includes(s.city.toLowerCase())) {
-    refined += ` in ${s.city}`;
+  // ✅ PRODUCTION FIX: Only add city if:
+  // 1. Domain is hotel/restaurants/places
+  // 2. Query doesn't already have a city/location
+  // 3. Query doesn't explicitly mention a DIFFERENT location
+  if (s.city && (s.domain === "hotel" || s.domain === "restaurants" || s.domain === "places")) {
+    const queryLower = refined.toLowerCase();
+    const sessionCityLower = s.city.toLowerCase();
+    
+    // Check if query already has a location (explicit or implicit)
+    const hasLocation = /\b(in|at|near|from|to)\s+[a-zA-Z][a-zA-Z\s]{2,}/i.test(refined);
+    
+    // Check if query mentions a different city/location
+    const hasDifferentLocation = hasLocation && !queryLower.includes(sessionCityLower);
+    
+    // Only add city if:
+    // - Query doesn't have any location, OR
+    // - Query doesn't have a different location
+    if (!hasLocation || !hasDifferentLocation) {
+      if (!queryLower.includes(sessionCityLower)) {
+        refined += ` in ${s.city}`;
+      }
+    }
   }
 
   // Intent-specific attributes - SMART CONTEXT MANAGEMENT (for all fields)

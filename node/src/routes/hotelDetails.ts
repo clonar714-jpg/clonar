@@ -243,18 +243,25 @@ Return ONLY valid JSON, no markdown, no extra text.
         ratingInsights: hotelDetails.ratingInsights || getDefaultRatingInsights(cleanliness, rooms, service, value),
       };
 
-      return res.json(hotelDetails);
+      if (!res.headersSent) {
+        return res.json(hotelDetails);
+      }
     } catch (err: any) {
       console.error("❌ LLM hotel details generation error:", err.message || err);
-      // Return default values on error
-      return res.json(getDefaultHotelDetails({ name, location, rating, reviewCount, description, amenities, address, nearby, cleanliness, rooms, service, value }));
+      // Return default values on error (only if headers not already sent)
+      if (!res.headersSent) {
+        return res.json(getDefaultHotelDetails({ name, location, rating, reviewCount, description, amenities, address, nearby, cleanliness, rooms, service, value }));
+      }
     }
   } catch (err: any) {
     console.error("❌ Error generating hotel details:", err);
-    return res.status(500).json({ 
-      error: "Failed to generate hotel details",
-      ...getDefaultHotelDetails({ name: req.body.name || "Hotel" })
-    });
+    // Only send response if headers haven't been sent (e.g., by timeout middleware)
+    if (!res.headersSent) {
+      return res.status(500).json({ 
+        error: "Failed to generate hotel details",
+        ...getDefaultHotelDetails({ name: req.body.name || "Hotel" })
+      });
+    }
   }
 });
 

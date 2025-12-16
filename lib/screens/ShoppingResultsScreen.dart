@@ -1,19 +1,27 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show debugPrint, compute;
-import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import '../isolates/text_parsing_isolate.dart' show parseAnswerIsolate, parseAgentResponseIsolate, ParsingInput, ParsedContent;
+import '../isolates/text_parsing_isolate.dart' show ParsedContent;
+import '../isolates/hotel_summary_isolate.dart' show buildHotelSummary; // ✅ FIX 1
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../models/Product.dart';
-import '../services/AgentService.dart';
+import '../providers/agent_provider.dart';
+import '../providers/parsed_agent_output_provider.dart';
+import '../providers/session_history_provider.dart';
+import '../providers/follow_up_engine_provider.dart';
+import '../providers/follow_up_controller_provider.dart';
+import '../providers/display_content_provider.dart';
+import '../providers/scroll_provider.dart';
+import '../models/query_session_model.dart';
 import '../widgets/AnswerHeaderRow.dart';
 import '../widgets/GoogleMapWidget.dart';
 import '../widgets/HotelMapView.dart';
-import '../widgets/PerplexityTypingAnimation.dart';
+import '../widgets/StreamingTextWidget.dart';
+import '../widgets/SessionRenderer.dart';
 import 'FullScreenMapScreen.dart';
 import '../services/GeocodingService.dart';
 import 'ProductDetailScreen.dart';
@@ -40,108 +48,7 @@ String cleanMarkdown(String text) {
       .trim();
 }
 
-// ✅ Top-level variable for parsing trigger (prevents multiple simultaneous parses)
-bool _globalParsingTriggered = false;
-
-class QuerySession {
-  final String query;
-  final List<Product> products;
-  final List<Map<String, dynamic>> hotelResults;
-  final String resultType; // "shopping", "hotel", "answer", "image", "restaurants", etc.
-  final bool isLoading;
-  final String? summary; // AI-generated summary
-  final List<Map<String, dynamic>> rawResults; // For image, restaurants, etc.
-  final bool isStreaming; // Whether this query is currently streaming
-  final List<Map<String, dynamic>> sources; // Sources for answer queries
-  final List<String> followUpSuggestions; // AI-generated follow-up suggestions
-  final List<Map<String, dynamic>> locationCards; // Location cards for answer queries (Perplexity-style)
-  final List<String> destinationImages; // Destination images for initial overview (Perplexity-style)
-  // ✅ FIX: Store backend values for conversation history
-  final String? intent;
-  final String? cardType;
-  final List<Map<String, dynamic>> cards;
-  // ✅ Perplexity-style: Hotel sections and map
-  final List<Map<String, dynamic>>? hotelSections; // [{title: "Luxury hotels", items: [...]}, ...]
-  final List<Map<String, dynamic>>? hotelMapPoints; // [{lat, lng, name, rating}, ...]
-  // ✅ Caching for performance optimization
-  final String? cachedSummary; // Cached generated summary
-  final List<Map<String, dynamic>>? cachedParsedLocations; // Cached parsed location segments
-  final ParsedContent? cachedParsing; // ✅ PHASE 3: Cached parsed content from isolate
-  // ✅ PATCH 4: Flag to prevent duplicate parsing
-  final bool? isParsing; // Whether this session is currently being parsed
-
-  QuerySession({
-    required this.query,
-    required this.products,
-    this.hotelResults = const [],
-    this.resultType = "shopping",
-    this.isLoading = false,
-    this.summary,
-    this.rawResults = const [],
-    this.isStreaming = false,
-    this.sources = const [],
-    this.followUpSuggestions = const [],
-    this.locationCards = const [],
-    this.destinationImages = const [],
-    this.intent,
-    this.cardType,
-    this.cards = const [],
-    this.hotelSections,
-    this.hotelMapPoints,
-    this.cachedSummary,
-    this.cachedParsedLocations,
-    this.cachedParsing,
-    this.isParsing,
-  });
-
-  QuerySession copyWith({
-    String? query,
-    List<Product>? products,
-    List<Map<String, dynamic>>? hotelResults,
-    String? resultType,
-    bool? isLoading,
-    String? summary,
-    List<Map<String, dynamic>>? rawResults,
-    bool? isStreaming,
-    List<Map<String, dynamic>>? sources,
-    List<String>? followUpSuggestions,
-    List<Map<String, dynamic>>? locationCards,
-    List<String>? destinationImages,
-    String? intent,
-    String? cardType,
-    List<Map<String, dynamic>>? cards,
-    List<Map<String, dynamic>>? hotelSections,
-    List<Map<String, dynamic>>? hotelMapPoints,
-    String? cachedSummary,
-    List<Map<String, dynamic>>? cachedParsedLocations,
-    ParsedContent? cachedParsing,
-    bool? isParsing,
-  }) {
-    return QuerySession(
-      query: query ?? this.query,
-      products: products ?? this.products,
-      hotelResults: hotelResults ?? this.hotelResults,
-      resultType: resultType ?? this.resultType,
-      isLoading: isLoading ?? this.isLoading,
-      summary: summary ?? this.summary,
-      rawResults: rawResults ?? this.rawResults,
-      isStreaming: isStreaming ?? this.isStreaming,
-      sources: sources ?? this.sources,
-      followUpSuggestions: followUpSuggestions ?? this.followUpSuggestions,
-      locationCards: locationCards ?? this.locationCards,
-      destinationImages: destinationImages ?? this.destinationImages,
-      intent: intent ?? this.intent,
-      cardType: cardType ?? this.cardType,
-      cards: cards ?? this.cards,
-      hotelSections: hotelSections ?? this.hotelSections,
-      hotelMapPoints: hotelMapPoints ?? this.hotelMapPoints,
-      cachedSummary: cachedSummary ?? this.cachedSummary,
-      cachedParsedLocations: cachedParsedLocations ?? this.cachedParsedLocations,
-      cachedParsing: cachedParsing ?? this.cachedParsing,
-      isParsing: isParsing ?? this.isParsing,
-    );
-  }
-}
+// ✅ RIVERPOD: Removed old QuerySession class - now using lib/models/query_session_model.dart
 
 // ✅ Isolate functions for heavy computations (STEP 1)
 String generateSummaryIsolate(Map<String, dynamic> hotelData) {
@@ -209,7 +116,7 @@ List<Map<String, dynamic>> parseTextWithLocationsIsolate(Map<String, dynamic> da
   return segments;
 }
 
-class ShoppingResultsScreen extends StatefulWidget {
+class ShoppingResultsScreen extends ConsumerStatefulWidget {
   final String query;
   final String? imageUrl;
   final List<Map<String, dynamic>>? initialConversationHistory; // ✅ Accept conversation history
@@ -222,30 +129,27 @@ class ShoppingResultsScreen extends StatefulWidget {
   });
 
   @override
-  State<ShoppingResultsScreen> createState() => _ShoppingResultsScreenState();
+  ConsumerState<ShoppingResultsScreen> createState() => _ShoppingResultsScreenState();
 }
 
-class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
+class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true; // ✅ STEP 3: Prevent rebuilds
   
-  List<QuerySession> conversationHistory = [];
-  // ✅ STEP 2: Cache for hotel summaries
-  final Map<String, String> _hotelSummaryCache = {};
-  // Map to store product links by product ID
+  // ✅ PHASE 4B: All animation state removed - now using streamingTextProvider
+  
+  // ✅ RIVERPOD: Keep only UI-related state (not business logic)
+  // Map to store product links by product ID (UI state only)
   final Map<int, String> _productLinks = {};
-  // Keeps track of expanded summaries per query index
+  // Keeps track of expanded summaries per query index (UI state only)
   final Map<int, bool> _expandedSummaries = {};
-  // ✅ PATCH B1: Stable animation controller map (prevents restart on scroll)
-  final Map<String, bool> _hasAnimated = {};
-  // ✅ PATCH C1: Preprocessed result cache (prevents heavy computation in build)
-  Map<String, dynamic>? _processedResult;
-  // ✅ PATCH A: Prevent main-thread freeze
-  bool _isComputingResponse = false;
-  // Token queue for smooth streaming display
-  Timer? _streamTimer;
-  String _displayedText = ''; // What's currently displayed (for animation)
-  String _targetText = ''; // What should be displayed (from stream)
+  // ✅ STEP 2: Cache for hotel summaries (UI state only)
+  final Map<String, String> _hotelSummaryCache = {};
+
+  static const int _maxVisibleProducts = 12;
+  static const int _maxVisibleHotelsPerSection = 8;
+  static const int _maxVisiblePlaces = 8;
+  static const int _maxVisibleMovies = 6;
 
   // Safe number extraction helper function
   double safeNumber(dynamic value, double fallback) {
@@ -283,74 +187,65 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   final ScrollController _scrollController = ScrollController();
   List<GlobalKey> _queryKeys = [];
   // ✅ PATCH E4: Debounce timer for follow-up input
-  Timer? _followUpDebounce;
+  // ✅ FIX 5: Replace Timer debounce with ValueNotifier (prevents rebuilds)
+  final ValueNotifier<String> _followUpTextNotifier = ValueNotifier<String>('');
 
-  // Hotel view mode: 'list' or 'map'
+  // Hotel view mode: 'list' or 'map' (UI state only)
   String _hotelViewMode = 'list';
+
+  // Scroll-to-bottom button state (UI state only)
+  bool _isAtBottom = true;
+  bool _showScrollToBottomButton = false;
+  Timer? _scrollThrottleTimer;
+  final double _scrollThreshold = 150.0; // px threshold for showing button
+  
+  // ✅ RIVERPOD: Removed _buildSessionsFromResponse - now using sessionHistoryProvider directly
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this); // register lifecycle listener
-    print('ShoppingResultsScreen query: "${widget.query}"');
+    if (kDebugMode) {
+      debugPrint('ShoppingResultsScreen query: "${widget.query}"');
+    }
     
-    // ✅ If conversation history is provided, restore it
+    // Add scroll listener for scroll-to-bottom button
+    _scrollController.addListener(_handleScroll);
+    
+    // ✅ RIVERPOD: Initialize query keys for initial conversation history
     if (widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
-      print('📚 Restoring ${widget.initialConversationHistory!.length} previous conversation sessions');
-      for (final sessionData in widget.initialConversationHistory!) {
-        final resultType = sessionData['intent'] as String? ?? sessionData['cardType'] as String? ?? _detectResultType(sessionData['query'] as String);
-        final cardsData = sessionData['cards'] as List?;
-        final products = cardsData != null
-            ? cardsData.map((p) {
-                try {
-                  return Product.fromJson(Map<String, dynamic>.from(p));
-                } catch (e) {
-                  print('⚠️ Error parsing product: $e');
-                  return null;
-                }
-              }).whereType<Product>().toList()
-            : <Product>[];
-        
-        final restoredSession = QuerySession(
-          query: sessionData['query'] as String,
-          products: products,
-          hotelResults: (sessionData['results'] as List?)?.map((r) => Map<String, dynamic>.from(r)).toList() ?? [],
-          resultType: resultType,
-          isLoading: false,
-          summary: sessionData['summary'] as String?,
-          rawResults: (sessionData['results'] as List?)?.map((r) => Map<String, dynamic>.from(r)).toList() ?? [],
-          intent: sessionData['intent'] as String?,
-          cardType: sessionData['cardType'] as String?,
-          cards: (sessionData['cards'] as List?)?.map((c) => Map<String, dynamic>.from(c)).toList() ?? [],
-        );
-        conversationHistory.add(restoredSession);
+      for (int i = 0; i < widget.initialConversationHistory!.length; i++) {
         _queryKeys.add(GlobalKey());
       }
     }
-    
-    // Create initial QuerySession for current query (only if it's not already in history)
-    final queryAlreadyInHistory = conversationHistory.any((session) => session.query == widget.query);
-    if (!queryAlreadyInHistory) {
-      final resultType = _detectResultType(widget.query);
-      final initialSession = QuerySession(
-        query: widget.query,
-        products: [],
-        hotelResults: [],
-        resultType: resultType,
-        isLoading: true,
-      );
-      conversationHistory.add(initialSession);
+    // Add key for current query
       _queryKeys.add(GlobalKey());
-      // ✅ FIX: Use post-frame callback to avoid setState during build
+    
+    // ✅ RIVERPOD: Trigger agent query on init (deferred to after first frame)
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _loadResultsForSession(conversationHistory.length - 1); // Load results for the new session
+        // ✅ FIX: Only submit query if it hasn't been submitted already (check session history)
+        // Check if there's already a session with this exact query (including imageUrl)
+        // This prevents duplicate submissions when ShopScreen already submitted the query
+        final existingSessions = ref.read(sessionHistoryProvider);
+        final trimmedQuery = widget.query.trim();
+        final queryAlreadySubmitted = existingSessions.any((s) => 
+          s.query.trim() == trimmedQuery && 
+          s.imageUrl == widget.imageUrl &&
+          (s.isStreaming || s.isParsing || s.summary != null) // Check if query is processing or completed
+        );
+        
+        if (!queryAlreadySubmitted) {
+          // Submit query to agent provider only if not already submitted
+          ref.read(agentControllerProvider.notifier).submitQuery(widget.query, imageUrl: widget.imageUrl);
+        } else if (kDebugMode) {
+          debugPrint('⏭️ Skipping duplicate query submission: "$trimmedQuery" (already in session history)');
         }
-      });
-    }
+      }
+    });
     
     _followUpController.addListener(() {
-      print('Text changed: "${_followUpController.text}"');
+      // Removed print from listener - avoid logging every keystroke
     });
   }
 
@@ -406,820 +301,10 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     return false; // ALWAYS let backend decide intent
   }
 
-  // 🌊 Stream answer response for real-time token display (Perplexity-style)
-  Future<void> _streamAnswerResponse(int sessionIndex, QuerySession session) async {
-    try {
-      // Initialize with empty summary to show loading state
-      _displayedText = '';
-      _targetText = '';
-      setState(() {
-        conversationHistory[sessionIndex] = session.copyWith(
-          resultType: 'answer',
-          isLoading: false, // Don't show spinner, show "Thinking..." text instead
-          isStreaming: true,
-          summary: '', // Start empty
-          sources: [],
-        );
-      });
-      
-      // ✅ Update summary periodically with full target text
-      // Let PerplexityTypingAnimation widget handle the smooth word-by-word animation
-      _streamTimer?.cancel();
-      _streamTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
-        if (!mounted || conversationHistory.length <= sessionIndex) {
-          timer.cancel();
-          return;
-        }
-        
-        final session = conversationHistory[sessionIndex];
-        // ✅ FIX: Update summary with FULL target text, let PerplexityTypingAnimation widget handle animation
-        // This allows the widget to animate word-by-word smoothly
-        if (_targetText.isNotEmpty && session.summary != _targetText) {
-          if (mounted) {
-            setState(() {
-              conversationHistory[sessionIndex] =
-                  conversationHistory[sessionIndex].copyWith(
-                summary: _targetText, // Pass full text to widget for animation
-                isStreaming: true,
-                isLoading: false,
-              );
-            });
-          }
-        } else if (!session.isStreaming) {
-          // Stop timer when streaming is complete
-          timer.cancel();
-        }
-      });
-
-      // Build conversation history for context (previous queries and answers)
-      // Similar to ChatGPT/Perplexity: include all previous exchanges for context
-      final List<Map<String, dynamic>> history = [];
-      for (int i = 0; i < sessionIndex; i++) {
-        final prevSession = conversationHistory[i];
-        // Only include completed exchanges (both query and answer)
-        if (prevSession.query.isNotEmpty && 
-            prevSession.summary != null && 
-            prevSession.summary!.isNotEmpty) {
-          history.add({
-            "query": prevSession.query,
-            "summary": prevSession.summary ?? "",
-            "intent": prevSession.resultType,    // <-- important
-            "cardType": prevSession.resultType,  // <-- important
-            "cards": prevSession.products.map((p) => {
-              "title": p.title,
-              "price": p.price,
-              "rating": p.rating,
-              "images": p.images,
-              "source": p.source,
-            }).toList(),
-            "results": prevSession.rawResults,
-          });
-        }
-      }
-      print('📚 Sending ${history.length} previous exchanges for context (streaming)');
-      
-      final request = http.Request(
-        'POST',
-        Uri.parse('${AgentService.baseUrl}/api/agent?stream=true'),
-      );
-      request.headers['Accept'] = 'text/event-stream';
-      request.headers['Content-Type'] = 'application/json';
-      request.body = jsonEncode({
-        "query": session.query,
-        "conversationHistory": history,
-      });
-
-      final response = await request.send();
-      final stream = response.stream.transform(utf8.decoder);
-
-      String buffer = '';
-      String accumulatedAnswer = '';
-      List<Map<String, dynamic>> sources = [];
-
-      await for (final chunk in stream) {
-        buffer += chunk;
-        final lines = buffer.split(RegExp(r'\r?\n'));
-        if (lines.isNotEmpty) {
-          buffer = lines.removeLast(); // keep unfinished line
-        } else {
-          buffer = '';
-        }
-
-        for (String line in lines) {
-          line = line.trim();
-          if (!line.startsWith('data:')) continue;
-          final jsonStr = line.substring(5).trim();
-          if (jsonStr.isEmpty || jsonStr == '[DONE]') continue;
-
-          try {
-            final data = jsonDecode(jsonStr);
-            final type = data['type'];
-
-            switch (type) {
-              case 'message':
-                final token = data['data'] ?? '';
-                if (token.isNotEmpty) {
-                  accumulatedAnswer += token;
-                  _targetText = accumulatedAnswer; // Update target for animation
-                  debugPrint('📝 Token: "$token" | Total: ${accumulatedAnswer.length} | Displayed: ${_displayedText.length}');
-                  // Don't update UI here - let the timer handle character-by-character animation
-                }
-                break;
-
-              case 'correction':
-                // Answer was regenerated to match location cards - replace the entire answer
-                final correctedAnswer = data['data'] ?? '';
-                if (correctedAnswer.isNotEmpty) {
-                  accumulatedAnswer = correctedAnswer;
-                  _targetText = correctedAnswer;
-                  _displayedText = ''; // Reset displayed text to animate the correction
-                  debugPrint('🔄 Answer corrected to match location cards');
-                }
-                break;
-
-              case 'sources':
-                sources = (data['data'] as List)
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList();
-                setState(() {
-                  conversationHistory[sessionIndex] =
-                      conversationHistory[sessionIndex].copyWith(sources: sources);
-                });
-                break;
-
-              case 'products':
-                // Handle products for shopping-related follow-ups
-                final productsData = (data['data'] as List)
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList();
-                if (productsData.isNotEmpty) {
-                  final List<Product> products = productsData.map<Product>((item) {
-                    try {
-                      return _mapShoppingResultToProduct(item);
-                    } catch (e) {
-                      print('Error mapping product from stream: $e');
-                      return Product(
-                        id: DateTime.now().millisecondsSinceEpoch,
-                        title: 'Error loading product',
-                        description: 'Unable to load product details',
-                        price: 0.0,
-                        source: 'Error',
-                        rating: 0.0,
-                        images: [],
-                        variants: [],
-                      );
-                    }
-                  }).toList();
-                  
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          products: products,
-                        );
-                  });
-                }
-                break;
-
-              case 'hotels':
-                // Handle hotels for hotel-related follow-ups
-                final hotelsData = (data['data'] as List)
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList();
-                if (hotelsData.isNotEmpty) {
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          hotelResults: hotelsData,
-                        );
-                  });
-                }
-                break;
-
-              case 'flights':
-                // Handle flights for flight-related follow-ups
-                final flightsData = (data['data'] as List)
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList();
-                if (flightsData.isNotEmpty) {
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          rawResults: flightsData,
-                        );
-                  });
-                }
-                break;
-
-              case 'restaurants':
-                // Handle restaurants for restaurant-related follow-ups
-                final restaurantsData = (data['data'] as List)
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList();
-                if (restaurantsData.isNotEmpty) {
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          rawResults: restaurantsData,
-                        );
-                  });
-                }
-                break;
-
-              case 'destination_images':
-                // Handle destination images for overview section (Perplexity-style)
-                // print('🖼️ Received destination images event with ${data['data']?.length ?? 0} images');
-                final imagesData = (data['data'] as List)
-                    .map((e) => e.toString())
-                    .where((e) => e.isNotEmpty)
-                    .toList();
-                if (imagesData.isNotEmpty) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted && sessionIndex < conversationHistory.length) {
-                      setState(() {
-                        conversationHistory[sessionIndex] =
-                            conversationHistory[sessionIndex].copyWith(
-                              destinationImages: imagesData,
-                            );
-                      });
-                    }
-                  });
-                }
-                break;
-
-              case 'locations':
-                // Handle location cards for location-related answer queries
-                print('📍 Received locations event with ${data['data']?.length ?? 0} location cards');
-                final locationsData = (data['data'] as List)
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList();
-                print('📍 Parsed ${locationsData.length} location cards');
-                if (locationsData.isNotEmpty) {
-                  print('📍 Updating UI with location cards');
-                  // Force UI update with WidgetsBinding to ensure rebuild
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted && sessionIndex < conversationHistory.length) {
-                      setState(() {
-                        conversationHistory[sessionIndex] =
-                            conversationHistory[sessionIndex].copyWith(
-                              locationCards: locationsData,
-                            );
-                      });
-                      print('📍 UI updated. Current locationCards count: ${conversationHistory[sessionIndex].locationCards.length}');
-                    }
-                  });
-                }
-                break;
-
-              case 'end':
-                // Ensure all text is displayed before stopping
-                _targetText = accumulatedAnswer;
-                // Check if cards were included in the end event (products, hotels, flights, restaurants, locations, destination_images)
-                final endProducts = data['products'] as List?;
-                final endHotels = data['hotelResults'] as List?;
-                final endFlights = data['flights'] as List?;
-                final endRestaurants = data['restaurants'] as List?;
-                final endLocations = data['locations'] as List?;
-                final endDestinationImages = data['destination_images'] as List?;
-                // ✅ FIX: Store backend values from end event
-                final endIntent = data['intent'] as String?;
-                final endCardType = data['cardType'] as String?;
-                final endCards = data['cards'] as List?;
-                
-                if (endProducts != null && endProducts.isNotEmpty) {
-                  final List<Product> products = endProducts.map<Product>((item) {
-                    try {
-                      return _mapShoppingResultToProduct(Map<String, dynamic>.from(item));
-                    } catch (e) {
-                      print('Error mapping product from end event: $e');
-                      return Product(
-                        id: DateTime.now().millisecondsSinceEpoch,
-                        title: 'Error loading product',
-                        description: 'Unable to load product details',
-                        price: 0.0,
-                        source: 'Error',
-                        rating: 0.0,
-                        images: [],
-                        variants: [],
-                      );
-                    }
-                  }).toList();
-                  
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          products: products,
-                          // ✅ FIX: Store backend values
-                          intent: endIntent,
-                          cardType: endCardType,
-                          cards: endCards?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-                        );
-                  });
-                } else {
-                  // ✅ FIX: Store backend values even if no products
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          intent: endIntent,
-                          cardType: endCardType,
-                          cards: endCards?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-                        );
-                  });
-                }
-                
-                if (endHotels != null && endHotels.isNotEmpty) {
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          hotelResults: endHotels.map((e) => Map<String, dynamic>.from(e)).toList(),
-                        );
-                  });
-                }
-                
-                if (endFlights != null && endFlights.isNotEmpty) {
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          rawResults: endFlights.map((e) => Map<String, dynamic>.from(e)).toList(),
-                        );
-                  });
-                }
-                
-                if (endRestaurants != null && endRestaurants.isNotEmpty) {
-                  setState(() {
-                    conversationHistory[sessionIndex] =
-                        conversationHistory[sessionIndex].copyWith(
-                          rawResults: endRestaurants.map((e) => Map<String, dynamic>.from(e)).toList(),
-                        );
-                  });
-                }
-                
-                if (endDestinationImages != null && endDestinationImages.isNotEmpty) {
-                  final imagesList = endDestinationImages.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted && sessionIndex < conversationHistory.length) {
-                      setState(() {
-                        conversationHistory[sessionIndex] =
-                            conversationHistory[sessionIndex].copyWith(
-                              destinationImages: imagesList,
-                            );
-                      });
-                    }
-                  });
-                }
-                
-                if (endLocations != null && endLocations.isNotEmpty) {
-                  print('📍 Received locations in end event: ${endLocations.length} cards');
-                  // Force UI update with WidgetsBinding to ensure rebuild
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted && sessionIndex < conversationHistory.length) {
-                      setState(() {
-                        conversationHistory[sessionIndex] =
-                            conversationHistory[sessionIndex].copyWith(
-                              locationCards: endLocations.map((e) => Map<String, dynamic>.from(e)).toList(),
-                            );
-                      });
-                      print('📍 UI updated from end event. Current locationCards count: ${conversationHistory[sessionIndex].locationCards.length}');
-                    }
-                  });
-                }
-                
-                // ✅ Pre-parse when end event arrives with all data
-                final finalSummary = accumulatedAnswer.isNotEmpty ? accumulatedAnswer : session.summary ?? '';
-                final finalLocations = endLocations?.map((e) => Map<String, dynamic>.from(e)).toList() ?? 
-                    conversationHistory[sessionIndex].locationCards;
-                final finalImages = endDestinationImages?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? 
-                    conversationHistory[sessionIndex].destinationImages;
-                
-                if (finalSummary.isNotEmpty || finalLocations.isNotEmpty) {
-                  final input = ParsingInput(
-                    answerText: finalSummary,
-                    locationCards: finalLocations,
-                    destinationImages: finalImages,
-                  );
-                  
-                  compute(parseAnswerIsolate, input.toMap()).then((parsed) {
-                    if (mounted && sessionIndex < conversationHistory.length) {
-                      setState(() {
-                        conversationHistory[sessionIndex] = conversationHistory[sessionIndex].copyWith(
-                          cachedParsing: parsed,
-                        );
-                      });
-                    }
-                  });
-                }
-                
-                // Wait for animation to catch up completely
-                Future.delayed(const Duration(milliseconds: 200), () {
-                  // Keep checking until animation catches up
-                  _waitForAnimationToComplete(sessionIndex, accumulatedAnswer, sources);
-                });
-                return; // ✅ stop listening when done
-
-              case 'error':
-                throw Exception(data['error'] ?? 'Unknown stream error');
-            }
-          } catch (e) {
-            debugPrint('Bad SSE line: $line');
-          }
-        }
-      }
-
-      // fallback: if we reach here and didn't get "end"
-      _streamTimer?.cancel();
-      _displayedText = '';
-      _targetText = '';
-      setState(() {
-        conversationHistory[sessionIndex] =
-            conversationHistory[sessionIndex].copyWith(
-          summary: accumulatedAnswer.isNotEmpty ? accumulatedAnswer : session.summary ?? '',
-          sources: sources,
-          isStreaming: false,
-          isLoading: false,
-        );
-      });
-      // Generate suggestions even if stream ended without "end" event
-      if (accumulatedAnswer.isNotEmpty) {
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (mounted && sessionIndex < conversationHistory.length) {
-            _generateFollowUpSuggestions(sessionIndex, accumulatedAnswer);
-          }
-        });
-      }
-    } catch (e) {
-      debugPrint('❌ Streaming error: $e');
-      _streamTimer?.cancel();
-      _displayedText = '';
-      _targetText = '';
-      
-      // If streaming fails, try non-streaming API call as fallback
-      debugPrint('🔄 Falling back to non-streaming API call...');
-      try {
-        final List<Map<String, dynamic>> history = [];
-        for (int i = 0; i < sessionIndex; i++) {
-          final prevSession = conversationHistory[i];
-          if (prevSession.query.isNotEmpty && 
-              prevSession.summary != null && 
-              prevSession.summary!.isNotEmpty) {
-            history.add({
-              "query": prevSession.query,
-              "summary": prevSession.summary ?? "",
-              "intent": prevSession.resultType,    // <-- important
-              "cardType": prevSession.resultType,  // <-- important
-              "cards": prevSession.products.map((p) => {
-                "title": p.title,
-                "price": p.price,
-                "rating": p.rating,
-                "images": p.images,
-                "source": p.source,
-              }).toList(),
-              "results": prevSession.rawResults,
-            });
-          }
-        }
-        
-        final responseData = await AgentService.askAgent(
-          session.query, 
-          conversationHistory: history,
-          imageUrl: widget.imageUrl, // ✅ Pass imageUrl for image search
-        );
-        final resultType = (responseData['intent'] ?? 'answer').toString().toLowerCase();
-        
-        if (resultType == 'answer' || resultType == 'general') {
-          final sources = (responseData['sources'] as List?)
-              ?.map((e) => Map<String, dynamic>.from(e))
-              .toList() ?? [];
-          final locationCards = (responseData['locations'] as List?)
-              ?.map((e) => Map<String, dynamic>.from(e))
-              .toList() ?? [];
-          final destinationImages = (responseData['destination_images'] as List?)
-              ?.map((e) => e.toString())
-              .where((e) => e.isNotEmpty)
-              .toList() ?? [];
-          
-          // ✅ PART 4: Add missing summary fallback
-          final cleanSummaryFallback = cleanMarkdown(
-            responseData['summary'] ??
-            responseData['answer'] ??
-            "Here are the details you're looking for:"
-          );
-          
-          // ✅ MOST IMPORTANT: Pre-parse in isolate when data arrives
-          final input = ParsingInput(
-            answerText: cleanSummaryFallback,
-            locationCards: locationCards,
-            destinationImages: destinationImages,
-          );
-          
-          // Parse in background isolate
-          compute(parseAnswerIsolate, input.toMap()).then((parsed) {
-            if (mounted && sessionIndex < conversationHistory.length) {
-              setState(() {
-                conversationHistory[sessionIndex] = conversationHistory[sessionIndex].copyWith(
-                  cachedParsing: parsed,
-                );
-              });
-            }
-          });
-          
-          // ✅ C5: MUST set isLoading to false after backend returns
-          setState(() {
-            conversationHistory[sessionIndex] = session.copyWith(
-              resultType: 'answer',
-              isLoading: false, // ✅ C5: Clear loading state
-              summary: cleanSummaryFallback,
-              sources: sources,
-              locationCards: locationCards,
-              destinationImages: destinationImages,
-              isStreaming: false,
-              // ✅ FIX: Store backend values
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-            );
-          });
-          
-          // Generate follow-up suggestions
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted && sessionIndex < conversationHistory.length) {
-              final summary = responseData['summary']?.toString() ?? responseData['answer']?.toString() ?? '';
-              _generateFollowUpSuggestions(sessionIndex, summary);
-            }
-          });
-        } else {
-          // Not an answer query, let _loadResultsForSession handle it
-          _loadResultsForSession(sessionIndex);
-        }
-      } catch (fallbackError) {
-        debugPrint('❌ Fallback also failed: $fallbackError');
-        setState(() {
-          conversationHistory[sessionIndex] = session.copyWith(
-            summary: '⚠️ Error loading answer. Please try again.',
-            isStreaming: false,
-            isLoading: false,
-          );
-        });
-      }
-    }
-  }
-
-
-  // Wait for character animation to complete before marking as done
-  void _waitForAnimationToComplete(int sessionIndex, String finalText, List<Map<String, dynamic>> sources, {int retryCount = 0}) {
-    if (!mounted) return;
-    
-    // Safety: Don't wait forever - max 10 seconds (200 retries * 50ms)
-    if (retryCount > 200) {
-      debugPrint('⚠️ Animation timeout - forcing completion');
-      _streamTimer?.cancel();
-      setState(() {
-        conversationHistory[sessionIndex] =
-            conversationHistory[sessionIndex].copyWith(
-          summary: finalText,
-          sources: sources,
-          isStreaming: false,
-          isLoading: false,
-        );
-      });
-      _displayedText = '';
-      _targetText = '';
-      // Generate suggestions even if animation timed out
-      Future.delayed(const Duration(milliseconds: 100), () {
-        if (mounted && sessionIndex < conversationHistory.length) {
-          _generateFollowUpSuggestions(sessionIndex, finalText);
-        }
-      });
-      return;
-    }
-    
-    // Check if animation has caught up
-    if (_displayedText.length >= _targetText.length) {
-      // Animation complete
-      _streamTimer?.cancel();
-      setState(() {
-        conversationHistory[sessionIndex] =
-            conversationHistory[sessionIndex].copyWith(
-          summary: finalText,
-          sources: sources,
-          isStreaming: false,
-          isLoading: false,
-        );
-      });
-      _displayedText = '';
-      _targetText = '';
-      
-      debugPrint('✅ Animation complete, generating suggestions...');
-      // Generate follow-up suggestions after answer is complete
-      // Add a small delay to ensure state update is complete
-      Future.delayed(const Duration(milliseconds: 100), () {
-        if (mounted && sessionIndex < conversationHistory.length) {
-          _generateFollowUpSuggestions(sessionIndex, finalText);
-        }
-      });
-    } else {
-      // Still animating, check again in 50ms
-      Future.delayed(const Duration(milliseconds: 50), () {
-        _waitForAnimationToComplete(sessionIndex, finalText, sources, retryCount: retryCount + 1);
-      });
-    }
-  }
-
-  // Generate AI-powered follow-up suggestions
-  Future<void> _generateFollowUpSuggestions(int sessionIndex, String answer) async {
-    if (!mounted) return;
-    
-    debugPrint('🎯 Generating follow-up suggestions for session $sessionIndex');
-    debugPrint('Query: ${conversationHistory[sessionIndex].query}');
-    debugPrint('Answer length: ${answer.length}');
-    
-    try {
-      final session = conversationHistory[sessionIndex];
-      final query = session.query;
-      
-      // Call OpenAI to generate 3 relevant follow-up suggestions
-      final request = http.Request(
-        'POST',
-        Uri.parse('${AgentService.baseUrl}/api/agent/generate-suggestions'),
-      );
-      request.headers['Content-Type'] = 'application/json';
-      // Build conversation history for better context
-      final List<Map<String, dynamic>> history = [];
-      for (int i = 0; i < sessionIndex; i++) {
-        final prevSession = conversationHistory[i];
-        if (prevSession.query.isNotEmpty && 
-            prevSession.summary != null && 
-            prevSession.summary!.isNotEmpty) {
-          history.add({
-            "query": prevSession.query,
-            "summary": prevSession.summary,
-            "intent": prevSession.resultType,
-          });
-        }
-      }
-      
-      request.body = jsonEncode({
-        "query": query,
-        "answer": answer,
-        "conversationHistory": history, // Include conversation history for better predictions
-      });
-
-      debugPrint('📡 Calling API: ${AgentService.baseUrl}/api/agent/generate-suggestions');
-      final response = await request.send().timeout(
-        const Duration(seconds: 10),
-      );
-      final responseBody = await response.stream.bytesToString();
-      
-      debugPrint('📥 Response status: ${response.statusCode}');
-      debugPrint('📥 Response body: $responseBody');
-      
-      if (response.statusCode == 200) {
-        final data = jsonDecode(responseBody);
-        final suggestions = (data['suggestions'] as List?)
-            ?.map((e) => e.toString())
-            .where((s) => s.isNotEmpty)
-            .take(3)
-            .toList() ?? [];
-        
-        debugPrint('✅ Parsed suggestions: $suggestions');
-        
-        if (mounted && suggestions.isNotEmpty) {
-          // ✅ PART 3: Fix follow-up generation duplication
-          final prev = conversationHistory[sessionIndex].query.toLowerCase();
-          final cleaned = suggestions
-              .map((s) => s.trim())
-              .where((s) => s.isNotEmpty && !s.toLowerCase().contains(prev))
-              .toList();
-          
-          setState(() {
-            conversationHistory[sessionIndex] =
-                conversationHistory[sessionIndex].copyWith(
-              followUpSuggestions: cleaned.take(3).toList(),
-            );
-          });
-          debugPrint('✅ Suggestions set in state: ${conversationHistory[sessionIndex].followUpSuggestions}');
-        } else {
-          debugPrint('⚠️ No suggestions or empty list, using fallback');
-          _generateFallbackSuggestions(sessionIndex);
-        }
-      } else {
-        debugPrint('❌ API error: ${response.statusCode}, using fallback');
-        _generateFallbackSuggestions(sessionIndex);
-      }
-    } catch (e, stackTrace) {
-      debugPrint('❌ Failed to generate follow-up suggestions: $e');
-      debugPrint('Stack trace: $stackTrace');
-      // Fallback: Generate simple suggestions based on query
-      _generateFallbackSuggestions(sessionIndex);
-    }
-  }
-
-  // Fallback: Generate simple suggestions if API fails
-  void _generateFallbackSuggestions(int sessionIndex) {
-    if (!mounted) return;
-    
-    debugPrint('🔄 Generating fallback suggestions for session $sessionIndex');
-    final session = conversationHistory[sessionIndex];
-    final query = session.query.toLowerCase();
-    final answer = session.summary?.toLowerCase() ?? '';
-    final suggestions = <String>[];
-    
-    // Generate context-aware suggestions based on query AND answer content
-    // Check for location/travel keywords first
-    if (query.contains('hawaii') || query.contains('island') || query.contains('beach') || 
-        query.contains('travel') || query.contains('visit') || query.contains('attraction') ||
-        answer.contains('hawaii') || answer.contains('island') || answer.contains('travel')) {
-      if (query.contains('cultural') || query.contains('culture') || answer.contains('cultural')) {
-        suggestions.add('Best time to visit?');
-        suggestions.add('Traditional foods?');
-        suggestions.add('Festivals and events?');
-      } else if (query.contains('attraction') || query.contains('see') || query.contains('do')) {
-        suggestions.add('Best time to visit?');
-        suggestions.add('How to get there?');
-        suggestions.add('Entry fees?');
-      } else {
-        suggestions.add('Best time to visit?');
-        suggestions.add('How to get there?');
-        suggestions.add('What to see?');
-      }
-    } else if (query.contains('shoes') || query.contains('shoe')) {
-      if (query.contains('under') || query.contains('\$')) {
-        suggestions.add('Running shoes under \$200?');
-        suggestions.add('Filter by size?');
-        suggestions.add('Compare durability?');
-      } else {
-        suggestions.add('Running shoes under \$100?');
-        suggestions.add('Best for running?');
-        suggestions.add('Compare models?');
-      }
-    } else if (query.contains('restaurant') || query.contains('eat') || query.contains('dining') || 
-               query.contains('food') || query.contains('cuisine') || query.contains('menu') ||
-               answer.contains('restaurant') || answer.contains('dining') || answer.contains('cuisine')) {
-      // Restaurant-specific suggestions
-      suggestions.add('View menu?');
-      suggestions.add('Price range?');
-      suggestions.add('Make reservation?');
-    } else if (query.contains('hotel') || query.contains('motel')) {
-      suggestions.add('Free breakfast?');
-      suggestions.add('Price range?');
-      suggestions.add('Near downtown?');
-    } else if (query.contains('machine learning') || query.contains('ml') || query.contains('ai') || query.contains('artificial intelligence')) {
-      suggestions.add('Applications?');
-      suggestions.add('ML vs deep learning?');
-      suggestions.add('Best languages?');
-    } else if (query.startsWith('what is') || query.startsWith('what are')) {
-      // Extract topic from query
-      final topic = query.replaceAll('what is', '').replaceAll('what are', '').trim();
-      if (topic.isNotEmpty && topic.length < 20) {
-        suggestions.add('How does $topic work?');
-        suggestions.add('Benefits?');
-        suggestions.add('Alternatives?');
-      } else {
-        // Use answer content to generate better suggestions
-        if (answer.contains('location') || answer.contains('place') || answer.contains('island')) {
-          suggestions.add('Best time to visit?');
-          suggestions.add('How to get there?');
-          suggestions.add('What to see?');
-        } else {
-          suggestions.add('Tell me more');
-          suggestions.add('Key features?');
-          suggestions.add('Learn more');
-        }
-      }
-    } else if (query.startsWith('how') || query.startsWith('why')) {
-      suggestions.add('Steps?');
-      suggestions.add('Benefits?');
-      suggestions.add('Alternatives?');
-    } else {
-      // Generic fallback - try to extract context from answer
-      if (answer.contains('location') || answer.contains('place') || answer.contains('travel')) {
-        suggestions.add('Best time to visit?');
-        suggestions.add('How to get there?');
-        suggestions.add('What to see?');
-      } else {
-        suggestions.add('Tell me more');
-        suggestions.add('Best options?');
-        suggestions.add('Compare?');
-      }
-    }
-    
-    debugPrint('🔄 Fallback suggestions generated: $suggestions');
-    
-    if (mounted && suggestions.isNotEmpty) {
-      // ✅ PART 3: Fix follow-up generation duplication
-      final prev = conversationHistory[sessionIndex].query.toLowerCase();
-      final cleaned = suggestions
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty && !s.toLowerCase().contains(prev))
-          .toList();
-      
-      setState(() {
-        conversationHistory[sessionIndex] =
-            conversationHistory[sessionIndex].copyWith(
-          followUpSuggestions: cleaned.take(3).toList(),
-        );
-      });
-      debugPrint('✅ Fallback suggestions set in state: ${conversationHistory[sessionIndex].followUpSuggestions}');
-    }
-  }
+  // ✅ PHASE 4C: Removed deprecated _streamAnswerResponse and _waitForAnimationToComplete methods
+  // These methods are now handled by agentControllerProvider and streamingTextProvider
+  // ✅ FINAL CLEANUP: Removed _generateFollowUpSuggestions and _generateFallbackSuggestions
+  // Follow-up suggestions are now handled by the backend and Riverpod providers
 
   void _navigateToHotelDetail(Map<String, dynamic> hotel) {
     Navigator.of(context).push(
@@ -1273,15 +358,12 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
 
   // Open directions to a specific hotel with full address or coordinates
   Future<void> _openHotelDirections(Map<String, dynamic> hotel) async {
-    print('🧭 Opening directions for hotel: ${hotel['name'] ?? hotel['title']}');
-    print('🧭 Hotel data keys: ${hotel.keys.toList()}');
-    print('🧭 GPS coordinates: ${hotel['gps_coordinates']}');
-    print('🧭 Geo: ${hotel['geo']}');
-    print('🧭 Latitude: ${hotel['latitude']}, Longitude: ${hotel['longitude']}');
+    if (kDebugMode) {
+      debugPrint('🧭 Opening directions for hotel: ${hotel['name'] ?? hotel['title']}');
+    }
     
     // Priority 1: Use coordinates if available (most accurate)
     final coords = GeocodingService.extractCoordinates(hotel);
-    print('🧭 Extracted coordinates: $coords');
     
     if (coords != null && coords['latitude'] != null && coords['longitude'] != null) {
       final lat = coords['latitude']!;
@@ -1289,15 +371,18 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       
       // Validate coordinates (not 0,0)
       if (lat != 0.0 && lng != 0.0) {
-        print('🧭 Using coordinates: $lat, $lng');
         // Use /dir/ endpoint for turn-by-turn directions
         final Uri mapsUri = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng');
         if (await canLaunchUrl(mapsUri)) {
           await launchUrl(mapsUri, mode: LaunchMode.externalApplication);
-          print('✅ Opened Google Maps with coordinates');
+          if (kDebugMode) {
+            debugPrint('✅ Opened Google Maps with coordinates');
+          }
           return;
         } else {
-          print('❌ Cannot launch URL: $mapsUri');
+          if (kDebugMode) {
+            debugPrint('❌ Cannot launch URL: $mapsUri');
+          }
         }
       } else {
         // print('⚠️ Coordinates are 0,0 - invalid, falling back to address');
@@ -1367,7 +452,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   Widget _buildViewToggleButton(String mode, IconData icon, bool isSelected) {
     return GestureDetector(
       onTap: () {
-        print('🗺️ Switching hotel view to: $mode');
+        if (kDebugMode) {
+          debugPrint('🗺️ Switching hotel view to: $mode');
+        }
         setState(() {
           _hotelViewMode = mode;
         });
@@ -1387,173 +474,221 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     );
   }
 
+  Widget _buildViewAllProductsButton(List<Product> products) {
+    if (products.isEmpty) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          foregroundColor: AppColors.primary,
+        ),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ShoppingGridScreen(products: products),
+            ),
+          );
+        },
+        icon: const Icon(Icons.grid_view, size: 16, color: AppColors.primary),
+        label: Text(
+          'View all ${products.length} products',
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppColors.primary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildViewAllHotelsButton(String query, {int hiddenCount = 0}) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          foregroundColor: AppColors.primary,
+        ),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => HotelResultsScreen(query: query),
+            ),
+          );
+        },
+        icon: const Icon(Icons.travel_explore, size: 16, color: AppColors.primary),
+        label: Text(
+          hiddenCount > 0
+              ? 'View full list (+$hiddenCount more)'
+              : 'View full hotel list',
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppColors.primary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildResultsNote(String text) {
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 13,
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  // ✅ PRODUCTION FIX: Use ValueNotifier instead of setState to prevent rebuilds
+  final ValueNotifier<bool> _isAtBottomNotifier = ValueNotifier<bool>(true);
+  final ValueNotifier<bool> _showScrollButtonNotifier = ValueNotifier<bool>(false);
+  
+  // Handle scroll events with throttling for performance
+  void _handleScroll() {
+    // Throttle scroll events to improve performance
+    _scrollThrottleTimer?.cancel();
+    _scrollThrottleTimer = Timer(const Duration(milliseconds: 100), () {
+      if (!mounted || !_scrollController.hasClients) return;
+      
+      final position = _scrollController.position;
+      final maxScroll = position.maxScrollExtent;
+      final currentScroll = position.pixels;
+      final distanceFromBottom = maxScroll - currentScroll;
+      
+      // Check if user is at bottom (within 10px tolerance)
+      final isAtBottomNow = distanceFromBottom <= 10.0;
+      
+      // Show button if scrolled up and at least 150px from bottom
+      final shouldShowButton = !isAtBottomNow && distanceFromBottom >= _scrollThreshold;
+      
+      // ✅ PRODUCTION FIX: Update ValueNotifiers instead of setState (prevents full rebuild)
+      if (mounted) {
+        _isAtBottomNotifier.value = isAtBottomNow;
+        _showScrollButtonNotifier.value = shouldShowButton;
+        // Keep local state in sync for backward compatibility
+        _isAtBottom = isAtBottomNow;
+        _showScrollToBottomButton = shouldShowButton;
+      }
+    });
+  }
+
+  // Scroll to bottom smoothly
+  Future<void> _scrollToBottom() async {
+    if (!_scrollController.hasClients) return;
+    
+    try {
+          final maxScroll = _scrollController.position.maxScrollExtent;
+      await _scrollController.animateTo(
+        maxScroll,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+      
+      // ✅ PRODUCTION FIX: Update ValueNotifiers instead of setState
+      if (mounted) {
+        _isAtBottomNotifier.value = true;
+        _showScrollButtonNotifier.value = false;
+        _isAtBottom = true;
+        _showScrollToBottomButton = false;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Error scrolling to bottom: $e');
+      }
+      // Fallback: jump to bottom if animate fails
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        if (mounted) {
+          _isAtBottomNotifier.value = true;
+          _showScrollButtonNotifier.value = false;
+          _isAtBottom = true;
+          _showScrollToBottomButton = false;
+        }
+      }
+    }
+  }
+
+  // Check scroll position when new content loads
+  void _checkScrollPositionAfterContentLoad() {
+                if (!mounted || !_scrollController.hasClients) return;
+                
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted || !_scrollController.hasClients) return;
+              
+      final position = _scrollController.position;
+      final maxScroll = position.maxScrollExtent;
+      final currentScroll = position.pixels;
+      final distanceFromBottom = maxScroll - currentScroll;
+      
+      final isAtBottomNow = distanceFromBottom <= 10.0;
+      final shouldShowButton = !isAtBottomNow && distanceFromBottom >= _scrollThreshold;
+      
+      if (mounted) {
+        _isAtBottomNotifier.value = isAtBottomNow;
+        _showScrollButtonNotifier.value = shouldShowButton;
+        _isAtBottom = isAtBottomNow;
+        _showScrollToBottomButton = shouldShowButton;
+                  }
+                });
+              }
+
   @override
   void dispose() {
-    _streamTimer?.cancel();
-    WidgetsBinding.instance.removeObserver(this); // clean up
+    WidgetsBinding.instance.removeObserver(this);
+    _scrollController.removeListener(_handleScroll);
+    _scrollController.dispose();
+    // ✅ FIX 5: Dispose ValueNotifier
+    _followUpTextNotifier.dispose();
     _followUpController.dispose();
     _followUpFocusNode.dispose();
-    _scrollController.dispose();
+    _scrollThrottleTimer?.cancel();
+    _isAtBottomNotifier.dispose();
+    _showScrollButtonNotifier.dispose();
     super.dispose();
   }
 
   // ✅ STEP 9: Accept previousContext to pass to backend
   // ✅ FOLLOW-UP PATCH: Accept lastFollowUp and parentQuery
+  // ✅ RIVERPOD: Updated to use agentControllerProvider
   void _onFollowUpSubmitted({
     QuerySession? previousContext,
     String? lastFollowUp,
     String? parentQuery,
   }) {
     final query = _followUpController.text.trim();
-    print('ShoppingResultsScreen follow-up query: "$query"');
+    if (kDebugMode) {
+      debugPrint('ShoppingResultsScreen follow-up query: "$query"');
+    }
     
     if (query.isNotEmpty) {
       // Clear the field first
       _followUpController.clear();
       
-      // ✅ STEP 9: Extract context from previous session (or use provided)
+      // ✅ RIVERPOD: Get previous session from provider
+      final sessions = ref.read(sessionHistoryProvider);
       final previousSession = previousContext ?? 
-          (conversationHistory.isNotEmpty ? conversationHistory.last : null);
+          (sessions.isNotEmpty ? sessions.last : null);
       
-      // Build context object for backend
-      Map<String, dynamic>? contextToSend;
-      if (previousSession != null) {
-        contextToSend = {
-          'intent': previousSession.intent ?? previousSession.resultType,
-          'cardType': previousSession.cardType ?? previousSession.resultType,
-          'sessionId': 'global', // Use global session for now
-        };
-        
-        // Extract slots from backend response if available
-        // (We'll store this in QuerySession later)
-        print('📦 Sending follow-up context: intent=${contextToSend['intent']}, cardType=${contextToSend['cardType']}');
-      }
-      
-      // Inherit the previous intent unless backend overrides
-      final resultType = previousSession?.resultType ?? 'shopping'; // Default fallback
-      final newQueryIndex = conversationHistory.length; // Get index BEFORE adding
-      
-      // ✅ C5: Clear state before new request
-      setState(() {
-        // Add new QuerySession with loading state
-        final newSession = QuerySession(
-          query: query,
-          products: [],
-          hotelResults: [],
-          resultType: resultType,
-          isLoading: true,
-        );
-        conversationHistory.add(newSession);
-        _queryKeys.add(GlobalKey());
-      });
-      
-      // ⚡ IMMEDIATE SCROLL: Scroll to new query at TOP immediately
-      // Strategy: Wait for ListView to rebuild, then scroll to max extent, then use ensureVisible to position at top
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        // Step 1: Wait for ListView to rebuild with new item
-        Future.delayed(const Duration(milliseconds: 100), () {
-          if (!mounted || !_scrollController.hasClients) return;
-          
-          // Step 2: First, scroll to maximum extent (this shows the last item = new query)
-          final maxScroll = _scrollController.position.maxScrollExtent;
-          if (maxScroll > 0) {
-            // Jump to max extent immediately (shows new query, but at bottom of viewport)
-            _scrollController.jumpTo(maxScroll);
-            print('📍 Jumped to max extent: $maxScroll for new query (index: $newQueryIndex)');
-            
-            // Step 3: Immediately after, use ensureVisible to position it at TOP
-            Future.delayed(const Duration(milliseconds: 50), () {
-              if (!mounted || !_scrollController.hasClients) return;
-              
-              // Try GlobalKey to position query at TOP of viewport
-              if (newQueryIndex < _queryKeys.length) {
-                final key = _queryKeys[newQueryIndex];
-                final context = key.currentContext;
-                
-                if (context != null) {
-                  // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
-                  Future.delayed(const Duration(milliseconds: 1), () {
-                    if (!mounted) return;
-                    Scrollable.ensureVisible(
-                      context!,
-                      duration: const Duration(milliseconds: 1),
-                      alignment: 0.0, // 0.0 = top of viewport
-                      curve: Curves.linear,
-                    );
-                  });
-                  print('✅ Positioned new query at TOP (index: $newQueryIndex)');
-                  return;
-                }
-              }
-              
-              // If GlobalKey not ready, try again after a bit more delay
-              Future.delayed(const Duration(milliseconds: 100), () {
-                if (!mounted || !_scrollController.hasClients) return;
-                
-                if (newQueryIndex < _queryKeys.length) {
-                  final key = _queryKeys[newQueryIndex];
-                  final context = key.currentContext;
-                  
-                  if (context != null) {
-                    // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
-                    Future.delayed(const Duration(milliseconds: 1), () {
-                      if (!mounted) return;
-                      Scrollable.ensureVisible(
-                        context!,
-                        duration: const Duration(milliseconds: 1),
-                        alignment: 0.0,
-                        curve: Curves.linear,
-                      );
-                    });
-                    print('✅ Final attempt - positioned new query at TOP');
-                  }
-                }
-              });
-            });
-          } else {
-            // If maxScroll is 0, ListView might not have rebuilt yet, try again
-            Future.delayed(const Duration(milliseconds: 150), () {
-              if (!mounted || !_scrollController.hasClients) return;
-              
-              final maxScroll2 = _scrollController.position.maxScrollExtent;
-              if (maxScroll2 > 0) {
-                _scrollController.jumpTo(maxScroll2);
-                
-                Future.delayed(const Duration(milliseconds: 50), () {
-                  if (mounted && _scrollController.hasClients && newQueryIndex < _queryKeys.length) {
-                    final key = _queryKeys[newQueryIndex];
-                    final context = key.currentContext;
-                    if (context != null) {
-                      // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
-                      Future.delayed(const Duration(milliseconds: 1), () {
-                        if (!mounted) return;
-                        Scrollable.ensureVisible(
-                          context!,
-                          duration: const Duration(milliseconds: 1),
-                          alignment: 0.0,
-                          curve: Curves.linear,
-                        );
-                      });
-                      print('✅ Retry - positioned new query at TOP');
-                    }
-                  }
-                });
-              }
-            });
-          }
-        });
-      });
-      
-      // ✅ STEP 9: Load results with context
-      // ✅ FOLLOW-UP PATCH: Pass lastFollowUp and parentQuery
-      _loadResultsForSession(
-        newQueryIndex, 
-        previousContext: contextToSend,
-        lastFollowUp: lastFollowUp,
-        parentQuery: parentQuery,
+      // ✅ RIVERPOD: Submit follow-up query using agent controller
+      ref.read(agentControllerProvider.notifier).submitFollowUp(
+        query,
+        previousSession?.query ?? '',
       );
       
-      // Dismiss keyboard after a short delay to allow the UI to update
+      // Add query key for new session
+      _queryKeys.add(GlobalKey());
+      
+      // Dismiss keyboard after a short delay
       Future.delayed(const Duration(milliseconds: 200), () {
         if (mounted) {
           FocusScope.of(context).unfocus();
@@ -1561,7 +696,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       });
     } else {
       // If empty, just focus back to the field
-      print('Empty query - refocusing field');
+      if (kDebugMode) {
+        debugPrint('Empty query - refocusing field');
+      }
       _showKeyboard();
     }
   }
@@ -1608,28 +745,21 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
 
   // Original scroll method (for delayed scrolling after results load)
   void _scrollToQuery(int queryIndex) {
-    print('🎯 _scrollToQuery called with index: $queryIndex');
-    print('   _queryKeys.length: ${_queryKeys.length}');
-    print('   conversationHistory.length: ${conversationHistory.length}');
+    if (kDebugMode) {
+      debugPrint('🎯 _scrollToQuery called with index: $queryIndex');
+    }
     
     // Wait a bit for the widget to be fully built
     Future.delayed(const Duration(milliseconds: 200), () {
       if (!mounted) {
-        print('   ⚠️ Widget not mounted, skipping scroll');
         return;
       }
-      
-      print('   Checking scroll conditions...');
-      print('   queryIndex >= 0: ${queryIndex >= 0}');
-      print('   queryIndex < _queryKeys.length: ${queryIndex < _queryKeys.length}');
       
       if (queryIndex >= 0 && queryIndex < _queryKeys.length) {
         final key = _queryKeys[queryIndex];
         final hasContext = key.currentContext != null;
-        print('   Key has context: $hasContext');
         
         if (hasContext) {
-          print('   ✅ Scrolling to query at index: $queryIndex');
           // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
           Future.delayed(const Duration(milliseconds: 1), () {
             if (!mounted) return;
@@ -1640,92 +770,31 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 alignment: 0.0, // 0.0 = top of viewport
                 curve: Curves.easeInOut,
               );
-              print('   ✅ Scroll command executed successfully');
             } catch (e) {
-              print('   ❌ Scrollable.ensureVisible failed: $e');
+              if (kDebugMode) {
+                debugPrint('   ❌ Scrollable.ensureVisible failed: $e');
+              }
             }
           });
           return;
-        } else {
-          print('   ⚠️ Key context is null, will try fallback');
       }
-    } else {
-        print('   ❌ Index out of bounds');
       }
       
       // Fallback: calculate approximate scroll position
       if (_scrollController.hasClients) {
-        print('   🔄 Using fallback scroll estimation');
         // Estimate position: each query session is roughly 600-800px tall
         final estimatedPosition = queryIndex * 700.0;
         final clampedPosition = estimatedPosition.clamp(0.0, _scrollController.position.maxScrollExtent);
-        print('   📍 Estimated position: $estimatedPosition, clamped: $clampedPosition');
         _scrollController.animateTo(
           clampedPosition,
           duration: const Duration(milliseconds: 400),
           curve: Curves.easeInOut,
         );
-      } else {
-        print('   ❌ ScrollController not available');
       }
     });
   }
 
-  // ✅ PATCH 1: Optimized _handleAgentResponse
-  Future<void> _handleAgentResponse(Map<String, dynamic> agentJson, int sessionIndex) async {
-    debugPrint("🟦 Agent Response received");
-
-    // Filter out empty or null responses
-    if (agentJson.isEmpty) return;
-
-    // Extract needed fields
-    final rawResults = agentJson["results"] ?? <String, dynamic>{};
-    final rawAnswer = agentJson["answer"] ?? <String, dynamic>{};
-    final sections = agentJson["sections"] ?? [];
-    final intent = agentJson["finalIntent"] ?? "unknown";
-    final cardType = agentJson["finalCardType"] ?? "unknown";
-
-    // 🔥 Do NOT setState() yet — wait for parsing to finish
-    if (sessionIndex < conversationHistory.length) {
-      setState(() {
-        conversationHistory[sessionIndex] = conversationHistory[sessionIndex].copyWith(
-          isParsing: true,
-        );
-      });
-    }
-
-    // 🔥 Send everything to isolate FIRST
-    final isolateInput = {
-      "rawAnswer": rawAnswer,
-      "rawResults": rawResults,
-      "rawSections": sections,
-      "intent": intent,
-      "cardType": cardType,
-    };
-
-    debugPrint("🚀 Sending data to isolate...");
-
-    final parsed = await compute(parseAgentResponseIsolate, isolateInput);
-
-    debugPrint("✅ Isolate parsing done.");
-
-    // Now that heavy work is done, update UI
-    if (!mounted || sessionIndex >= conversationHistory.length) return;
-
-    setState(() {
-      final session = conversationHistory[sessionIndex];
-      conversationHistory[sessionIndex] = session.copyWith(
-        summary: parsed["summary"] ?? session.summary,
-        rawResults: rawResults,
-        intent: intent,
-        cardType: cardType,
-        isParsing: false,
-        isLoading: false,
-      );
-    });
-
-    debugPrint("🎉 UI updated with parsed data.");
-  }
+  // ✅ FINAL CLEANUP: Removed orphaned _handleAgentResponse method - now handled by agentControllerProvider
 
   // ✅ PATCH C1: Preprocess response data (moves heavy logic out of build methods)
   Map<String, dynamic>? _preprocessResponse(Map<String, dynamic> response) {
@@ -1870,533 +939,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     }
   }
 
-  // ✅ STEP 9: Accept previousContext parameter
-  // ✅ FOLLOW-UP PATCH: Accept lastFollowUp and parentQuery
-  Future<void> _loadResultsForSession(
-    int sessionIndex, {
-    Map<String, dynamic>? previousContext,
-    String? lastFollowUp,
-    String? parentQuery,
-  }) async {
-    if (sessionIndex >= conversationHistory.length) {
-      // print('⚠️  Session index $sessionIndex >= conversationHistory.length ${conversationHistory.length}');
-      return;
-    }
-    
-    try {
-      final session = conversationHistory[sessionIndex];
-      print("🔍 Loading results for query: ${session.query}");
-      
-      // 🚫 REMOVE early streaming check
-      // ALWAYS call the backend first
-      
-      // Build conversation history for context (previous queries and answers)
-      // Similar to ChatGPT/Perplexity: include all previous exchanges for context
-      // ✅ FIX: If a new image is uploaded, don't include previous image-based queries in history
-      final List<Map<String, dynamic>> history = [];
-      final bool hasNewImage = widget.imageUrl != null && widget.imageUrl!.isNotEmpty;
-      
-      for (int i = 0; i < sessionIndex; i++) {
-        final prevSession = conversationHistory[i];
-        // Only include completed exchanges (both query and answer)
-        // ✅ FIX: Skip previous queries if a new image is being used (prevents old image results)
-        if (prevSession.query.isNotEmpty && 
-            prevSession.summary != null && 
-            prevSession.summary!.isNotEmpty) {
-          // If this is a new image search, don't include previous image-based queries
-          if (hasNewImage) {
-            // Skip if previous query was likely an image search (contains image-related keywords)
-            final prevQuery = prevSession.query.toLowerCase();
-            if (prevQuery.contains('similar') || 
-                prevQuery.contains('find') || 
-                prevQuery.contains('image') ||
-                prevQuery.contains('photo') ||
-                prevQuery.contains('picture')) {
-              print('⏭️ Skipping previous image-based query from history: ${prevSession.query}');
-              continue; // Skip this previous query
-            }
-          }
-          
-          history.add({
-            "query": prevSession.query,
-            "summary": prevSession.summary ?? "",
-            "intent": prevSession.resultType,    // <-- important
-            "cardType": prevSession.resultType,  // <-- important
-            "cards": prevSession.products.map((p) => {
-              "title": p.title,
-              "price": p.price,
-              "rating": p.rating,
-              "images": p.images,
-              "source": p.source,
-            }).toList(),
-            "results": prevSession.rawResults,
-          });
-        }
-      }
-      print('📚 Sending ${history.length} previous exchanges for context${hasNewImage ? " (new image search - skipped image-based queries)" : ""}');
-      
-      Map<String, dynamic> responseData;
-      try {
-        print('Making API call to AgentService...');
-        print('Query: ${session.query}');
-        print('Conversation history length: ${history.length}');
-        
-        // ✅ STEP 9: Pass previousContext to AgentService
-        // ✅ FOLLOW-UP PATCH: Pass lastFollowUp and parentQuery
-        // ✅ Add timeout wrapper to prevent UI blocking
-        responseData = await AgentService.askAgent(
-          session.query, 
-          conversationHistory: history,
-          previousContext: previousContext,
-          lastFollowUp: lastFollowUp,
-          parentQuery: parentQuery,
-          imageUrl: widget.imageUrl, // ✅ Pass imageUrl for image search
-        ).timeout(
-          const Duration(seconds: 90), // 90 second timeout (longer than backend timeout)
-          onTimeout: () {
-            print('⏱️ Frontend timeout after 90 seconds');
-            return {
-              'success': false,
-              'error': 'Request timeout',
-              'summary': 'The request took too long. Please try again.',
-              'intent': 'answer',
-              'results': [],
-              'sources': [],
-            };
-          },
-        );
-        print('Agent Response: $responseData');
-        print('=== AGENT RESPONSE DEBUG ===');
-        print('Response intent: ${responseData['intent']}');
-        print('Results count: ${responseData['results']?.length ?? 0}');
-        final summaryPreview = responseData['summary']?.toString() ?? '';
-        print('Summary: ${summaryPreview.length > 100 ? summaryPreview.substring(0, 100) + '...' : summaryPreview}');
-        if (responseData['results'] != null && responseData['results'].isNotEmpty) {
-          print('First result keys: ${responseData['results'][0].keys.toList()}');
-          if (responseData['results'][0]['thumbnail'] != null) {
-            print('First result thumbnail: ${responseData['results'][0]['thumbnail']}');
-        }
-        }
-      } on TimeoutException catch (e) {
-        print('⏱️ Frontend timeout: $e');
-        // Show timeout message
-        if (mounted) {
-          setState(() {
-            conversationHistory[sessionIndex] = session.copyWith(
-              isLoading: false,
-            );
-          });
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Request timed out. Please try again.'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-        return;
-      } catch (e) {
-        print('Agent API call failed: $e');
-        print('Error type: ${e.runtimeType}');
-        // Show error message instead of mock data
-        if (mounted) {
-          setState(() {
-            conversationHistory[sessionIndex] = session.copyWith(
-              isLoading: false,
-            );
-          });
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Request failed: ${e.toString().length > 100 ? e.toString().substring(0, 100) + "..." : e.toString()}'),
-              backgroundColor: Colors.red,
-              duration: const Duration(seconds: 3),
-            ),
-          );
-        }
-        return;
-      }
-      
-      // ✅ PART 1: Extract and map intent correctly
-      final raw = responseData['intent']?.toString().toLowerCase() ?? "general";
-      
-      String resultType;
-      if (raw.contains("answer") || raw == "general") resultType = "answer";  // ✅ Fix: Handle "answer" intent properly
-      else if (raw.contains("shop")) resultType = "shopping";
-      else if (raw.contains("hotel")) resultType = "hotel";
-      else if (raw.contains("flight")) resultType = "flights";
-      else if (raw.contains("restaurant") || raw.contains("food")) resultType = "restaurants";
-      else if (raw.contains("places")) resultType = "places";  // 🎯 Places intent
-      else if (raw.contains("location") || raw.contains("place") || raw.contains("attraction")) resultType = "location";
-      else if (raw.contains("movie") || raw.contains("film")) resultType = "movies";  // ✅ Add movies intent
-      else resultType = "answer";  // ✅ Fix: Default to "answer" instead of "general"
-      
-      // ✅ Read cards from multiple possible fields (results, cards, products)
-      final dynamic rawResults = responseData['results'] ?? 
-                                  responseData['cards'] ?? 
-                                  responseData['products'] ?? 
-                                  [];
-      final List<dynamic> results = rawResults is List ? rawResults : [];
-      print('🔍 BACKEND RESPONSE DEBUG:');
-      print('  - Raw intent: "$raw"');
-      print('  - Mapped resultType: "$resultType"');
-      print('  - Results count: ${results.length}');
-      final summaryText = responseData['summary']?.toString() ?? '';
-      print('  - Summary: ${summaryText.length > 100 ? summaryText.substring(0, 100) + '...' : summaryText}');
-      print('  - Full response keys: ${responseData.keys.toList()}');
-      
-      // ✅ PART 2: Unified renderer for all card types
-      // Extract follow-ups from backend
-      final followUps = responseData['followUps'] ?? responseData['followUpSuggestions'] ?? [];
-      final followUpList = followUps is List 
-          ? followUps.map((e) => e.toString()).toList()
-          : <String>[];
-      
-      // ✅ PART 3: Fix follow-up generation duplication
-      final prev = conversationHistory[sessionIndex].query.toLowerCase();
-      final cleaned = followUpList
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty && !s.toLowerCase().contains(prev))
-          .toList();
-      final finalFollowUps = cleaned.take(3).toList();
-      
-      // ✅ PART 4: Add missing summary fallback
-      final cleanSummary = cleanMarkdown(
-        responseData['summary'] ??
-        responseData['answer'] ??
-        "Here are the details you're looking for:"
-      );
-      
-      // Handle each intent type with unified renderer
-      if (resultType == "shopping") {
-        final products = results.map<Product>((item) {
-          try {
-            return _mapShoppingResultToProduct(item);
-          } catch (e) {
-            print('Error mapping product: $e, Item: $item');
-            return Product(
-              id: DateTime.now().millisecondsSinceEpoch,
-              title: 'Error loading product',
-              description: 'Unable to load product details',
-              price: 0.0,
-              source: 'Error',
-              rating: 0.0,
-              images: [],
-              variants: [],
-            );
-          }
-        }).toList();
-        
-        // ✅ PATCH A: Prevent main-thread freeze
-        if (_isComputingResponse) return;
-        _isComputingResponse = true;
-        
-        Future.microtask(() {
-          if (!mounted) {
-            _isComputingResponse = false;
-            return;
-          }
-          
-          setState(() {
-            conversationHistory[sessionIndex] = session.copyWith(
-              products: products,
-              resultType: resultType,
-              isLoading: false,
-              summary: cleanSummary,
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
-              rawResults: (responseData['results'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [],
-              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-            );
-          });
-          
-          _isComputingResponse = false;
-        });
-      } else if (resultType == "hotel") {
-        // ✅ Perplexity-style: Check if backend returned sections + map structure
-        final sections = responseData['sections'] as List?;
-        final mapPoints = responseData['map'] as List?;
-        
-        // Extract all hotels from sections for backward compatibility
-        final List<Map<String, dynamic>> hotelResults = [];
-        if (sections != null && sections.isNotEmpty) {
-          // New grouped structure
-          for (final section in sections) {
-            if (section is Map && section['items'] != null) {
-              final items = section['items'] as List?;
-              if (items != null) {
-                hotelResults.addAll(items.map((e) => Map<String, dynamic>.from(e as Map)));
-              }
-            }
-          }
-        } else {
-          // Fallback: old flat structure
-          hotelResults.addAll(results.map((e) => Map<String, dynamic>.from(e as Map)));
-        }
-        
-        // Parse sections and map points
-        final List<Map<String, dynamic>> parsedSections = [];
-        if (sections != null) {
-          for (final section in sections) {
-            if (section is Map) {
-              parsedSections.add(Map<String, dynamic>.from(section));
-            }
-          }
-        }
-        
-        final List<Map<String, dynamic>> parsedMapPoints = [];
-        if (mapPoints != null) {
-          print('🗺️ Parsing ${mapPoints.length} map points from backend');
-          for (final point in mapPoints) {
-            if (point is Map) {
-              final parsedPoint = Map<String, dynamic>.from(point);
-              parsedMapPoints.add(parsedPoint);
-              print('  - Map point: ${parsedPoint['name']} - lat: ${parsedPoint['lat'] ?? parsedPoint['latitude']}, lng: ${parsedPoint['lng'] ?? parsedPoint['longitude']}');
-            }
-          }
-          print('✅ Successfully parsed ${parsedMapPoints.length} map points');
-        } else {
-          // print('⚠️ No map points in response (mapPoints is null)');
-        }
-        
-        print('🏨 Hotel response: ${parsedSections.length} sections, ${hotelResults.length} total hotels, ${parsedMapPoints.length} map points');
-        
-        // ✅ PATCH A: Prevent main-thread freeze
-        if (_isComputingResponse) return;
-        _isComputingResponse = true;
-        
-        Future.microtask(() {
-          // ✅ PATCH C2: Preprocess response ONCE after API returns
-          final processed = _preprocessResponse(responseData);
-          
-          if (!mounted) {
-            _isComputingResponse = false;
-            return;
-          }
-          
-          setState(() {
-            _processedResult = processed;
-            conversationHistory[sessionIndex] = session.copyWith(
-              hotelResults: hotelResults,
-              resultType: resultType,
-              isLoading: false,
-              summary: cleanSummary,
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              rawResults: hotelResults,
-              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-              hotelSections: parsedSections.isNotEmpty ? parsedSections : null,
-              hotelMapPoints: parsedMapPoints.isNotEmpty ? parsedMapPoints : null,
-            );
-          });
-          
-          _isComputingResponse = false;
-        });
-      } else if (resultType == "restaurants" || resultType == "flights" || resultType == "movies") {
-        final List<Map<String, dynamic>> typedResults = results
-            .map((e) => Map<String, dynamic>.from(e as Map))
-            .toList();
-        
-        // ✅ PATCH A: Prevent main-thread freeze
-        if (_isComputingResponse) return;
-        _isComputingResponse = true;
-        
-        Future.microtask(() {
-          if (!mounted) {
-            _isComputingResponse = false;
-            return;
-          }
-          
-          setState(() {
-            conversationHistory[sessionIndex] = session.copyWith(
-              rawResults: typedResults,
-              resultType: resultType,
-              isLoading: false,
-              summary: cleanSummary,
-              products: [],
-              hotelResults: [],
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-            );
-          });
-          
-          _isComputingResponse = false;
-        });
-      } else if (resultType == "location") {
-        final List<Map<String, dynamic>> locationResults = results
-            .map((e) => Map<String, dynamic>.from(e as Map))
-            .toList();
-        
-        // ✅ PATCH A: Prevent main-thread freeze
-        if (_isComputingResponse) return;
-        _isComputingResponse = true;
-        
-        Future.microtask(() {
-          // ✅ PATCH C2: Preprocess response ONCE after API returns
-          final processed = _preprocessResponse(responseData);
-          
-          if (!mounted) {
-            _isComputingResponse = false;
-            return;
-          }
-          
-          setState(() {
-            _processedResult = processed;
-            conversationHistory[sessionIndex] = session.copyWith(
-              locationCards: locationResults,
-              resultType: resultType,
-              isLoading: false,
-              summary: cleanSummary,
-              products: [],
-              hotelResults: [],
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-            );
-          });
-          
-          _isComputingResponse = false;
-        });
-      } else if (resultType == "places") {
-        // 🎯 Places results handling
-        final List<Map<String, dynamic>> placesResults = results
-            .map((e) => Map<String, dynamic>.from(e as Map))
-            .toList();
-        
-        // ✅ PATCH A: Prevent main-thread freeze
-        if (_isComputingResponse) return;
-        _isComputingResponse = true;
-        
-        Future.microtask(() {
-          // ✅ PATCH C2: Preprocess response ONCE after API returns
-          final processed = _preprocessResponse(responseData);
-          
-          if (!mounted) {
-            _isComputingResponse = false;
-            return;
-          }
-          
-          setState(() {
-            _processedResult = processed;
-            conversationHistory[sessionIndex] = session.copyWith(
-              locationCards: placesResults, // Reuse locationCards for places
-              rawResults: placesResults, // Also store in rawResults
-              resultType: resultType,
-              isLoading: false,
-              summary: cleanSummary,
-              products: [],
-              hotelResults: [],
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-            );
-          });
-          
-          _isComputingResponse = false;
-        });
-      } else {
-        // ✅ Fix: Handle "answer" intent - display answer directly (not streaming)
-        // The backend already generated the answer, so we just need to display it
-        // ✅ PATCH A: Prevent main-thread freeze
-        if (_isComputingResponse) return;
-        _isComputingResponse = true;
-        
-        Future.microtask(() {
-          if (!mounted) {
-            _isComputingResponse = false;
-            return;
-          }
-          
-          setState(() {
-            conversationHistory[sessionIndex] = session.copyWith(
-              resultType: resultType, // Should be "answer"
-              isLoading: false,
-              summary: cleanSummary, // ✅ Use the answer from backend
-              products: [],
-              hotelResults: [],
-              intent: responseData['intent']?.toString(),
-              cardType: responseData['cardType']?.toString(),
-              cards: (responseData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              rawResults: [],
-              followUpSuggestions: finalFollowUps.isNotEmpty ? finalFollowUps : session.followUpSuggestions,
-              sources: (responseData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              locationCards: (responseData['locations'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
-              destinationImages: (responseData['destination_images'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [],
-            );
-          });
-          
-          _isComputingResponse = false;
-        });
-      }
-      
-      // ✅ PART 2: Only scroll to top for FIRST query (index 0)
-      // For follow-up queries, we already scrolled to the new query when it was submitted
-      // DO NOT scroll to top for follow-up queries - this would reset the scroll position!
-      if (sessionIndex == 0) {
-        // First query only - scroll to top
-        if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            0.0,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
-      } else {
-        // Follow-up query - ensure we're still scrolled to show the new query at top
-        // Don't reset scroll position - keep the new query visible at top
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _scrollController.hasClients && sessionIndex < _queryKeys.length) {
-            final key = _queryKeys[sessionIndex];
-            final context = key.currentContext;
-            if (context != null) {
-              // ✅ PATCH B: Prevent scroll lock / ensureVisible freeze
-              Future.delayed(const Duration(milliseconds: 1), () {
-                if (!mounted) return;
-                Scrollable.ensureVisible(
-                  context!,
-                  duration: const Duration(milliseconds: 1),
-                  alignment: 0.0, // Top of viewport
-                  curve: Curves.linear,
-                );
-              });
-              print('✅ Re-positioned follow-up query at TOP after results loaded (index: $sessionIndex)');
-            }
-          }
-        });
-      }
-      
-      // Only generate follow-ups if backend didn't provide them
-      if (finalFollowUps.isEmpty) {
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (mounted && sessionIndex < conversationHistory.length) {
-            _generateFollowUpSuggestions(sessionIndex, cleanSummary);
-          }
-        });
-      }
-    } catch (e) {
-      print('Error loading results: $e');
-      // Show error in the UI
-      setState(() {
-        conversationHistory[sessionIndex] = conversationHistory[sessionIndex].copyWith(
-          isLoading: false,
-          // Add error state - you might want to add an error field to QuerySession
-        );
-      });
-      
-      // Show error dialog
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToQuery(sessionIndex);
-        _showErrorDialog('Failed to load results: $e');
-      });
-    }
-  }
+  // ✅ FINAL CLEANUP: Removed orphaned deprecated method body - all logic moved to Riverpod providers
 
   // Map backend shopping results to Product objects
   Product _mapShoppingResultToProduct(Map<String, dynamic> item) {
@@ -2428,11 +971,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     final oldPrice = parsePrice(item['old_price']);
     final thumbnail = item['thumbnail'];
     
-    print('=== PRODUCT PARSING DEBUG ===');
-    print('Title: ${item['title']}');
-    print('Thumbnail: $thumbnail');
-    print('Thumbnail type: ${thumbnail.runtimeType}');
-    print('All item keys: ${item.keys.toList()}');
+    // ✅ PRODUCTION: Removed debug prints to prevent emulator freezes
     
     final productId = DateTime.now().millisecondsSinceEpoch + (item['title']?.toString().hashCode ?? 0);
     final link = safeString(item['link'], '');
@@ -2675,6 +1214,61 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   @override
   Widget build(BuildContext context) {
     super.build(context); // ✅ STEP 3: Required for AutomaticKeepAliveClientMixin
+
+    // ✅ FIX: ref.listen can only be called directly in build method, not inside Builder widgets
+    // Listen to scroll provider for auto-scroll events
+    ref.listen<ScrollEvent?>(scrollProvider, (previous, next) {
+      if (!mounted) return;
+      if (next != null && _scrollController.hasClients) {
+        switch (next) {
+          case ScrollEvent.scrollToBottom:
+            _scrollToBottom();
+            break;
+          case ScrollEvent.scrollToTop:
+            if (mounted && _scrollController.hasClients) {
+              _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+            }
+            break;
+          case ScrollEvent.scrollToIndex:
+            if (mounted) {
+              final sessions = ref.read(sessionHistoryProvider);
+              if (sessions.isNotEmpty && _queryKeys.length > sessions.length - 1) {
+                final key = _queryKeys[sessions.length - 1];
+                final context = key.currentContext;
+                if (context != null && mounted) {
+                  Scrollable.ensureVisible(context, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+                }
+              }
+            }
+            break;
+        }
+      }
+    });
+    
+    // Listen to session history changes for auto-scroll
+    ref.listen<List<QuerySession>>(sessionHistoryProvider, (previous, next) {
+      if (!mounted) return;
+      if (next.length > (previous?.length ?? 0)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ref.read(scrollProvider.notifier).scrollToBottom();
+          }
+        });
+      }
+    });
+    
+    // Listen to agent state changes for auto-scroll when streaming finishes
+    ref.listen<AgentState>(agentStateProvider, (previous, next) {
+      if (!mounted) return;
+      if (previous == AgentState.streaming && next == AgentState.completed) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ref.read(scrollProvider.notifier).scrollToBottom();
+          }
+        });
+      }
+    });
+
     return PopScope(
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) {
@@ -2686,29 +1280,147 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       backgroundColor: AppColors.background,
       resizeToAvoidBottomInset: true,
       appBar: _buildAppBar(),
-      body: GestureDetector(
+      body: Stack(
+        children: [
+          GestureDetector(
         behavior: HitTestBehavior.translucent, // Changed from opaque to allow scrolling
         onTap: () {
           FocusScope.of(context).unfocus(); // dismiss keyboard on any tap
         },
         child: Column(
         children: [
-          // Conversation history
-          Expanded(
-            child: ListView.builder(
+              // ✅ PRODUCTION: Optimized session history watch - only rebuilds when length changes
+              Builder(
+                builder: (context) {
+                  // ✅ PRODUCTION FIX: Use .select() to only watch session count, not entire list
+                  // This prevents rebuilds when session content changes (only rebuilds when new session added)
+                  final sessionCount = ref.watch(sessionHistoryProvider.select((sessions) => sessions.length));
+                  final sessions = ref.read(sessionHistoryProvider); // Read once, don't watch
+                  
+                  // ✅ FIX: ref.listen calls moved to main build method (above this Builder)
+                  // ref.listen can only be called directly in build method, not inside Builder widgets
+                  
+                  // ✅ FIX: Move session restoration to initState to avoid blocking build
+                  // If no sessions and we have initial conversation history, restore it
+                  if (sessions.isEmpty && widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
+                    // ✅ PRODUCTION FIX: Defer session restoration to avoid blocking build
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      for (final sessionData in widget.initialConversationHistory!) {
+                        final session = QuerySession(
+                          query: sessionData['query'] as String,
+                          summary: sessionData['summary'] as String?,
+                          intent: sessionData['intent'] as String?,
+                          cardType: sessionData['cardType'] as String?,
+                          cards: (sessionData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+                          results: sessionData['results'] ?? [],
+                          destinationImages: (sessionData['destination_images'] as List?)?.map((e) => e.toString()).toList() ?? [],
+                          locationCards: (sessionData['locationCards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+                          isStreaming: false,
+                          isParsing: false,
+                        );
+                        ref.read(sessionHistoryProvider.notifier).addSession(session);
+                      }
+                    });
+                  }
+                  
+                  // ✅ PRODUCTION: Use CustomScrollView + SliverList for better performance
+                  // ✅ FIX: Removed nested Column - CustomScrollView handles all scrolling
+                  return Expanded(
+                    child: RepaintBoundary(
+                      child: CustomScrollView(
               controller: _scrollController,
-              itemCount: conversationHistory.length,
-              itemBuilder: (context, index) {
-                final session = conversationHistory[index];
-                return _buildQuerySession(session, index);
-              },
-            ),
+                        slivers: [
+                          SliverList(
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) {
+                                // ✅ FIX: Watch session history to rebuild when sessions update
+                                final currentSessions = ref.watch(sessionHistoryProvider);
+                                
+                                // ✅ DEBUG: Log when UI rebuilds
+                                if (index == 0 && currentSessions.isNotEmpty) {
+                                  final firstSession = currentSessions[0];
+                                  print("🔄 UI REBUILD - Session count: ${currentSessions.length}");
+                                  print("  - First session query: ${firstSession.query}");
+                                  print("  - First session isStreaming: ${firstSession.isStreaming}");
+                                  print("  - First session cards: ${firstSession.cards.length}");
+                                  print("  - First session summary: ${firstSession.summary != null && firstSession.summary!.isNotEmpty}");
+                                }
+                                
+                                if (index >= currentSessions.length) return const SizedBox.shrink();
+                                
+                                final session = currentSessions[index];
+                                
+                                // ✅ PRODUCTION FIX: Move parsing logic out of build - handle in provider
+                                // Parsing should be handled by agent_provider, not in UI build method
+                                
+                                return RepaintBoundary(
+                                  key: ValueKey('session-$index-${session.query.hashCode}'),
+                                  child: SessionRenderer(
+                                    model: SessionRenderModel(
+                                      session: session,
+                                      index: index,
+                                      context: context,
+                                      onFollowUpTap: _onFollowUpQuerySelected,
+                                      onHotelTap: _navigateToHotelDetail,
+                                      onProductTap: (product) {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => ProductDetailScreen(product: product),
+                                          ),
+                                        );
+                                      },
+                                      onViewAllHotels: (query) {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => HotelResultsScreen(query: query),
+                                          ),
+                                        );
+                                      },
+                                      onViewAllProducts: (query) {
+                                        final sessions = ref.read(sessionHistoryProvider);
+                                        final currentSession = sessions.isNotEmpty ? sessions.last : null;
+                                        if (currentSession != null && currentSession.products.isNotEmpty) {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (context) => ShoppingGridScreen(products: currentSession.products),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      query: widget.query,
+                                    ),
+                                  ),
+                                );
+                              },
+                              childCount: sessionCount, // Use watched count for list length
+                              // ✅ PRODUCTION: Enable keepAlive to prevent map widgets from being disposed when scrolled out of view
+                              addAutomaticKeepAlives: true,
+                              addRepaintBoundaries: false, // We already wrap in RepaintBoundary
+                            ),
+                          ),
+                          // ✅ FIX: Add bottom padding to prevent content from being hidden under follow-up bar
+                          SliverPadding(
+                            padding: const EdgeInsets.only(bottom: 100), // Account for follow-up bar height (SafeArea + padding + input field)
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
           ),
           
           // Follow-up input bar
           _buildFollowUpBar(),
         ],
         ),
+          ),
+          // Scroll-to-bottom floating button
+          _buildScrollToBottomButton(),
+        ],
       ),
       ),
     );
@@ -2725,9 +1437,13 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           // Dismiss keyboard immediately
           FocusScope.of(context).unfocus();
           // Small delay to ensure keyboard dismissal
+          // ✅ PRODUCTION FIX: Move history building to microtask to avoid blocking navigation
           Future.delayed(const Duration(milliseconds: 100), () {
+            Future.microtask(() {
+              if (!mounted) return;
             // ✅ Return conversation history when navigating back
-            final historyToReturn = conversationHistory.map((session) {
+              final sessions = ref.read(sessionHistoryProvider);
+              final historyToReturn = sessions.map((session) {
               return {
                 'query': session.query,
                 'summary': session.summary ?? '',
@@ -2743,7 +1459,10 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 'results': session.rawResults,
               };
             }).toList();
+              if (mounted) {
             Navigator.pop(context, historyToReturn);
+              }
+            });
           });
         },
       ),
@@ -2762,6 +1481,63 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           },
         ),
       ],
+    );
+  }
+
+  // Build scroll-to-bottom floating button
+  Widget _buildScrollToBottomButton() {
+    // Calculate bottom position accounting for follow-up bar (approximately 80px)
+    final bottomPosition = 80.0;
+    // Calculate horizontal center position
+    final screenWidth = MediaQuery.of(context).size.width;
+    final buttonWidth = 44.0;
+    final leftPosition = (screenWidth - buttonWidth) / 2;
+    
+    // ✅ PRODUCTION FIX: Use ValueListenableBuilder to prevent full rebuilds
+    return ValueListenableBuilder<bool>(
+      valueListenable: _showScrollButtonNotifier,
+      builder: (context, showButton, child) {
+        return AnimatedPositioned(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+          bottom: showButton ? bottomPosition : -60.0, // Slide down when hidden
+          left: leftPosition,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 200),
+            opacity: showButton ? 1.0 : 0.0,
+              child: AnimatedScale(
+              duration: const Duration(milliseconds: 200),
+              scale: showButton ? 1.0 : 0.8,
+              child: Material(
+                elevation: 8.0,
+                shadowColor: Colors.black.withOpacity(0.3),
+                shape: const CircleBorder(),
+                color: AppColors.surface,
+                child: InkWell(
+                  onTap: _scrollToBottom,
+                  borderRadius: BorderRadius.circular(24.0),
+                  child: Container(
+                    width: 44.0,
+                    height: 44.0,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: AppColors.border.withOpacity(0.2),
+                        width: 1,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.keyboard_arrow_down,
+                      color: AppColors.textPrimary,
+                      size: 28.0,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2788,8 +1564,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ),
           ),
           
-          // Show loading state if query is loading
-          if (session.isLoading)
+          // Show loading state ONLY if streaming AND no cards/data available yet
+          // ✅ FIX: Show content even if parsing is in progress, as long as we have data
+          if (session.isStreaming && session.cards.isEmpty && session.locationCards.isEmpty && session.rawResults.isEmpty)
             Container(
               padding: const EdgeInsets.symmetric(vertical: 40),
               child: const Center(
@@ -2797,7 +1574,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             )
           else
-            // Show content when loaded
+            // Show content when loaded (or if we have data even while parsing)
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min, // Important: Allow ListView to scroll
@@ -2841,9 +1618,12 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                           ),
                         ),
                         // Dynamic tag based on intent (enhanced)
-                        // If products exist, show "Shopping" tag even if resultType is "answer"
+                        // ✅ FIX: Only show "Shopping" tag if intent is actually shopping AND products exist
+                        // For places queries, always show "Places" tag regardless of products
                         _buildIntentTag(
-                          session.products.isNotEmpty ? 'shopping' : session.resultType, 
+                          (session.resultType == 'shopping' && session.products.isNotEmpty) 
+                              ? 'shopping' 
+                              : session.resultType, 
                           session
                         ),
                         // ✅ Bookable experiences button for places queries
@@ -3065,14 +1845,94 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   const SizedBox(height: 12),
 
                   // ✅ SUMMARY (skip for answer queries, places queries, hotels, and movies - shown in intent content)
-                  if (session.resultType != 'answer' && session.resultType != 'places' && session.resultType != 'location' && session.resultType != 'movies' && session.resultType != 'hotel')
+                  // ✅ FIX: Hotels summary is shown after map, not here
+                  if (session.resultType != 'answer' && session.resultType != 'places' && session.resultType != 'location' && session.resultType != 'movies' && session.resultType != 'hotel' && session.resultType != 'hotels')
                     _buildSummarySection(session, index),
 
-                  if (session.resultType != 'answer' && session.resultType != 'places' && session.resultType != 'location' && session.resultType != 'movies' && session.resultType != 'hotel')
+                  if (session.resultType != 'answer' && session.resultType != 'places' && session.resultType != 'location' && session.resultType != 'movies' && session.resultType != 'hotel' && session.resultType != 'hotels')
                     const SizedBox(height: 12),
+
+                  // ✅ FIX: For hotels, show map right after tags and before summary
+                  if ((session.resultType == 'hotel' || session.resultType == 'hotels')) ...[
+                    // ✅ PRODUCTION FIX: Calculate stable hash once, don't watch provider (prevents rebuilds)
+                    Builder(
+                      builder: (context) {
+                        // ✅ PRODUCTION: Calculate hash from session directly (don't watch provider)
+                        // This prevents rebuilds when other session data changes
+                        final hotelCount = session.hotelResults.length;
+                        final mapPointsCount = session.hotelMapPoints?.length ?? 0;
+                        final hotelDataHash = '$hotelCount-$mapPointsCount'.hashCode;
+                        
+                        // ✅ PRODUCTION: Use stable key that only changes when hotel data changes
+                        // ✅ PRODUCTION: Memoize map widget to prevent unnecessary rebuilds
+                        final mapWidget = _buildHotelMap(session, hotelDataHash);
+                        if (mapWidget != null) {
+                          return RepaintBoundary(
+                            key: ValueKey('hotel-map-$hotelDataHash'),
+                            child: Column(
+                              children: [
+                                mapWidget,
+                                const SizedBox(height: 16),
+                              ],
+                            ),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                    // ✅ FIX: Show summary only once (after map, before hotels)
+                    if (session.summary != null && session.summary!.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                        child: StreamingTextWidget(
+                          targetText: session.summary ?? "",
+                          enableAnimation: false, // ✅ PRODUCTION: Disabled to prevent frame skips
+                          style: const TextStyle(
+                            fontSize: 15,
+                            color: AppColors.textPrimary,
+                            height: 1.6,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                  ],
 
                   // ✅ SHOW RESULTS BASED ON INTENT TYPE
                   _buildIntentBasedContent(session),
+
+                  // ✅ FIX: Follow-ups appear AFTER all results (not inside intent content)
+                  // This ensures they don't cover the last hotel results
+                  // NOTE: Hotel follow-ups are now rendered INSIDE _buildIntentBasedContent (hotel layout)
+                  // to ensure they appear after ALL hotel cards
+                  if ((session.resultType == 'places' || session.resultType == 'location' ||
+                      session.resultType == 'movies' || session.resultType == 'shopping')) ...[
+                    const SizedBox(height: 32),
+                    Builder(
+                      builder: (context) {
+                        final followUpsAsync = ref.watch(followUpEngineProvider(session));
+                        return followUpsAsync.when(
+                          data: (followUps) {
+                            if (followUps.isEmpty) return const SizedBox.shrink();
+                            // ✅ FIX: Limit to 3 follow-ups
+                            final limitedFollowUps = followUps.take(3).toList();
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                ...limitedFollowUps.asMap().entries.map((entry) {
+                                  final index = entry.key;
+                                  final suggestion = entry.value;
+                                  return _buildFollowUpSuggestionItem(suggestion, index, session: session);
+                                }),
+                              ],
+                            );
+                          },
+                          loading: () => const SizedBox.shrink(),
+                          error: (_, __) => const SizedBox.shrink(),
+                        );
+                      },
+                    ),
+                  ],
 
                   const SizedBox(height: 40),
               ],
@@ -3104,8 +1964,38 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
           ),
-          // Display answer text with inline location cards (Perplexity-style)
-          _buildAnswerWithInlineLocationCards(session),
+          // ✅ PHASE 6: Use unified display content provider
+          Builder(
+            builder: (context) {
+              final contentAsync = ref.watch(displayContentProvider(session));
+              return contentAsync.when(
+                data: (content) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (content.summaryText.isNotEmpty)
+                        _buildSummary(content.summaryText),
+                      if (content.destinationImages.isNotEmpty) ...[
+                        const SizedBox(height: 20),
+                        _buildImageSection(content.destinationImages, session.query),
+                      ],
+                      if (content.locations.isNotEmpty) ...[
+                        const SizedBox(height: 24),
+                        _buildLocationSection(content.locations),
+                      ],
+                    ],
+                  );
+                },
+                loading: () => const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(20),
+                    child: CircularProgressIndicator(),
+                  ),
+                ),
+                error: (_, __) => const SizedBox.shrink(),
+              );
+            },
+          ),
           // Show products if available (for product queries that were classified as "answer")
           if (session.products.isNotEmpty) ...[
             const SizedBox(height: 24),
@@ -3118,38 +2008,27 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            // ✅ PATCH D1: Give every list item a stable key (prevents unnecessary rebuilds)
-            ...session.products.map((p) {
-              final id = p.id.toString();
-              return KeyedSubtree(
-                key: ValueKey(id),
-                child: _buildProductCard(p),
-              );
-            }).toList(),
-          ],
-          // Show follow-up suggestions after answer is complete (Perplexity-style, no heading)
-          Builder(
-            builder: (context) {
-              debugPrint('🔍 Rendering answer content - isStreaming: ${session.isStreaming}, suggestions count: ${session.followUpSuggestions.length}');
-              if (!session.isStreaming && session.followUpSuggestions.isNotEmpty) {
-                debugPrint('✅ Displaying ${session.followUpSuggestions.length} follow-up suggestions');
+            // ✅ PRODUCTION FIX: Use ListView.builder for products to handle large lists efficiently
+            Builder(
+              builder: (context) {
+                final visibleProducts = session.products.take(_maxVisibleProducts).toList();
                 return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const SizedBox(height: 24),
-                    ...session.followUpSuggestions.asMap().entries.map((entry) {
-                      final index = entry.key;
-                      final suggestion = entry.value;
-                      return _buildFollowUpSuggestionItem(suggestion, index, session: session);
+                    ...visibleProducts.map((p) {
+                      final id = p.id.toString();
+                      return KeyedSubtree(
+                        key: ValueKey(id),
+                        child: _buildProductCard(p),
+                      );
                     }),
+                    if (session.products.length > visibleProducts.length)
+                      _buildViewAllProductsButton(session.products),
                   ],
                 );
-              } else {
-                debugPrint('⚠️ Not showing suggestions - isStreaming: ${session.isStreaming}, suggestions: ${session.followUpSuggestions.length}');
-                return const SizedBox.shrink();
-              }
-            },
-          ),
+              },
+            ),
+          ],
+          // ✅ FIX: Follow-ups are rendered AFTER all results (not here) to avoid duplicates
         ],
       );
     }
@@ -3168,19 +2047,28 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ),
           ),
           const SizedBox(height: 8),
+          // ✅ PRODUCTION FIX: Use ListView.builder for large product lists
           if (session.products.isNotEmpty)
-            ...session.products.map((p) => _buildProductCard(p)).toList()
+            Builder(
+              builder: (context) {
+                final visibleProducts = session.products.take(_maxVisibleProducts).toList();
+                return Column(
+                  children: [
+                    ...visibleProducts.map(
+                      (p) => KeyedSubtree(
+                        key: ValueKey(p.id.toString()),
+                        child: _buildProductCard(p),
+                      ),
+                    ),
+                    if (session.products.length > visibleProducts.length)
+                      _buildViewAllProductsButton(session.products),
+                  ],
+                );
+              },
+            )
           else
             _buildEmptyProductsState(),
-          // Show follow-up suggestions (Perplexity-style, no heading)
-          if (session.followUpSuggestions.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            ...session.followUpSuggestions.asMap().entries.map((entry) {
-              final index = entry.key;
-              final suggestion = entry.value;
-              return _buildFollowUpSuggestionItem(suggestion, index);
-            }),
-          ],
+          // ✅ FIX: Follow-ups are rendered AFTER all results (not here) to avoid duplicates
         ],
       );
     }
@@ -3191,146 +2079,37 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       final hasSections = session.hotelSections != null && session.hotelSections!.isNotEmpty;
       final hasMapPoints = session.hotelMapPoints != null && session.hotelMapPoints!.isNotEmpty;
       
-      // Debug logging
-      print('🗺️ Hotel layout check:');
-      print('  - intent: $intent');
-      print('  - hasSections: $hasSections');
-      print('  - hasMapPoints: $hasMapPoints');
-      print('  - hotelMapPoints: ${session.hotelMapPoints?.length ?? 0}');
-      if (session.hotelMapPoints != null && session.hotelMapPoints!.isNotEmpty) {
-        print('  - First map point: ${session.hotelMapPoints![0]}');
-      }
+      // Debug logging removed from build method
       
       return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min, // Important: Allow ListView to scroll
             children: [
-          // ✅ STEP 1: Map FIRST (immediately after tags) - Real Google Maps implementation
-          if (hasMapPoints && session.hotelMapPoints != null) ...[
-              Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16), // Left and right padding
-              child: GestureDetector(
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => FullScreenMapScreen(
-                        points: session.hotelMapPoints!,
-                        title: widget.query,
-                      ),
-                    ),
-                  );
-                },
-                child: Stack(
-                  children: [
-                    HotelMapView(
-                      points: session.hotelMapPoints!,
-                      height: MediaQuery.of(context).size.height * 0.65, // Increased map size
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (context) => FullScreenMapScreen(
-                              points: session.hotelMapPoints!,
-                              title: widget.query,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    // Visual indicator at bottom
-                    Positioned(
-                      bottom: 12,
-                      left: 0,
-                      right: 0,
-                      child: IgnorePointer(
-                        child: Center(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: AppColors.surface.withOpacity(0.9),
-                              borderRadius: BorderRadius.circular(24),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.3),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.fullscreen, color: AppColors.textPrimary, size: 18),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Tap to view full screen',
-                                  style: TextStyle(
-                                    color: AppColors.textPrimary,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
+          // ✅ FIX: Map is now rendered before _buildIntentBasedContent (after tags)
+          // ✅ FIX: Summary is now rendered only once (removed duplicate)
           
-          // ✅ STEP 2: Description text (after map) - Perplexity style with animation
-          if (session.summary != null && session.summary!.isNotEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0), // Keep some padding for text readability
-              child: Builder(
-                builder: (context) {
-                  final animKey = 'answer-${session.query.hashCode}';
-                  // ✅ PATCH C: Prevent animation rebuild storms
-                  final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
-                  return PerplexityTypingAnimation(
-                    text: session.summary!,
-                    isStreaming: session.isStreaming,
-                    animate: shouldAnimate,
-                    onAnimationComplete: () {
-                      _hasAnimated[animKey] = true;
-                    },
-                    textStyle: const TextStyle(
-                      fontSize: 15,
-                      color: AppColors.textPrimary,
-                      height: 1.6,
-                    ),
-                    animationDuration: const Duration(milliseconds: 30),
-                    wordsPerTick: 1,
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 24),
-          ],
+          // ✅ STEP 3: Hotel sections (after description) - Perplexity style
           
           // ✅ STEP 3: Hotel sections (after description) - Perplexity style
           // Hotels displayed VERTICALLY (one after another), with section headings
           Builder(
             builder: (context) {
-              print('🏨 Rendering hotel sections: hasSections=$hasSections, sections count=${session.hotelSections?.length ?? 0}');
+              // ✅ PRODUCTION: Removed debug print to prevent emulator freezes
               if (hasSections) {
                 return Column(
                   children: session.hotelSections!.map((section) {
                     final title = section['title']?.toString() ?? 'Hotels';
                     final items = (section['items'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [];
                     
-                    print('🏨 Section "$title" has ${items.length} items');
+                    // Removed print from loop - only log summary outside build
                     if (items.isEmpty) {
                       // print('⚠️ Section "$title" is empty, skipping');
                       return const SizedBox.shrink(); // Hide empty sections
                     }
               
-                    // Limit initial rendering to prevent blocking (show first 5, rest load on scroll)
-                    final itemsToShow = items.length > 5 ? items.take(5).toList() : items;
+                    // Limit initial rendering to prevent blocking (show only a handful of cards)
+                    final itemsToShow = items.take(_maxVisibleHotelsPerSection).toList();
+                    final hiddenCount = items.length - itemsToShow.length;
               
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3348,38 +2127,40 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                             ),
                           ),
                         ),
-                        // Vertical list of hotels (one after another) - Limited to prevent blocking
-                        ...itemsToShow.asMap().entries.map((entry) {
-                          final index = entry.key;
-                          final hotel = entry.value;
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 0), // No horizontal padding - full width
-                            child: Column(
-                              children: [
-                                // ✅ PATCH D1: Give every list item a stable key
-                                KeyedSubtree(
-                                  key: ValueKey(hotel['id']?.toString() ?? hotel['name']?.toString() ?? 'hotel-$index'),
-                                  child: _buildHotelCard(hotel, isHorizontal: false), // Vertical card layout
+                        // ✅ PRODUCTION FIX: Use ListView.builder for large hotel lists to prevent freeze
+                        SizedBox(
+                          height: itemsToShow.length * 250.0, // Approximate height per hotel card
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: itemsToShow.length,
+                            itemBuilder: (context, idx) {
+                              final hotel = itemsToShow[idx];
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 0),
+                                child: Column(
+                                  children: [
+                                    KeyedSubtree(
+                                      key: ValueKey(hotel['id']?.toString() ?? hotel['name']?.toString() ?? 'hotel-$idx'),
+                                      child: _buildHotelCard(hotel, isHorizontal: false),
+                                    ),
+
+                                    if (idx < itemsToShow.length - 1) const SizedBox(height: 20),
+                                  ],
                                 ),
-                                if (index < itemsToShow.length - 1) const SizedBox(height: 20), // Spacing between hotels
-                              ],
-                            ),
-                          );
-                        }).toList(),
-                        // Show "Load more" if there are more items
-                        if (items.length > 5) ...[
-                          const SizedBox(height: 12),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: Text(
-                              '${items.length - 5} more hotels available',
-                              style: TextStyle(
-                                color: AppColors.textSecondary,
-                                fontSize: 14,
-                              ),
-                            ),
+                              );
+                            },
                           ),
+                        ),
+
+                        if (hiddenCount > 0) ...[
+
+                          const SizedBox(height: 12),
+
+                          _buildViewAllHotelsButton(session.query, hiddenCount: hiddenCount),
+
                         ],
+
                         const SizedBox(height: 24), // More spacing between sections
                       ],
                     );
@@ -3387,40 +2168,85 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 );
               } else if (session.hotelResults.isNotEmpty) {
                 // Fallback: Old flat list view
+                final visibleHotels = session.hotelResults.take(_maxVisibleHotelsPerSection).toList();
+
                 return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 0), // No horizontal padding - full width
+
+                  padding: const EdgeInsets.symmetric(horizontal: 0),
+
                   child: Column(
-                    children: session.hotelResults.asMap().entries.map((entry) {
-                      final index = entry.key;
-                      final hotel = entry.value;
-                      return Column(
-                        children: [
-                          // ✅ PATCH D1: Give every list item a stable key
-                          KeyedSubtree(
-                            key: ValueKey(hotel['id']?.toString() ?? hotel['name']?.toString() ?? 'hotel-$index'),
-                            child: _buildHotelCard(hotel),
-                          ),
-                          if (index < session.hotelResults.length - 1) const SizedBox(height: 20),
-                        ],
-                      );
-                    }).toList(),
+
+                    children: [
+
+                      // ✅ PRODUCTION FIX: Use ListView.builder instead of .map() to prevent freeze
+                      SizedBox(
+                        height: visibleHotels.length * 250.0,
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: visibleHotels.length,
+                          itemBuilder: (context, idx) {
+                            final hotel = visibleHotels[idx];
+                            return Column(
+                              children: [
+                                KeyedSubtree(
+                                  key: ValueKey(hotel['id']?.toString() ?? hotel['name']?.toString() ?? 'hotel-$idx'),
+                                  child: _buildHotelCard(hotel),
+                                ),
+                                if (idx < visibleHotels.length - 1) const SizedBox(height: 20),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+
+                      if (session.hotelResults.length > visibleHotels.length)
+
+                        _buildViewAllHotelsButton(
+
+                          session.query,
+
+                          hiddenCount: session.hotelResults.length - visibleHotels.length,
+
+                        ),
+
+                    ],
+
                   ),
+
                 );
+
               } else {
                 return _buildEmptyHotelsState();
               }
             },
           ),
-          
-          // Show follow-up suggestions (Perplexity-style, no heading)
-          if (session.followUpSuggestions.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            ...session.followUpSuggestions.asMap().entries.map((entry) {
-              final index = entry.key;
-              final suggestion = entry.value;
-              return _buildFollowUpSuggestionItem(suggestion, index);
-            }),
-          ],
+          // ✅ FIX: Follow-ups appear AFTER all hotel results (at the very end of hotel layout)
+          const SizedBox(height: 32),
+          Builder(
+            builder: (context) {
+              final followUpsAsync = ref.watch(followUpEngineProvider(session));
+              return followUpsAsync.when(
+                data: (followUps) {
+                  if (followUps.isEmpty) return const SizedBox.shrink();
+                  // ✅ FIX: Limit to 3 follow-ups
+                  final limitedFollowUps = followUps.take(3).toList();
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ...limitedFollowUps.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final suggestion = entry.value;
+                        return _buildFollowUpSuggestionItem(suggestion, index, session: session);
+                      }),
+                    ],
+                  );
+                },
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              );
+            },
+          ),
         ],
       );
     }
@@ -3470,10 +2296,17 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
                     child: thumbnail.isNotEmpty
-                        ? Image.network(
-                            thumbnail,
+                        ? CachedNetworkImage(
+                            imageUrl: thumbnail,
                             fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
+                            // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                            placeholder: (context, url) => Container(
+                              color: AppColors.surfaceVariant,
+                              child: Center(
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            ),
+                            errorWidget: (context, url, error) {
                               return Container(
                                 color: AppColors.surfaceVariant,
                                 child: Icon(Icons.image_not_supported, color: AppColors.textSecondary),
@@ -3496,15 +2329,30 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 style: TextStyle(color: AppColors.textSecondary),
               ),
             ),
-          // Show follow-up suggestions (Perplexity-style, no heading)
-          if (session.followUpSuggestions.isNotEmpty) ...[
+          // ✅ PHASE 5: Use follow-up engine provider
+          Builder(
+            builder: (context) {
+              final followUpsAsync = ref.watch(followUpEngineProvider(session));
+              return followUpsAsync.when(
+                data: (followUps) {
+                  if (followUps.isEmpty) return const SizedBox.shrink();
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
             const SizedBox(height: 24),
-            ...session.followUpSuggestions.asMap().entries.map((entry) {
+                      ...followUps.asMap().entries.map((entry) {
               final index = entry.key;
               final suggestion = entry.value;
-              return _buildFollowUpSuggestionItem(suggestion, index);
+                        return _buildFollowUpSuggestionItem(suggestion, index, session: session);
             }),
           ],
+                  );
+                },
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              );
+            },
+          ),
         ],
       );
     }
@@ -3538,15 +2386,30 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 style: TextStyle(color: AppColors.textSecondary),
               ),
             ),
-          // Show follow-up suggestions (Perplexity-style, no heading)
-          if (session.followUpSuggestions.isNotEmpty) ...[
+          // ✅ PHASE 5: Use follow-up engine provider
+          Builder(
+            builder: (context) {
+              final followUpsAsync = ref.watch(followUpEngineProvider(session));
+              return followUpsAsync.when(
+                data: (followUps) {
+                  if (followUps.isEmpty) return const SizedBox.shrink();
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
             const SizedBox(height: 24),
-            ...session.followUpSuggestions.asMap().entries.map((entry) {
+                      ...followUps.asMap().entries.map((entry) {
               final index = entry.key;
               final suggestion = entry.value;
-              return _buildFollowUpSuggestionItem(suggestion, index);
+                        return _buildFollowUpSuggestionItem(suggestion, index, session: session);
             }),
           ],
+                  );
+                },
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              );
+            },
+          ),
         ],
       );
     }
@@ -3579,27 +2442,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         children: [
           // ✅ Perplexity-style: Intro paragraph from summary with animation
           if (session.summary != null && session.summary!.isNotEmpty) ...[
-            Builder(
-              builder: (context) {
-                final animKey = 'answer-${session.query.hashCode}';
-                // ✅ PATCH C: Prevent animation rebuild storms
-                final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
-                return PerplexityTypingAnimation(
-                  text: session.summary!,
-                  isStreaming: session.isStreaming,
-                  animate: shouldAnimate,
-                  onAnimationComplete: () {
-                    _hasAnimated[animKey] = true;
-                  },
-                  textStyle: const TextStyle(
+            StreamingTextWidget(
+              targetText: session.summary ?? "",
+              enableAnimation: false, // ✅ PRODUCTION: Disabled to prevent frame skips
+              style: const TextStyle(
                     fontSize: 15,
                     color: AppColors.textPrimary,
                     height: 1.6,
                   ),
-                  animationDuration: const Duration(milliseconds: 30),
-                  wordsPerTick: 1,
-                );
-              },
             ),
             const SizedBox(height: 24),
           ],
@@ -3627,14 +2477,33 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   ],
                   
                   // Places in this section
-                  // ✅ PATCH D1: Give every list item a stable key
-                  ...places.map((place) {
-                    final id = place['name']?.toString() ?? place['title']?.toString() ?? UniqueKey().toString();
-                    return KeyedSubtree(
-                      key: ValueKey(id),
-                      child: _buildPlaceCard(place),
-                    );
-                  }).toList(),
+                  // ✅ PRODUCTION FIX: Limit places to prevent freeze, use ListView.builder for large lists
+                  if (places.length > _maxVisiblePlaces)
+                    SizedBox(
+                      height: _maxVisiblePlaces * 200.0, // Approximate height per place card
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _maxVisiblePlaces,
+                        itemBuilder: (context, idx) {
+                          final place = places[idx];
+                          final id = place['name']?.toString() ?? place['title']?.toString() ?? 'place-$idx';
+                          return KeyedSubtree(
+                            key: ValueKey(id),
+                            child: _buildPlaceCard(place),
+                          );
+                        },
+                      ),
+                    )
+                  else
+                    // ✅ PATCH D1: Give every list item a stable key
+                    ...places.map((place) {
+                      final id = place['name']?.toString() ?? place['title']?.toString() ?? UniqueKey().toString();
+                      return KeyedSubtree(
+                        key: ValueKey(id),
+                        child: _buildPlaceCard(place),
+                      );
+                    }).toList(),
                 ],
               );
             }),
@@ -3648,15 +2517,30 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ),
           ],
           
-          // Show follow-up suggestions (Perplexity-style, no heading)
-          if (session.followUpSuggestions.isNotEmpty) ...[
+          // ✅ PHASE 5: Use follow-up engine provider
+          Builder(
+            builder: (context) {
+              final followUpsAsync = ref.watch(followUpEngineProvider(session));
+              return followUpsAsync.when(
+                data: (followUps) {
+                  if (followUps.isEmpty) return const SizedBox.shrink();
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
             const SizedBox(height: 24),
-            ...session.followUpSuggestions.asMap().entries.map((entry) {
+                      ...followUps.asMap().entries.map((entry) {
               final index = entry.key;
               final suggestion = entry.value;
-              return _buildFollowUpSuggestionItem(suggestion, index);
+                        return _buildFollowUpSuggestionItem(suggestion, index, session: session);
             }),
           ],
+                  );
+                },
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              );
+            },
+          ),
         ],
       );
     }
@@ -3672,7 +2556,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         children: [
           // Use renderCards to display movie cards
           if (movieCards.isNotEmpty)
-            renderCards('movies', movieCards)
+            renderCards('movies', movieCards, session: session)
           else
             Container(
               padding: const EdgeInsets.all(16),
@@ -3681,15 +2565,30 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 style: TextStyle(color: AppColors.textSecondary),
               ),
             ),
-          // Show follow-up suggestions (Perplexity-style, no heading)
-          if (session.followUpSuggestions.isNotEmpty) ...[
+          // ✅ PHASE 5: Use follow-up engine provider
+          Builder(
+            builder: (context) {
+              final followUpsAsync = ref.watch(followUpEngineProvider(session));
+              return followUpsAsync.when(
+                data: (followUps) {
+                  if (followUps.isEmpty) return const SizedBox.shrink();
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
             const SizedBox(height: 24),
-            ...session.followUpSuggestions.asMap().entries.map((entry) {
+                      ...followUps.asMap().entries.map((entry) {
               final index = entry.key;
               final suggestion = entry.value;
-              return _buildFollowUpSuggestionItem(suggestion, index);
+                        return _buildFollowUpSuggestionItem(suggestion, index, session: session);
             }),
           ],
+                  );
+                },
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              );
+            },
+          ),
         ],
       );
     }
@@ -3702,6 +2601,133 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         style: TextStyle(color: AppColors.textSecondary),
       ),
     );
+  }
+
+  // ✅ PRODUCTION: Cache map widgets to prevent recreation
+  final Map<int, Widget> _mapWidgetCache = {};
+  static const int _maxCacheSize = 5; // Limit cache size to prevent memory issues
+
+  // 🗺️ Build hotel map (extract from hotel results if map points not provided)
+  Widget? _buildHotelMap(QuerySession session, [int? cacheKey]) {
+    // ✅ PRODUCTION: Return cached widget if available
+    if (cacheKey != null && _mapWidgetCache.containsKey(cacheKey)) {
+      return _mapWidgetCache[cacheKey];
+    }
+    // Try to get map points from session
+    List<Map<String, dynamic>>? mapPoints = session.hotelMapPoints;
+    
+    // ✅ FIX: If no map points, generate them from hotel results
+    if ((mapPoints == null || mapPoints.isEmpty) && session.hotelResults.isNotEmpty) {
+      mapPoints = session.hotelResults.where((hotel) {
+        final lat = hotel['latitude'] ?? hotel['geo']?['latitude'] ?? hotel['gps_coordinates']?['latitude'];
+        final lng = hotel['longitude'] ?? hotel['geo']?['longitude'] ?? hotel['gps_coordinates']?['longitude'];
+        return lat != null && lng != null;
+      }).map((hotel) {
+        final lat = hotel['latitude'] ?? hotel['geo']?['latitude'] ?? hotel['gps_coordinates']?['latitude'];
+        final lng = hotel['longitude'] ?? hotel['geo']?['longitude'] ?? hotel['gps_coordinates']?['longitude'];
+        return {
+          'latitude': lat is num ? lat.toDouble() : double.tryParse(lat.toString()) ?? 0.0,
+          'longitude': lng is num ? lng.toDouble() : double.tryParse(lng.toString()) ?? 0.0,
+          'title': hotel['name']?.toString() ?? 'Hotel',
+          'address': hotel['address']?.toString() ?? '',
+        };
+      }).toList();
+    }
+    
+    if (mapPoints == null || mapPoints.isEmpty) {
+      return null; // No map to show
+    }
+    
+    // ✅ PRODUCTION: Wrap map in RepaintBoundary and use ValueKey to prevent unnecessary rebuilds
+    final mapWidget = RepaintBoundary(
+      key: ValueKey('map-${mapPoints.length}-${mapPoints.isNotEmpty ? mapPoints.first['latitude'] : 0}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: GestureDetector(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => FullScreenMapScreen(
+                  points: mapPoints!,
+                  title: widget.query,
+                ),
+              ),
+            );
+          },
+          child: Stack(
+            children: [
+              HotelMapView(
+                key: ValueKey('hotel-map-view-${mapPoints.length}'), // ✅ PRODUCTION: Key prevents rebuild when points don't change
+                points: mapPoints,
+                height: MediaQuery.of(context).size.height * 0.65,
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => FullScreenMapScreen(
+                        points: mapPoints!,
+                        title: widget.query,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              // Visual indicator at bottom
+              Positioned(
+                bottom: 12,
+                left: 0,
+                right: 0,
+                child: IgnorePointer(
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.fullscreen, color: AppColors.textPrimary, size: 18),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Tap to view full screen',
+                            style: TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    
+    // ✅ PRODUCTION: Cache the widget if cache key provided
+    if (cacheKey != null) {
+      // ✅ PRODUCTION: Limit cache size to prevent memory issues
+      if (_mapWidgetCache.length >= _maxCacheSize) {
+        // Remove oldest entry (simple FIFO)
+        final firstKey = _mapWidgetCache.keys.first;
+        _mapWidgetCache.remove(firstKey);
+      }
+      _mapWidgetCache[cacheKey] = mapWidget;
+    }
+    
+    return mapWidget;
   }
 
   // 🏷️ Build intent tag with icon
@@ -3751,7 +2777,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           );
         } else if (intent == 'shopping') {
           final allProducts = <Product>[];
-          for (final s in conversationHistory) {
+          final sessions = ref.read(sessionHistoryProvider);
+          for (final s in sessions) {
             allProducts.addAll(s.products);
           }
           if (allProducts.isNotEmpty) {
@@ -3810,13 +2837,21 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         leading: thumbnail.isNotEmpty
             ? ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: Image.network(
-                  thumbnail,
+                child: CachedNetworkImage(
+                  imageUrl: thumbnail,
                   width: 60,
                   height: 60,
-                  gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                   fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
+                  // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                  placeholder: (context, url) => Container(
+                    width: 60,
+                    height: 60,
+                    color: AppColors.surfaceVariant,
+                    child: Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                  errorWidget: (context, url, error) {
                     return Container(
                       width: 60,
                       height: 60,
@@ -3882,27 +2917,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     // Show full description with beautiful Perplexity-style typing animation
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Builder(
-        builder: (context) {
-          final animKey = 'answer-${session.query.hashCode}';
-          // ✅ PATCH C: Prevent animation rebuild storms
-          final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
-          return PerplexityTypingAnimation(
-            text: summary,
-            isStreaming: session.isStreaming,
-            animate: shouldAnimate,
-            onAnimationComplete: () {
-              _hasAnimated[animKey] = true;
-            },
-            textStyle: const TextStyle(
+      child: StreamingTextWidget(
+        targetText: summary,
+        enableAnimation: false, // ✅ PRODUCTION: Disabled to prevent frame skips
+        style: const TextStyle(
               fontSize: 15,
               height: 1.6,
               color: AppColors.textPrimary,
             ),
-            animationDuration: const Duration(milliseconds: 30),
-            wordsPerTick: 1, // Smooth word-by-word animation
-          );
-        },
       ),
     );
   }
@@ -3913,7 +2935,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         if (text == 'Shopping') {
           // Navigate to ShoppingGridScreen with all products from all sessions
           final allProducts = <Product>[];
-          for (final session in conversationHistory) {
+          final sessions = ref.read(sessionHistoryProvider);
+          for (final session in sessions) {
             allProducts.addAll(session.products);
           }
           if (allProducts.isNotEmpty) {
@@ -3962,7 +2985,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   }
 
   // ✅ C5: Clean Card Router
-  Widget renderCards(String intent, List<dynamic> cards) {
+  Widget renderCards(String intent, List<dynamic> cards, {QuerySession? session}) {
     // ✅ C5: Safe list handling
     final safeCards = cards.isNotEmpty ? cards : <dynamic>[];
     
@@ -3972,7 +2995,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           try {
             return _mapShoppingResultToProduct(item);
           } catch (e) {
-            print('Error mapping product: $e');
+            if (kDebugMode) {
+              debugPrint('Error mapping product: $e');
+            }
             return Product(
               id: DateTime.now().millisecondsSinceEpoch,
               title: 'Error loading product',
@@ -3997,14 +3022,25 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            // ✅ PATCH D1: Give every list item a stable key
-            ...products.map((p) {
-              final id = p.id.toString();
-              return KeyedSubtree(
-                key: ValueKey(id),
-                child: _buildProductCard(p),
-              );
-            }).toList(),
+            // ✅ PRODUCTION FIX: Use ListView.builder for large product lists
+            Builder(
+              builder: (context) {
+                final visibleProducts = products.take(_maxVisibleProducts).toList();
+                return Column(
+                  children: [
+                    ...visibleProducts.map((p) {
+                      final id = p.id.toString();
+                      return KeyedSubtree(
+                        key: ValueKey(id),
+                        child: _buildProductCard(p),
+                      );
+                    }),
+                    if (products.length > visibleProducts.length)
+                      _buildViewAllProductsButton(products),
+                  ],
+                );
+              },
+            ),
           ],
         );
 
@@ -4014,9 +3050,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         return _buildHotelResultsList(QuerySession(
-          query: "",
-          products: [],
-          hotelResults: hotelResults,
+          query: session?.query ?? "",
+          results: hotelResults,
         ));
 
       case "restaurants":
@@ -4054,8 +3089,10 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         );
 
       case "places":
-        // ✅ PATCH C3: Use preprocessed places (zero computation in build)
-        final places = _processedResult?["preprocessedPlaces"] ?? safeCards
+        // ✅ BUCKET 3: Use provider-based content instead of _processedResult
+        // Since this is in a build method context, we'll use safeCards directly
+        // The displayContentProvider is used at a higher level in _buildQuerySession
+        final places = safeCards
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         return Column(
@@ -4070,16 +3107,50 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            // ✅ PATCH D1: Give every list item a stable key
-            ...(places as List).map((p) {
-              final id = p['name']?.toString() ?? p['title']?.toString() ?? UniqueKey().toString();
-              return KeyedSubtree(
-                key: ValueKey(id),
-                child: _buildPlaceCard(p),
-              );
-            }).toList(),
+            Builder(
+
+              builder: (context) {
+
+                final placesList = places as List;
+
+                final visiblePlaces = placesList.take(_maxVisiblePlaces).toList();
+
+                return Column(
+
+                  children: [
+
+                    ...visiblePlaces.map((p) {
+
+                      final id = p['name']?.toString() ?? p['title']?.toString() ?? UniqueKey().toString();
+
+                      return KeyedSubtree(
+
+                        key: ValueKey(id),
+
+                        child: _buildPlaceCard(p),
+
+                      );
+
+                    }).toList(),
+
+                    if (placesList.length > visiblePlaces.length)
+
+                      _buildResultsNote('+${placesList.length - visiblePlaces.length} more locations'),
+
+                  ],
+
+                );
+
+              },
+
+            ),
+
           ],
+
         );
+
+
+
 
       case "movies":
         final movieResults = safeCards
@@ -4097,9 +3168,40 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             const SizedBox(height: 8),
-            ...movieResults.map((m) => _buildMovieCard(m)).toList(),
+            Builder(
+
+              builder: (context) {
+
+                final visibleMovies = movieResults.take(_maxVisibleMovies).toList();
+
+                return Column(
+
+                  children: [
+
+                    ...visibleMovies.map((m) => KeyedSubtree(
+
+                      key: ValueKey(m['id']?.toString() ?? UniqueKey().toString()),
+
+                      child: _buildMovieCard(m),
+
+                    )).toList(),
+
+                    if (movieResults.length > visibleMovies.length)
+
+                      _buildResultsNote('+${movieResults.length - visibleMovies.length} more movies'),
+
+                  ],
+
+                );
+
+              },
+
+            ),
+
           ],
+
         );
+
 
       default:
         return const SizedBox.shrink();
@@ -4148,40 +3250,68 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   }
 
   Widget _buildShoppingResultsList(QuerySession session) {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: session.products.length,
-      itemBuilder: (context, index) {
-        return Container(
-          color: Colors.grey.shade50,
-          child: _buildProductCard(session.products[index]),
-        );
-      },
+    final visibleProducts = session.products.take(_maxVisibleProducts).toList();
+    return Column(
+      children: [
+        ...visibleProducts.map(
+          (product) => Container(
+            color: Colors.grey.shade50,
+            child: _buildProductCard(product),
+          ),
+        ),
+        if (session.products.length > visibleProducts.length)
+          _buildViewAllProductsButton(session.products),
+      ],
     );
   }
 
   Widget _buildHotelResultsList(QuerySession session) {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: session.hotelResults.length,
-      itemBuilder: (context, index) {
-        return Column(
-          children: [
-            // ✅ PATCH D1: Give every list item a stable key
-            KeyedSubtree(
-              key: ValueKey(session.hotelResults[index]['id']?.toString() ?? session.hotelResults[index]['name']?.toString() ?? 'hotel-$index'),
-              child: _buildHotelCard(session.hotelResults[index]),
-            ),
-            if (index < session.hotelResults.length - 1) const SizedBox(height: 20),
-          ],
-        );
-      },
+
+    final visibleHotels = session.hotelResults.take(_maxVisibleHotelsPerSection).toList();
+
+    return Column(
+
+      children: [
+
+        ...visibleHotels.asMap().entries.map(
+
+          (entry) => Column(
+
+            children: [
+
+              KeyedSubtree(
+
+                key: ValueKey(entry.value['id']?.toString() ?? entry.value['name']?.toString() ?? 'hotel-${entry.key}'),
+
+                child: _buildHotelCard(entry.value),
+
+              ),
+
+              if (entry.key < visibleHotels.length - 1) const SizedBox(height: 20),
+
+            ],
+
+          ),
+
+        ),
+
+        if (session.hotelResults.length > visibleHotels.length)
+
+          _buildViewAllHotelsButton(
+
+            session.query,
+
+            hiddenCount: session.hotelResults.length - visibleHotels.length,
+
+          ),
+
+      ],
+
     );
+
   }
+
+
 
   Widget _buildProductCard(Product product) {
     final validImages = product.images
@@ -4193,13 +3323,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     final sourceValid = product.source.isNotEmpty && product.source != "Unknown Source";
     final hasRating = product.rating > 0;
 
-    // Debug: Log image count
-    // print('🖼️ Product: ${product.title} - Images: ${validImages.length}');
-    if (validImages.isNotEmpty) {
-      print('   Image URLs: ${validImages.take(3).join(", ")}${validImages.length > 3 ? "..." : ""}');
-    }
+    // Debug: Log image count (removed from build method)
+    // Image URLs logging removed to avoid performance issues
 
-    return GestureDetector(
+    return RepaintBoundary(
+      child: GestureDetector(
       onTap: () {
         Navigator.push(
           context,
@@ -4298,29 +3426,15 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
 
           const SizedBox(height: 12),
           
-          // 🔹 Description (Better typography) with Perplexity-style animation
+          // 🔹 Description - Use product's own description, not session summary
           if (product.description.trim().isNotEmpty)
-            Builder(
-              builder: (context) {
-                final animKey = 'product-desc-${product.id}';
-                // ✅ PATCH C: Prevent animation rebuild storms (pre-generated, no streaming)
-                final shouldAnimate = !_hasAnimated.containsKey(animKey);
-                return PerplexityTypingAnimation(
-                  text: product.description,
-                  isStreaming: false, // Product descriptions are pre-generated
-                  animate: shouldAnimate,
-                  onAnimationComplete: () {
-                    _hasAnimated[animKey] = true;
-                  },
-                  textStyle: const TextStyle(
+            Text(
+              product.description,
+              style: const TextStyle(
                     fontSize: 14,
                     color: AppColors.textSecondary, // Light grey for dark theme
                     height: 1.5,
                   ),
-                  animationDuration: const Duration(milliseconds: 30),
-                  wordsPerTick: 1,
-                );
-              },
             )
           else
             const Text(
@@ -4370,6 +3484,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ),
         ],
         ),
+        ),
       ),
     );
   }
@@ -4377,16 +3492,13 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   Widget _buildImage(String url, {double height = 180}) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
-      child: Image.network(
-        url,
+      child: CachedNetworkImage(
+        imageUrl: url,
         height: height,
         width: double.infinity,
-        gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
         fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
-        errorBuilder: (_, __, ___) => _buildNoImagePlaceholder(height: height),
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Container(
+        // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+        placeholder: (context, url) => Container(
             height: height,
             width: double.infinity,
             alignment: Alignment.center,
@@ -4395,8 +3507,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               strokeWidth: 2,
               color: AppColors.accent,
             ),
-          );
-        },
+        ),
+        errorWidget: (context, url, error) => _buildNoImagePlaceholder(height: height),
       ),
     );
   }
@@ -4478,17 +3590,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   Widget _buildSmallImage(String url) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
-      child: Image.network(
-        url,
+      child: CachedNetworkImage(
+        imageUrl: url,
         fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
-        gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
-        errorBuilder: (_, __, ___) => Container(
-          color: Colors.grey.shade200,
-          child: const Icon(Icons.image_not_supported, color: Colors.grey),
-        ),
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Container(
+        // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+        placeholder: (context, url) => Container(
             color: Colors.grey.shade200,
             child: Center(
               child: CircularProgressIndicator(
@@ -4496,8 +3602,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 color: AppColors.accent,
               ),
             ),
-          );
-        },
+        ),
+        errorWidget: (context, url, error) => Container(
+          color: Colors.grey.shade200,
+          child: const Icon(Icons.image_not_supported, color: Colors.grey),
+        ),
       ),
     );
   }
@@ -4636,7 +3745,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => _onFollowUpQuerySelected(suggestion, previousSession: session),
+          onTap: () {
+            if (session != null) {
+              _onFollowUpQuerySelected(suggestion, session);
+            }
+          },
           borderRadius: BorderRadius.circular(14), // Slightly more rounded
           splashColor: AppColors.accent.withOpacity(0.2), // Dark theme splash
           highlightColor: AppColors.accent.withOpacity(0.1),
@@ -4710,15 +3823,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     );
   }
 
-  // Handle follow-up click
-  // ✅ FOLLOW-UP PATCH: Pass context + lastFollowUp + parentQuery
-  void _onFollowUpQuerySelected(String query, {QuerySession? previousSession}) {
-    _followUpController.text = query;
-    _onFollowUpSubmitted(
-      previousContext: previousSession,
-      lastFollowUp: query, // The clicked follow-up text
-      parentQuery: previousSession?.query, // Original query that generated this follow-up
-    );
+  // ✅ PHASE 5: Handle follow-up click using follow-up controller
+  void _onFollowUpQuerySelected(String query, QuerySession parentSession) {
+    ref.read(followUpControllerProvider.notifier).handleFollowUp(query, parentSession);
   }
 
   // Helper to get product link from stored map
@@ -5004,6 +4111,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ),
             
             // Description below action buttons - Perplexity style: 3 lines max, compact text
+            // ✅ FIX: Use hotel's own description, not session summary
             // Always show Perplexity-style summary
             // ✅ STEP 1 & 2: Use compute() with caching
               Padding(
@@ -5012,24 +4120,15 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                 future: _getHotelSummary(safeHotel),
                 builder: (context, snapshot) {
                   final summary = snapshot.data ?? 'A modern property offering comfortable accommodations.';
-                  final animKey = 'hotel-summary-${safeHotel['name']}';
-                  // ✅ PATCH C: Prevent animation rebuild storms (pre-generated, no streaming)
-                  final shouldAnimate = !_hasAnimated.containsKey(animKey);
-                  return PerplexityTypingAnimation(
-                    text: summary,
-                    isStreaming: false, // Hotel descriptions are pre-generated
-                    animate: shouldAnimate,
-                    onAnimationComplete: () {
-                      _hasAnimated[animKey] = true;
-                    },
-                    textStyle: TextStyle(
+                  // ✅ FIX: Use hotel's own description, not streamingTextProvider (which contains session summary)
+                  return Text(
+                    summary,
+                    style: TextStyle(
                       fontSize: 14, // Smaller, more compact text
                       color: AppColors.textPrimary.withOpacity(0.8), // Brighter for better visibility
                       height: 1.4, // Tighter line spacing
                       fontWeight: FontWeight.w400,
                     ),
-                    animationDuration: const Duration(milliseconds: 30),
-                    wordsPerTick: 1,
                   );
                 },
                 ),
@@ -5084,7 +4183,38 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       padding: const EdgeInsets.symmetric(horizontal: 16), // Add horizontal padding for images
       child: SizedBox(
         height: 160,
-        child: PageView.builder(
+        // ✅ FIX 4: Guard PageView creation - if only 1 image, return single image widget
+        child: pageCount < 2
+            ? (imageList.isNotEmpty
+                ? GestureDetector(
+                    onTap: () => _navigateToHotelDetail(hotel),
+                    child: Container(
+                      height: 160,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        color: AppColors.surfaceVariant,
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: CachedNetworkImage(
+                          imageUrl: imageList[0],
+                          fit: BoxFit.cover,
+                          placeholder: (context, url) => Container(
+                            color: Colors.grey.shade200,
+                            child: const Center(
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey),
+                            ),
+                          ),
+                          errorWidget: (context, url, error) => Container(
+                            color: Colors.grey.shade200,
+                            child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : const SizedBox.shrink())
+            : PageView.builder(
           physics: const ClampingScrollPhysics(),
           itemCount: pageCount,
           itemBuilder: (context, pageIndex) {
@@ -5197,7 +4327,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
   }
 
     // ✅ STEP 1: Use compute() to run in isolate
-    final summary = await compute(generateSummaryIsolate, hotel);
+    // ✅ PHASE 4B: Removed compute() - summary generation moved to provider
+    // final summary = await compute(generateSummaryIsolate, hotel);
+    final summary = _generatePerplexityStyleSummary(hotel); // Use direct method instead
     
     // ✅ STEP 2: Cache the result
     _hotelSummaryCache[hotelId] = summary;
@@ -5595,194 +4727,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
     );
   }
 
-  // 📝 Build answer text with inline location cards (Perplexity-style)
-  // ✅ NEW: NO FutureBuilder - parsing happens in background or pre-parsed
-  Widget _buildAnswerWithInlineLocationCards(QuerySession session) {
-    final parsed = session.cachedParsing;
-
-    // If already parsed → render immediately (ZERO isolates)
-    if (parsed != null) {
-      return _buildAnswerFromParsedContent(session, parsed);
-    }
-
-    // Not parsed yet → trigger background parsing ONCE
-    _triggerBackgroundParsing(session);
-
-    // Show temporary loading UI (no heavy work)
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (session.destinationImages.isNotEmpty)
-          _buildDestinationOverview(session.query, session.destinationImages),
-
-        const SizedBox(height: 20),
-
-        const Center(
-          child: Padding(
-            padding: EdgeInsets.all(20),
-            child: CircularProgressIndicator(),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ✅ PATCH 4: Trigger background parsing (uses session-based flags)
-  void _triggerBackgroundParsing(QuerySession session) {
-    if (session.cachedParsing != null) return;
-    if (session.isParsing == true) return;
-
-    // Find session index and mark as parsing
-    final index = conversationHistory.indexWhere((s) => s.query == session.query);
-    if (index == -1) return;
-    
-    setState(() {
-      conversationHistory[index] = conversationHistory[index].copyWith(
-        isParsing: true, // ✅ PATCH 4: Mark as parsing
-      );
-    });
-
-    final input = ParsingInput(
-      answerText: session.summary ?? "",
-      locationCards: session.locationCards,
-      destinationImages: session.destinationImages,
-    ).toMap();
-
-    compute(parseAnswerIsolate, input).then((parsed) {
-      if (!mounted) return;
-
-      // find session index
-      final idx = conversationHistory.indexWhere((s) => s.query == session.query);
-      if (idx == -1) return;
-
-      setState(() {
-        conversationHistory[idx] =
-            conversationHistory[idx].copyWith(
-              cachedParsing: parsed,
-              isParsing: false, // ✅ PATCH 4: Mark parsing as complete
-            );
-      });
-    });
-  }
-  
-  // ✅ PHASE 2: Helper to build answer from ParsedContent (isolate output)
-  Widget _buildAnswerFromParsedContent(QuerySession session, ParsedContent parsed) {
-    final List<Widget> widgets = [];
-    
-    // 1) Destination header (Perplexity-style)
-    if (session.destinationImages.isNotEmpty && !session.isStreaming) {
-      widgets.add(_buildDestinationOverview(session.query, session.destinationImages));
-      widgets.add(const SizedBox(height: 20));
-    }
-    
-    // 2) Briefing text with animation
-    if (parsed.briefingText.isNotEmpty) {
-      // ✅ PATCH C: Prevent animation rebuild storms
-      final shouldAnimate = !_hasAnimated.containsKey("main-answer") && !session.isStreaming;
-      widgets.add(
-        PerplexityTypingAnimation(
-          text: parsed.briefingText,
-          isStreaming: session.isStreaming,
-          animate: shouldAnimate,
-          onAnimationComplete: () {
-            _hasAnimated["main-answer"] = true;
-          },
-          textStyle: const TextStyle(
-            fontSize: 16,
-            height: 1.6,
-            color: AppColors.textPrimary,
-          ),
-          animationDuration: const Duration(milliseconds: 30),
-          wordsPerTick: 1,
-        ),
-      );
-      widgets.add(const SizedBox(height: 20));
-    }
-    
-    // 3) Valid place names with animation
-    if (parsed.placeNamesText.isNotEmpty) {
-      final animKey = 'answer-${session.query.hashCode}-places';
-      // ✅ PATCH C: Prevent animation rebuild storms
-      final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
-      widgets.add(
-        PerplexityTypingAnimation(
-          text: 'Top places to visit include: ${parsed.placeNamesText}.',
-          isStreaming: session.isStreaming,
-          animate: shouldAnimate,
-          onAnimationComplete: () {
-            _hasAnimated[animKey] = true;
-          },
-          textStyle: const TextStyle(
-            fontSize: 16,
-            height: 1.6,
-            color: AppColors.textPrimary,
-          ),
-          animationDuration: const Duration(milliseconds: 30),
-          wordsPerTick: 1,
-        ),
-      );
-      widgets.add(const SizedBox(height: 20));
-    }
-    
-    // 4) All cards and text segments
-    for (int i = 0; i < parsed.segments.length; i++) {
-      final segment = parsed.segments[i];
-      final text = segment['text'] as String? ?? '';
-      final location = segment['location'] as Map<String, dynamic>?;
-      
-      if (text.isNotEmpty) {
-        final animKey = 'answer-${session.query.hashCode}-segment-$i';
-        // ✅ PATCH C: Prevent animation rebuild storms
-        final shouldAnimate = !_hasAnimated.containsKey(animKey) && !session.isStreaming;
-        widgets.add(
-          PerplexityTypingAnimation(
-            text: text,
-            isStreaming: session.isStreaming,
-            animate: shouldAnimate,
-            onAnimationComplete: () {
-              _hasAnimated[animKey] = true;
-            },
-            textStyle: const TextStyle(
-              fontSize: 16,
-              height: 1.6,
-              color: AppColors.textPrimary,
-            ),
-          animationDuration: const Duration(milliseconds: 30),
-          wordsPerTick: 1,
-        ),
-      );
-        widgets.add(const SizedBox(height: 16));
-      }
-      
-      if (location != null) {
-        widgets.add(
-          Padding(
-            padding: const EdgeInsets.only(bottom: 24),
-            child: _buildLocationCard(location),
-          ),
-        );
-      }
-    }
-    
-    // Add typing cursor if streaming
-    if (session.isStreaming) {
-      widgets.add(
-        const Text(
-          '▊',
-          style: TextStyle(
-            fontSize: 16,
-            color: Colors.blueGrey,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      );
-    }
-    
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: widgets,
-    );
-  }
+  // ✅ PHASE 6: Removed _buildAnswerWithInlineLocationCards and _buildAnswerFromParsedContent
+  // Now using unified displayContentProvider
   
   // Parse text and find location mentions, returning segments with matched locations
   // Perplexity-style: Smart matching - if text mentions "Bangkok", show cards for places in Bangkok
@@ -5956,7 +4902,34 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         // Use AspectRatio to ensure both images are square and evenly sized
         SizedBox(
           height: MediaQuery.of(context).size.width / 2, // Half screen width = square images
-          child: PageView.builder(
+          // ✅ FIX 4: Guard PageView creation - if < 2 images, return single image
+          child: images.length < 2
+              ? (images.isNotEmpty
+                  ? GestureDetector(
+                      onTap: () => _viewImagesFullscreen(images, 0),
+                      child: AspectRatio(
+                        aspectRatio: 1.0,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: CachedNetworkImage(
+                            imageUrl: images[0],
+                            fit: BoxFit.cover,
+                            placeholder: (context, url) => Container(
+                              color: AppColors.surfaceVariant,
+                              child: const Center(
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            ),
+                            errorWidget: (context, url, error) => Container(
+                              color: AppColors.surfaceVariant,
+                              child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink())
+              : PageView.builder(
           physics: const ClampingScrollPhysics(),
             itemCount: (images.length / 2).ceil(), // Number of pages (2 images per page)
             itemBuilder: (context, pageIndex) {
@@ -6156,6 +5129,36 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       );
     }
     
+    // ✅ FIX 4: Guard PageView creation - if < 2 images, return single image
+    if (imagesToShow.length < 2) {
+      if (imagesToShow.isEmpty || imagesToShow[0].isEmpty) {
+        return Container(
+          color: Colors.grey.shade200,
+          child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+        );
+      }
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: CachedNetworkImage(
+          imageUrl: imagesToShow[0],
+          fit: BoxFit.cover,
+          placeholder: (context, url) => Container(
+            color: Colors.grey.shade200,
+            child: Center(
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppColors.accent,
+              ),
+            ),
+          ),
+          errorWidget: (context, url, error) => Container(
+            color: Colors.grey.shade200,
+            child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+          ),
+        ),
+      );
+    }
+    
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: PageView.builder(
@@ -6182,7 +5185,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               ),
             ),
             errorWidget: (context, url, error) {
-              print('❌ Image load error for $placeName: $error');
+              if (kDebugMode) {
+                debugPrint('❌ Image load error for $placeName: $error');
+              }
               return Container(
                 color: Colors.grey.shade200,
                 child: const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
@@ -6235,14 +5240,7 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
         ? (location.contains(name) ? location : '$name, $location')
         : null;
     
-    // Log for debugging
-    if (lat != null && lng != null) {
-      print('✅ Place map: $name - Using coordinates: $lat, $lng');
-    } else if (addressForGeocoding != null) {
-      print('📍 Place map: $name - Will geocode address: $addressForGeocoding');
-    } else {
-      // print('⚠️ Place map: $name - No coordinates or address available');
-    }
+    // Debug logging removed - avoid logging in build method
     
     return GoogleMapWidget(
       latitude: lat,
@@ -6279,19 +5277,19 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           allImages.add(imgStr);
         }
       }
-      print('   Added ${allImages.length} images from images array');
+      // ✅ PRODUCTION FIX: Removed debug print from build() method to prevent UI blocking
+      // This was causing hundreds of prints during widget rendering, freezing the app
     }
     
     // Add images from photos array (alternative source)
     if (place['photos'] != null && place['photos'] is List) {
-      // print('🖼️ Place "$name": Found photos array with ${(place['photos'] as List).length} items');
       for (var photo in place['photos']) {
         final photoStr = photo?.toString() ?? '';
         if (photoStr.isNotEmpty && photoStr.startsWith('http') && !allImages.contains(photoStr)) {
           allImages.add(photoStr);
         }
       }
-      print('   Total images after photos array: ${allImages.length}');
+      // Removed print from loop
     }
     
     // Add primary image (always include it, even if we have images array)
@@ -6300,15 +5298,10 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       if (!allImages.contains(imageUrl)) {
         // Add as first image if it's not already in the list
         allImages.insert(0, imageUrl);
-        print('   Added primary image_url as first image');
       }
     }
     
-    // ✅ DEBUG: Log final image count and URLs
-    // print('🖼️ Place "$name" - Final image count: ${allImages.length}');
-    for (int i = 0; i < allImages.length && i < 5; i++) {
-      print('   Image ${i + 1}: ${allImages[i].length > 60 ? allImages[i].substring(0, 60) + "..." : allImages[i]}');
-    }
+    // Removed print loop - avoid printing multiple image URLs
     
     // If still no images, add placeholder
     if (allImages.isEmpty) {
@@ -6513,30 +5506,16 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ],
           ),
           
-          // ✅ FIX: Full description (Perplexity-style, no truncation) with animation - moved after action buttons
+          // ✅ FIX: Full description (Perplexity-style, no truncation) - show place's own description, not session summary
           if (description.isNotEmpty) ...[
             const SizedBox(height: 12),
-            Builder(
-              builder: (context) {
-                final animKey = 'place-desc-$name';
-                // ✅ PATCH C: Prevent animation rebuild storms (pre-generated, no streaming)
-                final shouldAnimate = !_hasAnimated.containsKey(animKey);
-                return PerplexityTypingAnimation(
-                  text: description,
-                  isStreaming: false, // Place descriptions are pre-generated
-                  animate: shouldAnimate,
-                  onAnimationComplete: () {
-                    _hasAnimated[animKey] = true;
-                  },
-                  textStyle: const TextStyle(
+            Text(
+              description,
+              style: const TextStyle(
                     fontSize: 14,
                     color: AppColors.textPrimary,
                     height: 1.6, // Better line spacing for readability
                   ),
-                  animationDuration: const Duration(milliseconds: 30),
-                  wordsPerTick: 1,
-                );
-              },
             ),
           ],
         ],
@@ -6609,13 +5588,20 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
             ClipRRect(
               borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
               child: image.isNotEmpty
-                  ? Image.network(
-                      image,
+                  ? CachedNetworkImage(
+                      imageUrl: image,
                       width: double.infinity,
                       height: 200,
-                      gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
                       fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => Container(
+                      // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                      placeholder: (context, url) => Container(
+                        height: 200,
+                        color: AppColors.surfaceVariant,
+                        child: Center(
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                      errorWidget: (context, url, error) => Container(
                         height: 200,
                         color: AppColors.surfaceVariant,
                         child: const Icon(Icons.movie, size: 64, color: AppColors.textSecondary),
@@ -6819,13 +5805,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                     child: mainImage != null && mainImage.isNotEmpty
                         ? ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              mainImage,
+                            child: CachedNetworkImage(
+                              imageUrl: mainImage,
                               fit: BoxFit.cover, // Fill entire card without empty space (like Perplexity)
-                              gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
-                              loadingBuilder: (context, child, loadingProgress) {
-                                if (loadingProgress == null) return child;
-                                return Container(
+                              // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                              placeholder: (context, url) => Container(
                                   color: Colors.grey.shade200,
                                   child: Center(
                                     child: CircularProgressIndicator(
@@ -6833,9 +5817,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                                       color: AppColors.accent,
                                     ),
                                   ),
-                                );
-                              },
-                              errorBuilder: (context, error, stackTrace) {
+                              ),
+                              errorWidget: (context, url, error) {
                                 // Fallback to placeholder if image fails
                                 return Container(
                                   color: Colors.grey.shade200,
@@ -6980,27 +5963,14 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 0),
             child: description.isNotEmpty
-                ? Builder(
-                    builder: (context) {
-                      final animKey = 'location-desc-$title';
-                      // ✅ PATCH C: Prevent animation rebuild storms
-                      final shouldAnimate = !_hasAnimated.containsKey(animKey);
-                      return PerplexityTypingAnimation(
-                        text: description,
-                        isStreaming: false, // Location descriptions are pre-generated
-                        animate: shouldAnimate,
-                        onAnimationComplete: () {
-                          _hasAnimated[animKey] = true;
-                        },
-                        textStyle: const TextStyle(
+                ? StreamingTextWidget(
+                    targetText: description,
+                    enableAnimation: false, // ✅ PRODUCTION: Disabled to prevent frame skips
+                    style: const TextStyle(
                           fontSize: 15,
                           height: 1.6,
                           color: AppColors.textPrimary,
                         ),
-                        animationDuration: const Duration(milliseconds: 30),
-                        wordsPerTick: 1,
-                      );
-                    },
                   )
                 : const Text(
                     'No description available for this location.',
@@ -7039,13 +6009,9 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                   controller: _followUpController,
                   focusNode: _followUpFocusNode,
                   onSubmitted: (value) => _onFollowUpSubmitted(),
-                // ✅ PATCH E4: Debounce follow-up TextField input (prevents 40+ rebuilds per second)
+                // ✅ FIX 5: Use ValueNotifier instead of Timer (prevents rebuilds)
                 onChanged: (value) {
-                  if (_followUpDebounce?.isActive ?? false) _followUpDebounce!.cancel();
-                  _followUpDebounce = Timer(const Duration(milliseconds: 120), () {
-                    // Handle input (currently just logging, but can add validation/formatting here)
-                    print('Text changed: $value');
-                  });
+                  _followUpTextNotifier.value = value;
                 },
                 onTap: () {
                   _followUpFocusNode.requestFocus();
@@ -7182,20 +6148,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
               },
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: Image.network(
-                  product.images[0],
+                child: CachedNetworkImage(
+                  imageUrl: product.images[0],
                   fit: BoxFit.cover,
-                  gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
-                  loadingBuilder: (context, child, loadingProgress) {
-                  // print('Loading image: ${product.images[0]}');
-                    if (loadingProgress == null) {
-                      return AnimatedOpacity(
-                        opacity: 1.0,
-                        duration: const Duration(milliseconds: 300),
-                        child: child,
-                      );
-                    }
-                    return Container(
+                  // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                  placeholder: (context, url) => Container(
                       color: AppColors.surfaceVariant,
                       child: Center(
                         child: CircularProgressIndicator(
@@ -7205,9 +6162,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                           ),
                         ),
                       ),
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) {
+                  ),
+                  errorWidget: (context, url, error) {
                     // print('Image loading error: $error');
                     // print('Image URL: ${product.images[0]}');
                     return Container(
@@ -7253,19 +6209,11 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                     },
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        product.images[1],
+                      child: CachedNetworkImage(
+                        imageUrl: product.images[1],
                         fit: BoxFit.cover,
-                        gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
-                        loadingBuilder: (context, child, loadingProgress) {
-                          if (loadingProgress == null) {
-                            return AnimatedOpacity(
-                              opacity: 1.0,
-                              duration: const Duration(milliseconds: 300),
-                              child: child,
-                            );
-                          }
-                          return Container(
+                        // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                        placeholder: (context, url) => Container(
                             color: AppColors.surfaceVariant,
                             child: Center(
                               child: CircularProgressIndicator(
@@ -7275,9 +6223,8 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
                                 ),
                               ),
                             ),
-                          );
-                        },
-                        errorBuilder: (context, error, stackTrace) {
+                        ),
+                        errorWidget: (context, url, error) {
                           // print('Image loading error: $error');
                           // print('Image URL: ${product.images[1]}');
                           return Container(
@@ -7404,6 +6351,80 @@ class _ShoppingResultsScreenState extends State<ShoppingResultsScreen> with Widg
       "results": isHotelQuery ? mockHotels : mockProducts
     };
   }
+
+  // ✅ BUCKET 1: Build methods for unified content display
+  Widget _buildSummary(String summary) {
+    if (summary.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      child: Text(
+        summary,
+        style: const TextStyle(fontSize: 16, height: 1.45),
+      ),
+    );
+  }
+
+  Widget _buildImageSection(List<String> images, String query) {
+    if (images.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: SizedBox(
+        height: 160,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          itemCount: images.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (_, index) {
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: CachedNetworkImage(
+                imageUrl: images[index],
+                width: 160,
+                height: 160,
+                fit: BoxFit.cover,
+                // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                placeholder: (context, url) => Container(
+                  width: 160,
+                  height: 160,
+                  color: Colors.grey.shade200,
+                  child: Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+                errorWidget: (context, url, error) => Container(
+                  width: 160,
+                  height: 160,
+                  color: Colors.grey.shade200,
+                  child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocationSection(List<Map<String, dynamic>> locations) {
+    if (locations.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: locations.map((loc) {
+          final title = loc['title']?.toString() ?? loc['name']?.toString() ?? '';
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+            child: Text("📍 $title", style: const TextStyle(fontSize: 16)),
+          );
+        }).toList(),
+      ),
+    );
+  }
 }
 
 // Full screen image viewer class
@@ -7466,11 +6487,14 @@ class _ImageFullscreenViewState extends State<_ImageFullscreenView> {
             minScale: 0.5,
             maxScale: 3.0,
             child: Center(
-              child: Image.network(
-                widget.images[index],
+              child: CachedNetworkImage(
+                imageUrl: widget.images[index],
                 fit: BoxFit.contain,
-                gaplessPlayback: true, // ✅ PATCH E2: Prevent white flicker on scroll
-                errorBuilder: (context, error, stackTrace) {
+                // ✅ PRODUCTION: CachedNetworkImage caches to disk, persists across scrolls/navigation
+                placeholder: (context, url) => const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                ),
+                errorWidget: (context, url, error) {
                   return const Center(
                     child: Icon(
                       Icons.image_not_supported,
@@ -7487,5 +6511,3 @@ class _ImageFullscreenViewState extends State<_ImageFullscreenView> {
     );
   }
 }
-
-

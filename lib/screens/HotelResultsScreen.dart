@@ -81,7 +81,11 @@ class _HotelResultsScreenState extends State<HotelResultsScreen> {
     try {
       setState(() => _loading = true);
 
-      final res = await AgentService.askAgent(widget.query);
+      // ✅ Pass empty conversation history (this screen doesn't maintain session history)
+      final res = await AgentService.askAgent(
+        widget.query,
+        conversationHistory: const [], // Empty history for standalone hotel search
+      );
 
       setState(() {
         _sections = res["sections"] ?? [];

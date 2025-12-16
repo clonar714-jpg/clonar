@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/Collage.dart';
 import '../theme/AppColors.dart';
@@ -184,32 +185,14 @@ class _CollageViewPageState extends State<CollageViewPage> {
     );
   }
 
-  // ✅ Helper for meta tags
-  // ✅ Fix for text items — full display + correct Google font
   Widget _buildCollageItem(CollageItem item) {
-    if (item.imageUrl.isNotEmpty) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: Image.network(
-          item.imageUrl,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) => Container(
-            color: Colors.grey[300],
-            child: const Icon(Icons.broken_image, color: Colors.redAccent),
-          ),
-        ),
-      );
-    }
-
-    // ✅ Fix for text items — full display + correct Google font
-    if (item.type == 'text' && item.text != null && item.text!.isNotEmpty) {
-      final fontFamily = item.fontFamily ?? 'Roboto';
+    if (item.type == 'text') {
       final fontSize = item.fontSize ?? 24.0;
       final textColor = Color(item.textColor ?? 0xFF000000);
+      final fontFamily = item.fontFamily ?? 'Roboto';
 
       return Container(
         width: item.size.width,
-        // Allow height to grow automatically
         constraints: const BoxConstraints(minHeight: 50, maxHeight: double.infinity),
         alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -220,7 +203,7 @@ class _CollageViewPageState extends State<CollageViewPage> {
               )
             : null,
         child: Text(
-          item.text!,
+          item.text ?? '',
           softWrap: true,
           textAlign: TextAlign.center,
           overflow: TextOverflow.visible,
@@ -228,8 +211,7 @@ class _CollageViewPageState extends State<CollageViewPage> {
             fontFamily,
             fontSize: fontSize,
             color: textColor,
-            fontWeight:
-                item.isBold == true ? FontWeight.bold : FontWeight.normal,
+            fontWeight: item.isBold == true ? FontWeight.bold : FontWeight.normal,
           ),
         ),
       );
@@ -245,6 +227,24 @@ class _CollageViewPageState extends State<CollageViewPage> {
           borderRadius: item.shapeType == 'rectangle'
               ? BorderRadius.circular(8)
               : null,
+        ),
+      );
+    }
+
+    // Default: image type
+    if (item.imageUrl.isNotEmpty) {
+      return CachedNetworkImage(
+        imageUrl: item.imageUrl,
+        fit: BoxFit.cover,
+        placeholder: (context, url) => Container(
+          color: Colors.grey[300],
+          child: const Center(
+            child: CircularProgressIndicator(),
+          ),
+        ),
+        errorWidget: (context, url, error) => Container(
+          color: Colors.grey[300],
+          child: const Icon(Icons.error),
         ),
       );
     }

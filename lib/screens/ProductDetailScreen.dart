@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../theme/AppColors.dart';
@@ -307,20 +308,27 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                widget.product.images[index],
+              child: CachedNetworkImage(
+                imageUrl: widget.product.images[index],
                 fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    color: AppColors.surfaceVariant,
-                    child: const Icon(
-                      Icons.image,
+                placeholder: (context, url) => Container(
+                  color: AppColors.surfaceVariant,
+                  child: const Center(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
                       color: AppColors.textSecondary,
-                      size: 60,
                     ),
-                  );
-                },
-                    ),
+                  ),
+                ),
+                errorWidget: (context, url, error) => Container(
+                  color: AppColors.surfaceVariant,
+                  child: const Icon(
+                    Icons.image,
+                    color: AppColors.textSecondary,
+                    size: 60,
+                  ),
+                ),
+              ),
               ),
             ),
           );
@@ -930,18 +938,22 @@ class _ImageFullscreenViewState extends State<_ImageFullscreenView> {
                 minScale: 0.5,
                 maxScale: 3.0,
                 child: Center(
-                  child: Image.network(
-                    widget.images[index],
+                  child: CachedNetworkImage(
+                    imageUrl: widget.images[index],
                     fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Center(
-                        child: Icon(
-                          Icons.image_not_supported,
-                          color: Colors.white,
-                          size: 64,
-                        ),
-                      );
-                    },
+                    placeholder: (context, url) => const Center(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white70,
+                      ),
+                    ),
+                    errorWidget: (context, url, error) => const Center(
+                      child: Icon(
+                        Icons.image_not_supported,
+                        color: Colors.white,
+                        size: 64,
+                      ),
+                    ),
                   ),
                 ),
               );

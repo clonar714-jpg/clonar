@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:math' as math;
 import '../theme/AppColors.dart';
 import '../services/GeocodingService.dart';
+import '../core/emulator_detector.dart';
 import 'RatingBubbleMarker.dart';
 
 // ✅ PATCH A: Add stable map key for full screen map
@@ -38,12 +40,18 @@ class _HotelsMapViewState extends State<HotelsMapView> {
   @override
   void initState() {
     super.initState();
-    // ✅ PATCH C: Create markers asynchronously (prevents blocking UI)
-    Future.microtask(() async {
-      await _createMarkers();
-      _fitBounds();
+    // ✅ EMULATOR FIX: Delay map initialization on emulator until UI is idle
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final isEmulator = await EmulatorDetector.isEmulator();
+      if (isEmulator && kDebugMode) {
+        await Future.delayed(const Duration(milliseconds: 1500));
+      }
+      if (mounted) {
+        await _createMarkers();
+        _fitBounds();
+        _getUserLocation();
+      }
     });
-    _getUserLocation();
   }
 
   Future<void> _initializeMap() async {

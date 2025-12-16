@@ -102,3 +102,10 @@ export function updateSession(sessionId, updates) {
         });
     }
 }
+/**
+ * Get all sessions (for memory flush operations)
+ * @returns The full memory store with all session entries
+ */
+export function getAllSessions() {
+    return memory;
+}

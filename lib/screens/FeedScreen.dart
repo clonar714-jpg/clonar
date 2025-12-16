@@ -6,6 +6,7 @@ import '../theme/Typography.dart';
 import '../models/Collage.dart';
 import '../services/collage_service.dart';
 import 'CollageViewPage.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class FeedScreen extends StatefulWidget {
   const FeedScreen({super.key});
@@ -909,21 +910,21 @@ class _FeedScreenState extends State<FeedScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
             if (coverItem != null)
-              Image.network(
-                coverItem.imageUrl,
-              width: double.infinity,
+            if (coverItem != null)
+              CachedNetworkImage(
+                imageUrl: coverItem.imageUrl,
+                width: double.infinity,
                 fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
+                errorWidget: (context, url, error) {
                   return Container(
                     height: 180,
-                color: AppColors.surfaceVariant,
+                    color: AppColors.surfaceVariant,
                     child: const Center(
                       child: Icon(Icons.broken_image, color: Colors.grey),
-                ),
+                    ),
                   );
                 },
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
+                placeholder: (context, url) {
                   return Container(
                     height: 180,
                     color: AppColors.surfaceVariant,
@@ -1471,18 +1472,27 @@ class _CollageReelCard extends StatelessWidget {
               child: ClipRRect(
                 borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
                 child: collage.coverImageUrl != null && collage.coverImageUrl!.isNotEmpty
-                    ? Image.network(
-                        collage.coverImageUrl!,
+                    ? CachedNetworkImage(
+                        imageUrl: collage.coverImageUrl!,
                         width: double.infinity,
                         height: double.infinity,
                         fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
+                        errorWidget: (context, url, error) => Container(
                           color: AppColors.surfaceVariant,
                           child: const Center(
                             child: Icon(
                               Icons.broken_image,
                               color: AppColors.textSecondary,
                               size: 32,
+                            ),
+                          ),
+                        ),
+                        placeholder: (context, url) => Container(
+                          color: AppColors.surfaceVariant,
+                          child: const Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
                             ),
                           ),
                         ),

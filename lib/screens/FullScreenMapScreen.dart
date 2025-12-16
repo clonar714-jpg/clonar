@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
+import '../core/emulator_detector.dart';
 
 class FullScreenMapScreen extends StatefulWidget {
   final List<dynamic> points;
@@ -26,8 +28,15 @@ class _FullScreenMapScreenState extends State<FullScreenMapScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializeMap();
+    // ✅ EMULATOR FIX: Delay map initialization on emulator until UI is idle
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final isEmulator = await EmulatorDetector.isEmulator();
+      if (isEmulator && kDebugMode) {
+        await Future.delayed(const Duration(milliseconds: 1500));
+      }
+      if (mounted) {
+        _initializeMap();
+      }
     });
   }
 

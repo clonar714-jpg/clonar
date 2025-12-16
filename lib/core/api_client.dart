@@ -5,10 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 
 class ApiClient {
-  // ✅ Local Express backend for Android emulator
-  static const String baseUrl = 'http://10.0.2.2:4000/api';
+  // ✅ Local Express backend
+  static const String baseUrl = 'http://127.0.0.1:4000/api';
   // For web/iOS: use 'http://localhost:4000/api'
-  // For physical device: use 'http://<your-machine-ip>:4000/api'
 
   /// Builds full API URL from endpoint
   static Uri _url(String endpoint) => Uri.parse('$baseUrl$endpoint');
@@ -60,6 +59,30 @@ class ApiClient {
   /// POST request
   static Future<http.Response> post(String endpoint, Map<String, dynamic> body) async =>
       _sendRequest('POST', endpoint, body: body);
+
+  /// POST request with streaming support (returns StreamedResponse for SSE)
+  static Future<http.StreamedResponse> postStream(String endpoint, Map<String, dynamic> body) async {
+    final token = await _getToken();
+    
+    var headers = {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Accept': 'text/event-stream',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+
+    if (kDebugMode) {
+      debugPrint('🌐 Sending POST (stream) → ${_url(endpoint)}');
+      debugPrint('📦 Body: $body');
+    }
+
+    final request = http.Request('POST', _url(endpoint));
+    request.headers.addAll(headers);
+    request.body = jsonEncode(body);
+    
+    return request.send();
+  }
 
   /// PUT request
   static Future<http.Response> put(String endpoint, Map<String, dynamic> body) async {

@@ -220,23 +220,63 @@ export async function runBackgroundAggregation(): Promise<void> {
   }
 }
 
+// ✅ Production-grade: Prevent multiple schedulers from running
+let schedulerStarted = false;
+let backgroundInterval: NodeJS.Timeout | null = null;
+let initialTimeout: NodeJS.Timeout | null = null;
+
 /**
  * Start background job scheduler
  * Runs aggregation every hour
+ * Production-grade: Prevents duplicate schedulers, clears old intervals
  */
 export function startBackgroundJob(): void {
+  // ✅ Guard: Prevent multiple schedulers (important for hot reload in dev mode)
+  if (schedulerStarted) {
+    console.log(`⚠️ Phase 4: Background job scheduler already started, skipping duplicate call`);
+    return;
+  }
+
   console.log(`🚀 Phase 4: Starting background aggregation scheduler (runs every hour)`);
 
+  // ✅ Clear any existing intervals (safety check)
+  if (backgroundInterval) {
+    clearInterval(backgroundInterval);
+    backgroundInterval = null;
+  }
+  if (initialTimeout) {
+    clearTimeout(initialTimeout);
+    initialTimeout = null;
+  }
+
   // Run immediately on startup (after 30 seconds to let server initialize)
-  setTimeout(() => {
+  initialTimeout = setTimeout(() => {
     runBackgroundAggregation();
+    initialTimeout = null;
   }, 30000); // 30 seconds
 
   // Then run every hour
-  setInterval(() => {
+  backgroundInterval = setInterval(() => {
     runBackgroundAggregation();
   }, 60 * 60 * 1000); // 1 hour
 
+  schedulerStarted = true;
   console.log(`✅ Phase 4: Background job scheduler started`);
+}
+
+/**
+ * Stop background job scheduler (for testing or graceful shutdown)
+ */
+export function stopBackgroundJob(): void {
+  if (backgroundInterval) {
+    clearInterval(backgroundInterval);
+    backgroundInterval = null;
+  }
+  if (initialTimeout) {
+    clearTimeout(initialTimeout);
+    initialTimeout = null;
+  }
+  schedulerStarted = false;
+  console.log(`🛑 Phase 4: Background job scheduler stopped`);
 }
 

@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
+import 'package:crypto/crypto.dart';
 import 'CacheService.dart';
 
 /// Helper function for caching detail API responses
@@ -29,18 +31,9 @@ class AgentService {
 
   // 🔧 Automatically detects correct base URL for your setup
   static String get baseUrl {
-    // For Android emulator → connects to host machine
-    if (Platform.isAndroid) {
-      return "http://10.0.2.2:4000";
-    }
-    // For iOS simulator → host machine
-    else if (Platform.isIOS) {
+    // ⚠️ NOTE: 127.0.0.1 only works for emulator/simulator/web
+    // For REAL Android device, use your computer's IP (e.g., 10.0.0.127)
       return "http://127.0.0.1:4000";
-    }
-    // For web or desktop (Flutter web / macOS / Windows)
-    else {
-      return "http://localhost:4000";
-    }
   }
 
   /// Calls the /api/autocomplete endpoint for search suggestions
@@ -56,9 +49,11 @@ class AgentService {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'query': query}),
       ).timeout(
-        const Duration(seconds: 5), // 5 second timeout for autocomplete
+        const Duration(seconds: 10), // ✅ Increased to 10 seconds to handle slow backend responses
         onTimeout: () {
-          print('⏱️ Autocomplete timeout after 5 seconds');
+          if (kDebugMode) {
+            debugPrint('⏱️ Autocomplete timeout after 10 seconds');
+          }
           throw TimeoutException('Autocomplete timeout');
         },
       );
@@ -68,14 +63,20 @@ class AgentService {
         final suggestions = data['suggestions'] as List<dynamic>?;
         return suggestions?.map((s) => s.toString()).toList() ?? [];
       } else {
-        print('❌ Autocomplete API error: ${response.statusCode}');
+        if (kDebugMode) {
+          debugPrint('❌ Autocomplete API error: ${response.statusCode}');
+        }
         return [];
       }
     } on TimeoutException {
-      print('⏱️ Autocomplete request timed out');
+      if (kDebugMode) {
+        debugPrint('⏱️ Autocomplete request timed out');
+      }
       return [];
     } catch (e) {
-      print('❌ Error fetching autocomplete suggestions: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching autocomplete suggestions: $e');
+      }
       return [];
     }
   }
@@ -94,9 +95,11 @@ class AgentService {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'query': query}),
       ).timeout(
-        const Duration(seconds: 5), // 5 second timeout for location autocomplete
+        const Duration(seconds: 10), // ✅ Increased to 10 seconds to handle slow backend responses
         onTimeout: () {
-          print('⏱️ Location autocomplete timeout after 5 seconds');
+          if (kDebugMode) {
+            debugPrint('⏱️ Location autocomplete timeout after 10 seconds');
+          }
           throw TimeoutException('Location autocomplete timeout');
         },
       );
@@ -118,14 +121,20 @@ class AgentService {
         }
         return [];
       } else {
-        print('❌ Location Autocomplete API error: ${response.statusCode}');
+        if (kDebugMode) {
+          debugPrint('❌ Location Autocomplete API error: ${response.statusCode}');
+        }
         return [];
       }
     } on TimeoutException {
-      print('⏱️ Location autocomplete request timed out');
+      if (kDebugMode) {
+        debugPrint('⏱️ Location autocomplete request timed out');
+      }
       return [];
     } catch (e) {
-      print('❌ Error fetching location autocomplete: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching location autocomplete: $e');
+      }
       return [];
     }
   }
@@ -137,11 +146,15 @@ class AgentService {
       final cacheKey = CacheService.generateCacheKey('movie-details-$movieId');
       final cachedData = await _getCachedDetailResponse(cacheKey);
       if (cachedData != null) {
-        print('✅ Movie details cache HIT for movie ID: $movieId');
+        if (kDebugMode) {
+          debugPrint('✅ Movie details cache HIT for movie ID: $movieId');
+        }
         return cachedData;
       }
       
-      print('❌ Movie details cache MISS for movie ID: $movieId');
+      if (kDebugMode) {
+        debugPrint('❌ Movie details cache MISS for movie ID: $movieId');
+      }
     final url = Uri.parse('$baseUrl/api/movies/$movieId');
     final response = await http.get(url);
 
@@ -154,7 +167,9 @@ class AgentService {
         throw Exception('Failed to fetch movie details: ${response.statusCode}');
   }
     } catch (e) {
-      print('❌ Error fetching movie details: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching movie details: $e');
+      }
       rethrow;
     }
   }
@@ -181,7 +196,9 @@ class AgentService {
         throw Exception('Failed to fetch movie credits: ${response.statusCode}');
   }
     } catch (e) {
-      print('❌ Error fetching movie credits: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching movie credits: $e');
+      }
       rethrow;
     }
   }
@@ -208,7 +225,9 @@ class AgentService {
         throw Exception('Failed to fetch movie videos: ${response.statusCode}');
   }
     } catch (e) {
-      print('❌ Error fetching movie videos: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching movie videos: $e');
+      }
       rethrow;
     }
   }
@@ -235,7 +254,9 @@ class AgentService {
         throw Exception('Failed to fetch movie reviews: ${response.statusCode}');
       }
     } catch (e) {
-      print('❌ Error fetching movie reviews: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching movie reviews: $e');
+      }
       rethrow;
     }
   }
@@ -262,9 +283,33 @@ class AgentService {
         throw Exception('Failed to fetch person details: ${response.statusCode}');
       }
     } catch (e) {
-      print('❌ Error fetching person details: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching person details: $e');
+      }
       rethrow;
     }
+  }
+
+  /// ✅ PHASE 7: Generate context hash for cache key differentiation
+  static String _generateContextHash(
+    String query, {
+    List<Map<String, dynamic>>? conversationHistory,
+    Map<String, dynamic>? previousContext,
+    String? lastFollowUp,
+    String? parentQuery,
+  }) {
+    final buffer = StringBuffer();
+    buffer.write(query);
+    if (lastFollowUp != null) buffer.write('_followup_$lastFollowUp');
+    if (parentQuery != null) buffer.write('_parent_$parentQuery');
+    if (previousContext != null) {
+      buffer.write('_ctx_${previousContext['intent'] ?? ''}_${previousContext['cardType'] ?? ''}');
+    }
+    if (conversationHistory != null && conversationHistory.isNotEmpty) {
+      buffer.write('_hist_${conversationHistory.length}');
+    }
+    final hash = md5.convert(utf8.encode(buffer.toString()));
+    return hash.toString().substring(0, 8); // Use first 8 chars for shorter keys
   }
 
   /// Get movie reviews summary
@@ -287,7 +332,9 @@ class AgentService {
         throw Exception('Failed to fetch review summary: ${response.statusCode}');
       }
     } catch (e) {
-      print('❌ Error fetching review summary: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching review summary: $e');
+      }
       rethrow;
     }
   }
@@ -315,7 +362,9 @@ class AgentService {
         throw Exception('Failed to fetch movie images: ${response.statusCode}');
       }
     } catch (e) {
-      print('❌ Error fetching movie images: $e');
+      if (kDebugMode) {
+        debugPrint('❌ Error fetching movie images: $e');
+      }
       rethrow;
     }
   }
@@ -330,30 +379,50 @@ class AgentService {
   static Future<Map<String, dynamic>> askAgent(
     String query, {
     bool stream = false,
-    List<Map<String, dynamic>>? conversationHistory,
+    required List<Map<String, dynamic>> conversationHistory, // ✅ REQUIRED: Always send conversation history
     Map<String, dynamic>? previousContext,
     String? lastFollowUp,
     String? parentQuery,
     String? imageUrl, // ✅ NEW: Image URL for image search
     bool useCache = true, // ✅ Allow bypassing cache if needed
   }) async {
+    // ✅ Runtime check in debug mode
+    assert(() {
+      if (kDebugMode) {
+        debugPrint('🔍 askAgent called with conversationHistory size: ${conversationHistory.length}');
+        if (conversationHistory.isEmpty) {
+          debugPrint('ℹ️ Empty conversation history (this is OK for first query)');
+        }
+      }
+      return true;
+    }());
     // ✅ Perplexity-style persistent caching
     if (!stream && useCache) {
       await _ensureCacheInitialized();
       
-      // Generate smart cache key (query + context hash)
+      // ✅ PHASE 7: Generate smart cache key with contextHash for follow-up queries
+      // Include follow-up context in cache key to differentiate follow-ups from initial queries
+      final contextHash = _generateContextHash(
+        query,
+        conversationHistory: conversationHistory,
+        previousContext: previousContext,
+        lastFollowUp: lastFollowUp,
+        parentQuery: parentQuery,
+      );
       final cacheKey = CacheService.generateCacheKey(
         query,
         conversationHistory: conversationHistory,
         context: previousContext,
-      );
+      ) + '_ctx_$contextHash';
       
       // Check persistent cache
       final cachedResponse = await CacheService.get(cacheKey);
       if (cachedResponse != null) {
         final expiry = CacheService.getSmartExpiry(query);
         if (expiry == Duration.zero) {
-          print('⚠️ Cache returned but query type should not be cached - this is a bug');
+          if (kDebugMode) {
+            debugPrint('⚠️ Cache returned but query type should not be cached - this is a bug');
+          }
         }
         return cachedResponse;
       }
@@ -361,9 +430,13 @@ class AgentService {
       // Log why cache missed
       final expiry = CacheService.getSmartExpiry(query);
       if (expiry == Duration.zero) {
-        print('⏭️ Cache SKIP for query: "$query" (query type: no cache)');
+        if (kDebugMode) {
+          debugPrint('⏭️ Cache SKIP for query: "$query" (query type: no cache)');
+        }
       } else {
-        print('❌ Cache MISS for query: "$query" (will cache for ${expiry.inMinutes} minutes)');
+        if (kDebugMode) {
+          debugPrint('❌ Cache MISS for query: "$query" (will cache for ${expiry.inMinutes} minutes)');
+        }
       }
     }
     
@@ -371,9 +444,13 @@ class AgentService {
         ? Uri.parse('$baseUrl/api/agent?stream=true')
         : Uri.parse('$baseUrl/api/agent');
     
-    print('🔍 Calling Agent API at $url with query: "$query" (stream: $stream)');
+    if (kDebugMode) {
+      debugPrint('🔍 Calling Agent API at $url with query: "$query" (stream: $stream)', wrapWidth: 1024);
+      debugPrint('📚 Conversation history: ${conversationHistory.length} completed session(s)');
     if (previousContext != null) {
-      print('📦 Sending context: intent=${previousContext['intent']}, cardType=${previousContext['cardType']}, sessionId=${previousContext['sessionId']}');
+        debugPrint('📦 Sending context: intent=${previousContext['intent']}, cardType=${previousContext['cardType']}, sessionId=${previousContext['sessionId']}', wrapWidth: 1024);
+      }
+      debugPrint('🌐 Full URL: $url');
     }
 
     try {
@@ -383,16 +460,19 @@ class AgentService {
         request.headers['Accept'] = 'text/event-stream';
       }
       
-      // Build request body with context support
+      // ✅ Build request body with context support
+      // conversationHistory is now required, so it's never null
       final body = <String, dynamic>{
         "query": query,
-        "conversationHistory": conversationHistory ?? [],
+        "conversationHistory": conversationHistory, // ✅ Always present (required parameter)
       };
       
       // ✅ NEW: Add imageUrl for image search
       if (imageUrl != null && imageUrl.isNotEmpty) {
         body['imageUrl'] = imageUrl;
-        print('🖼️ Sending image search with URL: $imageUrl');
+        if (kDebugMode) {
+          debugPrint('🖼️ Sending image search with URL: $imageUrl', wrapWidth: 1024);
+        }
       }
       
       // ✅ FOLLOW-UP PATCH: Add lastFollowUp and parentQuery
@@ -428,48 +508,105 @@ class AgentService {
       
       request.body = jsonEncode(body);
 
-      // ✅ Add timeout to prevent hanging (60 seconds max)
+      if (kDebugMode) {
+        debugPrint('📤 Request body keys: ${body.keys.join(", ")}');
+        debugPrint('📤 Request headers: ${request.headers}');
+      }
+      
+      // ✅ FIX 1: Increased timeout to 30 seconds (dev-safe) - backend needs ~12 seconds
+      // For production, use 60-120 seconds. For dev, 30s is safe.
+      if (kDebugMode) {
+        debugPrint('🚀 Sending POST request to: $url');
+        debugPrint('📡 Network check: Platform=${Platform.operatingSystem}, BaseURL=$baseUrl');
+        debugPrint('⏱️ Request timeout: 30 seconds - waiting for backend response...');
+      }
+      
       final response = await request.send().timeout(
-        const Duration(seconds: 60),
+        const Duration(seconds: 30), // ✅ FIX 1: 30 seconds (dev-safe, backend needs ~12s)
         onTimeout: () {
-          print('⏱️ Request timeout after 60 seconds');
-          throw TimeoutException('Request timeout after 60 seconds');
+          if (kDebugMode) {
+            debugPrint('⏱️ Request timeout after 30 seconds');
+            debugPrint('🔍 URL attempted: $url');
+            debugPrint('💡 Troubleshooting:');
+            debugPrint('   1. Test: Open http://10.0.0.127:4000/api/test in phone browser');
+            debugPrint('   2. Verify: Device and computer on SAME WiFi network');
+            debugPrint('   3. Check: Backend is running (see backend terminal)');
+            debugPrint('   4. Backend might be taking longer - check backend logs');
+          }
+          throw TimeoutException('Request timeout after 30 seconds');
         },
       );
 
     if (response.statusCode == 200) {
         if (stream && response.headers['content-type']?.contains('text/event-stream') == true) {
           // Handle streaming response (don't cache)
-          print('✅ Agent API streaming response');
+          if (kDebugMode) {
+            debugPrint('✅ Agent API streaming response');
+          }
           return await _parseStreamingResponse(response);
         } else {
           // Handle regular JSON response
           final responseBody = await response.stream.bytesToString();
           final responseData = jsonDecode(responseBody) as Map<String, dynamic>;
           
-          // ✅ Perplexity-style persistent caching with smart expiry
+          // ✅ FIX 2: Log the FULL response (force visibility) - use print, not debugPrint
+          print("🔥 FULL AGENT RESPONSE: ${jsonEncode(responseData)}");
+          if (kDebugMode) {
+            debugPrint('✅ Agent API success - response received');
+            debugPrint('  - Response keys: ${responseData.keys.join(", ")}');
+            debugPrint('  - Has summary: ${responseData.containsKey('summary')}');
+            debugPrint('  - Has cards: ${responseData.containsKey('cards')} (count: ${(responseData['cards'] as List?)?.length ?? 0})');
+            debugPrint('  - Has sections: ${responseData.containsKey('sections')} (count: ${(responseData['sections'] as List?)?.length ?? 0})');
+            debugPrint('  - Has results: ${responseData.containsKey('results')} (count: ${(responseData['results'] as List?)?.length ?? 0})');
+            debugPrint('  - Has map: ${responseData.containsKey('map')} (count: ${(responseData['map'] as List?)?.length ?? 0})');
+          }
+          
+          // ✅ PHASE 7: Enhanced caching with contextHash and freshness logic
           if (useCache) {
             await _ensureCacheInitialized();
-            final cacheKey = CacheService.generateCacheKey(
+            
+            // ✅ PHASE 7: Generate contextHash for follow-up queries
+            final contextHash = _generateContextHash(
+              query,
+              conversationHistory: conversationHistory,
+              previousContext: previousContext,
+              lastFollowUp: lastFollowUp,
+              parentQuery: parentQuery,
+            );
+            final baseCacheKey = CacheService.generateCacheKey(
               query,
               conversationHistory: conversationHistory,
               context: previousContext,
             );
-            // Pass query for smart expiry calculation
-            await CacheService.set(cacheKey, responseData, query: query);
+            final cacheKey = '${baseCacheKey}_ctx_$contextHash';
+            
+            // ✅ PHASE 7: Use 10 min default freshness for follow-up queries
+            final baseExpiry = CacheService.getSmartExpiry(query);
+            final cacheExpiry = lastFollowUp != null 
+                ? const Duration(minutes: 10) // Follow-up queries: 10 min freshness
+                : (baseExpiry == Duration.zero ? const Duration(minutes: 10) : baseExpiry); // Initial queries: use smart expiry or 10 min default
+            
+            // Pass query for smart expiry calculation (LRU eviction handled by CacheService, max 50 entries)
+            await CacheService.set(cacheKey, responseData, expiry: cacheExpiry, query: query);
           }
           
-          print('✅ Agent API success');
+          if (kDebugMode) {
+            debugPrint('✅ Agent API success');
+          }
           return responseData;
         }
       } else {
         final errorBody = await response.stream.bytesToString();
-        print('❌ Agent API returned ${response.statusCode}');
+        if (kDebugMode) {
+          debugPrint('❌ Agent API returned ${response.statusCode}');
+        }
         throw Exception(
             "Agent API failed: ${response.statusCode} $errorBody");
       }
     } on TimeoutException catch (e) {
-      print('⏱️ Request timeout: $e');
+      if (kDebugMode) {
+        debugPrint('⏱️ Request timeout: $e');
+      }
       // Return a safe fallback response instead of crashing
       return {
         'success': false,
@@ -480,18 +617,29 @@ class AgentService {
         'sources': [],
       };
     } on SocketException catch (e) {
-      print('⚠️ Connection error: $e');
+      if (kDebugMode) {
+        debugPrint('⚠️ Connection error: $e');
+        debugPrint('🔍 Attempted URL: $url');
+        debugPrint('🔍 Base URL: $baseUrl');
+        debugPrint('🔍 Platform: ${Platform.operatingSystem}');
+        debugPrint('💡 TIP: Make sure your device and computer are on the SAME WiFi network');
+        debugPrint('💡 TIP: Try accessing http://10.0.0.127:4000/api/test from your phone browser');
+      }
       // Return a safe fallback response instead of crashing
       return {
         'success': false,
         'error': 'Connection failed',
-        'summary': 'Unable to connect to the server. Please try again.',
+        'summary': 'Unable to connect to the server. Please check:\n1. Device and computer are on same WiFi\n2. Backend is running on port 4000\n3. Try: http://10.0.0.127:4000/api/test in phone browser',
         'intent': 'answer',
         'results': [],
         'sources': [],
       };
     } catch (e) {
-      print('⚠️ Unknown error calling Agent API: $e');
+      if (kDebugMode) {
+        debugPrint('⚠️ Unknown error calling Agent API: $e');
+        debugPrint('🔍 Attempted URL: $url');
+        debugPrint('🔍 Error type: ${e.runtimeType}');
+      }
       // Return a safe fallback response instead of crashing
       return {
         'success': false,
@@ -555,7 +703,9 @@ class AgentService {
   /// Stream agent response for real-time UI updates
   static Stream<String> streamAgentResponse(String query) async* {
     final url = Uri.parse('$baseUrl/api/agent?stream=true');
-    print('🌊 Starting streaming request to $url');
+    if (kDebugMode) {
+      debugPrint('🌊 Starting streaming request to $url', wrapWidth: 1024);
+    }
 
     try {
       final request = http.Request('POST', url);
@@ -605,7 +755,9 @@ class AgentService {
             }
           } catch (e) {
             // Skip malformed JSON
-            print('⚠️ Failed to parse SSE line: $line, error: $e');
+            if (kDebugMode) {
+              debugPrint('⚠️ Failed to parse SSE line: $line, error: $e', wrapWidth: 1024);
+            }
             continue;
           }
         }
