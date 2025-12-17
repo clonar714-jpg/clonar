@@ -1,20 +1,29 @@
 // ✅ PHASE 10: Memory Flush Logic for Stale Contexts
-import { clearSession, getAllSessions } from '../memory/sessionMemory';
+import { getSessionStore } from '../memory/sessionMemory';
+import { InMemorySessionStore } from '../memory/InMemorySessionStore';
 /**
  * Flush stale session contexts
+ * Note: This only works with InMemorySessionStore
+ * Redis sessions are automatically expired via TTL
  * @param maxAge - Maximum age in milliseconds (default: 1 hour)
  */
-export function flushStaleContexts(maxAge = 3600000) {
+export async function flushStaleContexts(maxAge = 3600000) {
     try {
+        const store = getSessionStore();
+        // Only flush in-memory stores (Redis handles TTL automatically)
+        if (!(store instanceof InMemorySessionStore)) {
+            console.log('ℹ️ Memory flush skipped (using persistent store with TTL)');
+            return;
+        }
+        // Access private memory for cleanup (this is a workaround for in-memory store)
+        // In production, consider adding a cleanup method to SessionStore interface
         const now = Date.now();
-        const sessions = getAllSessions();
+        const memory = store.memory;
         let flushedCount = 0;
-        for (const [sessionId, session] of Object.entries(sessions)) {
-            // Check if session is stale (no activity for maxAge)
-            const lastActivity = session.lastActivity || session.timestamp || 0;
-            const age = now - lastActivity;
+        for (const [sessionId, entry] of Object.entries(memory)) {
+            const age = now - entry.timestamp;
             if (age > maxAge) {
-                clearSession(sessionId);
+                await store.delete(sessionId);
                 flushedCount++;
             }
         }

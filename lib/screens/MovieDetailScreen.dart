@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../theme/AppColors.dart';
 import '../services/AgentService.dart';
 
@@ -8,12 +10,14 @@ class MovieDetailScreen extends StatefulWidget {
   final int movieId;
   final String? movieTitle; // Optional for initial display
   final int? initialTabIndex; // Optional: which tab to show initially (0=Overview, 1=Cast, 2=Showtimes, 3=Trailers, 4=Reviews)
+  final bool? isInTheaters; // Optional: pass from SessionRenderer to ensure consistency
 
   const MovieDetailScreen({
     super.key,
     required this.movieId,
     this.movieTitle,
     this.initialTabIndex,
+    this.isInTheaters,
   });
 
   @override
@@ -111,31 +115,61 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
       final videos = await AgentService.getMovieVideos(widget.movieId);
       final reviews = await AgentService.getMovieReviews(widget.movieId);
       final images = await AgentService.getMovieImages(widget.movieId);
+      
+      // Debug: Log review count
+      if (kDebugMode) {
+        final reviewCount = (reviews['results'] as List?)?.length ?? 0;
+        print('📝 Movie ${widget.movieId} reviews: $reviewCount reviews found');
+      }
 
-      // Check if movie is in theaters (from backend flag or calculate from release date)
-      bool isInTheaters = details['isInTheaters'] == true;
-      if (!isInTheaters && details['release_date'] != null) {
+      // Check if movie is in theaters (prefer passed value from SessionRenderer, then backend flag, then calculate from release date)
+      bool isInTheaters = widget.isInTheaters ?? details['isInTheaters'] == true;
+      
+      // Debug logging
+      if (kDebugMode) {
+        print('🎬 MovieDetailScreen: isInTheaters from widget = ${widget.isInTheaters}');
+        print('🎬 MovieDetailScreen: isInTheaters from details = ${details['isInTheaters']}');
+        print('🎬 MovieDetailScreen: release_date = ${details['release_date']}');
+      }
+      
+      // Only calculate from release date if not already set from widget or backend
+      if (!isInTheaters && widget.isInTheaters == null && details['release_date'] != null) {
         // Fallback: check release date
         try {
           final releaseDate = DateTime.parse(details['release_date']);
           final now = DateTime.now();
           final daysSinceRelease = now.difference(releaseDate).inDays;
-          // Movie is "in theaters" if released within last 120 days or releasing in next 30 days
-          // But NOT if it's way in the future (more than 30 days away)
+          // Movie is "in theaters" if released within last 120 days or releasing in next 60 days
+          // But NOT if it's way in the future (more than 60 days away)
           isInTheaters = (daysSinceRelease >= 0 && daysSinceRelease <= 120) || 
-                         (daysSinceRelease < 0 && daysSinceRelease >= -30);
-          // Additional check: if release date is more than 30 days in the future, it's not in theaters
-          if (daysSinceRelease < -30) {
+                         (daysSinceRelease < 0 && daysSinceRelease >= -60);
+          // Additional check: if release date is more than 60 days in the future, it's not in theaters
+          if (daysSinceRelease < -60) {
             isInTheaters = false;
           }
+          
+          if (kDebugMode) {
+            print('🎬 MovieDetailScreen: daysSinceRelease = $daysSinceRelease');
+            print('🎬 MovieDetailScreen: isInTheaters after date check = $isInTheaters');
+          }
         } catch (e) {
+          if (kDebugMode) {
+            print('❌ Error parsing release date: $e');
+          }
           isInTheaters = false;
         }
       }
       
-      // Force false if backend says false (override any fallback)
+      // Force false if backend explicitly says false (override any fallback)
       if (details['isInTheaters'] == false) {
         isInTheaters = false;
+        if (kDebugMode) {
+          print('🎬 MovieDetailScreen: Forcing isInTheaters = false (backend override)');
+        }
+      }
+      
+      if (kDebugMode) {
+        print('🎬 MovieDetailScreen: Final isInTheaters = $isInTheaters');
       }
 
       // Update tab controller length based on isInTheaters
@@ -145,6 +179,9 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
       if (_tabController.length != tabLength) {
         // Create new controller before disposing old one
         newController = TabController(length: tabLength, vsync: this);
+        if (kDebugMode) {
+          print('🎬 MovieDetailScreen: Creating new TabController with length $tabLength (isInTheaters: $isInTheaters)');
+        }
       }
 
       setState(() {
@@ -162,6 +199,10 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
           _tabController = newController;
         }
       });
+      
+      if (kDebugMode) {
+        print('🎬 MovieDetailScreen: TabController length = ${_tabController.length}, isInTheaters = $_isInTheaters');
+      }
 
       // Navigate to specific tab if requested (after state update)
       if (widget.initialTabIndex != null) {
@@ -663,6 +704,7 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
                 labelColor: AppColors.primary,
                 unselectedLabelColor: AppColors.textSecondary,
                 indicatorColor: AppColors.primary,
+                isScrollable: false, // Ensure all tabs are visible
                 tabs: [
                   const Tab(text: 'Overview'),
                   const Tab(text: 'Cast'),
@@ -689,30 +731,49 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
   }
 
   Widget _buildOverviewTab(String overview, String posterUrl) {
+    final rating = (_movieDetails?['vote_average'] as num?)?.toDouble() ?? 0.0;
+    
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (overview.isNotEmpty) ...[
+          // ✅ TMDB Rating under poster (in Overview tab)
+          if (rating > 0) ...[
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'Overview',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+                const Icon(Icons.star, size: 20, color: Colors.amber),
+                const SizedBox(width: 8),
+                Text(
+                  '${rating.toStringAsFixed(1)}/10',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
                     color: AppColors.textPrimary,
-              ),
-            ),
-                IconButton(
-                  icon: const Icon(Icons.expand_less, color: AppColors.textSecondary),
-                  onPressed: () {},
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'TMDB',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 24),
+          ],
+          if (overview.isNotEmpty) ...[
+            const Text(
+              'Overview',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 12),
             Text(
               overview,
               style: const TextStyle(
@@ -721,8 +782,238 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
                 height: 1.5,
               ),
             ),
+            const SizedBox(height: 32),
           ],
+          // Core Details Section
+          _buildCoreDetailsSection(),
+          const SizedBox(height: 32),
+          // Box Office & Reception Section
+          _buildBoxOfficeSection(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCoreDetailsSection() {
+    final crew = _credits?['crew'] as List? ?? [];
+    final cast = _credits?['cast'] as List? ?? [];
+    final movieDetails = _movieDetails ?? {};
+    
+    // Extract director
+    final director = crew.firstWhere(
+      (c) => c['job'] == 'Director',
+      orElse: () => null,
+    );
+    
+    // Extract composer
+    final composer = crew.firstWhere(
+      (c) => c['job'] == 'Original Music Composer' || c['job'] == 'Music',
+      orElse: () => null,
+    );
+    
+    // Extract top cast (starring)
+    final topCast = cast.take(3).toList();
+    
+    // Extract runtime
+    final runtime = _formatRuntime(movieDetails['runtime'] as int?);
+    
+    // Extract storyline (overview)
+    final storyline = movieDetails['overview']?.toString() ?? '';
+    
+    if (director == null && topCast.isEmpty && runtime.isEmpty && storyline.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Core Details',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (director != null) ...[
+          _buildDetailRow('Director', '${director['name']?.toString() ?? 'Unknown'}.'),
+          const SizedBox(height: 12),
+        ],
+        if (topCast.isNotEmpty) ...[
+          _buildDetailRow(
+            'Starring',
+            topCast.asMap().entries.map((entry) {
+              final index = entry.key;
+              final actor = entry.value;
+              final name = actor['name']?.toString() ?? 'Unknown';
+              final character = actor['character']?.toString();
+              if (character != null && character.isNotEmpty) {
+                return '$name (as $character)';
+              }
+              if (index == topCast.length - 1 && topCast.length > 1) {
+                return 'and $name';
+              }
+              return name;
+            }).join(', '),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (storyline.isNotEmpty) ...[
+          _buildDetailRow('Storyline', '"$storyline"'),
+          const SizedBox(height: 12),
+        ],
+        if (composer != null) ...[
+          _buildDetailRow('Music', 'Composed by ${composer['name']?.toString() ?? 'Unknown'}.'),
+          const SizedBox(height: 12),
+        ],
+        if (runtime.isNotEmpty) ...[
+          _buildDetailRow('Running Time', 'Approximately $runtime.'),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return RichText(
+      text: TextSpan(
+        style: const TextStyle(
+          fontSize: 15,
+          color: AppColors.textPrimary,
+          height: 1.5,
+        ),
+        children: [
+          TextSpan(
+            text: '$label: ',
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          TextSpan(
+            text: value,
+            style: const TextStyle(
+              fontWeight: FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBoxOfficeSection() {
+    final movieDetails = _movieDetails ?? {};
+    final budget = movieDetails['budget'] as int?;
+    final revenue = movieDetails['revenue'] as int?;
+    final rating = (movieDetails['vote_average'] as num?)?.toDouble() ?? 0.0;
+    final voteCount = movieDetails['vote_count'] as int? ?? 0;
+    
+    // Format currency
+    String formatCurrency(int? amount) {
+      if (amount == null || amount == 0) return '';
+      if (amount >= 1000000000) {
+        return '\$${(amount / 1000000000).toStringAsFixed(2)}B';
+      } else if (amount >= 1000000) {
+        return '\$${(amount / 1000000).toStringAsFixed(2)}M';
+      } else if (amount >= 1000) {
+        return '\$${(amount / 1000).toStringAsFixed(2)}K';
+      }
+      return '\$$amount';
+    }
+    
+    final budgetFormatted = formatCurrency(budget);
+    final revenueFormatted = formatCurrency(revenue);
+    
+    // Generate box office content
+    final List<String> boxOfficeItems = [];
+    
+    if (budgetFormatted.isNotEmpty || revenueFormatted.isNotEmpty) {
+      if (budgetFormatted.isNotEmpty && revenueFormatted.isNotEmpty) {
+        boxOfficeItems.add('**Opening:** The film had a production budget of $budgetFormatted and grossed $revenueFormatted worldwide.');
+      } else if (budgetFormatted.isNotEmpty) {
+        boxOfficeItems.add('**Opening:** The film had a production budget of $budgetFormatted.');
+      } else if (revenueFormatted.isNotEmpty) {
+        boxOfficeItems.add('**Opening:** The film grossed $revenueFormatted worldwide.');
+      }
+    }
+    
+    if (revenueFormatted.isNotEmpty && budgetFormatted.isNotEmpty && budget != null && budget > 0) {
+      final profit = revenue! - budget;
+      final profitFormatted = formatCurrency(profit);
+      if (profit > 0) {
+        boxOfficeItems.add('**Weekend Performance:** The film generated a profit of $profitFormatted.');
+      }
+    }
+    
+    if (rating > 0 && voteCount > 0) {
+      final ratingText = rating >= 7.0 
+          ? 'positive' 
+          : rating >= 5.0 
+              ? 'mixed' 
+              : 'negative';
+      boxOfficeItems.add('**Critical Response:** The film has received $ratingText reviews, with an average rating of ${rating.toStringAsFixed(1)}/10 based on ${voteCount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')} votes.');
+    }
+    
+    if (boxOfficeItems.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Box Office & Reception',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...boxOfficeItems.map((item) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _buildBoxOfficeItem(item),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildBoxOfficeItem(String text) {
+    // Parse format: "**Label:** content"
+    final match = RegExp(r'\*\*(.+?):\*\*\s*(.+)').firstMatch(text);
+    if (match != null) {
+      final label = match.group(1) ?? '';
+      final content = match.group(2) ?? '';
+      return RichText(
+        text: TextSpan(
+          style: const TextStyle(
+            fontSize: 15,
+            color: AppColors.textPrimary,
+            height: 1.5,
+          ),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            TextSpan(
+              text: content,
+              style: const TextStyle(
+                fontWeight: FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    // Fallback if format doesn't match
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 15,
+        color: AppColors.textPrimary,
+        height: 1.5,
       ),
     );
   }
@@ -1255,10 +1546,16 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
                             ),
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.network(
-                                'https://img.youtube.com/vi/$key/maxresdefault.jpg',
+                              child: CachedNetworkImage(
+                                imageUrl: 'https://img.youtube.com/vi/$key/maxresdefault.jpg',
                                 fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) => Container(
+                                placeholder: (context, url) => Container(
+                                  color: AppColors.surfaceVariant,
+                                  child: const Center(
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  ),
+                                ),
+                                errorWidget: (context, url, error) => Container(
                                   color: AppColors.surfaceVariant,
                                   child: const Icon(Icons.play_circle_outline, size: 64, color: AppColors.textSecondary),
                                 ),
@@ -1289,6 +1586,45 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
                         color: AppColors.textPrimary,
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    // ✅ "Watch on YouTube" button
+                    if (site == 'YouTube')
+                      GestureDetector(
+                        onTap: () {
+                          _playYouTubeVideo(key, title);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: AppColors.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppColors.border),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Image.network(
+                                'https://www.youtube.com/img/desktop/yt_1200.png',
+                                height: 20,
+                                errorBuilder: (context, error, stackTrace) => const Icon(
+                                  Icons.play_circle_outline,
+                                  size: 20,
+                                  color: Colors.red,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                'Watch on YouTube',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               );
@@ -1451,10 +1787,19 @@ class _MovieDetailScreenState extends State<MovieDetailScreen> with TickerProvid
                     Icon(Icons.reviews_outlined, size: 64, color: AppColors.textSecondary),
                     const SizedBox(height: 16),
                     Text(
-                      'No reviews available',
+                      'No reviews available yet',
                       style: TextStyle(
                         fontSize: 16,
                         color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Reviews will appear here once they are available on TMDB.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textSecondary.withOpacity(0.7),
                       ),
                     ),
                   ],

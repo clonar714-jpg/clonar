@@ -183,7 +183,45 @@ export async function getMovieReviews(movieId: number, page: number = 1): Promis
     if (!response.ok) {
       throw new Error(`TMDB API error: ${response.status} ${response.statusText}`);
     }
-    return await response.json();
+    const data = await response.json();
+    
+    // Log review count for debugging
+    const reviewCount = data?.results?.length ?? 0;
+    const totalPages = data?.total_pages ?? 0;
+    console.log(`📝 Movie ${movieId} reviews: ${reviewCount} reviews on page ${page} (total pages: ${totalPages})`);
+    
+    // If no reviews on first page, try fetching multiple pages (up to 3) to get more reviews
+    if (reviewCount === 0 && page === 1 && totalPages > 1) {
+      console.log(`📝 No reviews on page 1, trying to fetch from multiple pages...`);
+      const allReviews: any[] = [];
+      
+      // Fetch up to 3 pages to get more reviews
+      for (let p = 1; p <= Math.min(3, totalPages); p++) {
+        try {
+          const pageUrl = `${TMDB_BASE_URL}/movie/${movieId}/reviews?api_key=${apiKey}&page=${p}`;
+          const pageResponse = await fetch(pageUrl);
+          if (pageResponse.ok) {
+            const pageData = await pageResponse.json();
+            if (pageData?.results && Array.isArray(pageData.results)) {
+              allReviews.push(...pageData.results);
+            }
+          }
+        } catch (err) {
+          console.warn(`⚠️ Failed to fetch reviews from page ${p}:`, err);
+        }
+      }
+      
+      if (allReviews.length > 0) {
+        console.log(`✅ Found ${allReviews.length} reviews across ${Math.min(3, totalPages)} pages`);
+        return {
+          ...data,
+          results: allReviews,
+          total_results: allReviews.length,
+        };
+      }
+    }
+    
+    return data;
   } catch (error) {
     console.error("❌ Error fetching movie reviews:", error);
     throw error;
@@ -232,6 +270,65 @@ export async function getPersonDetails(personId: number): Promise<any> {
     return await response.json();
   } catch (error) {
     console.error("❌ Error fetching person details:", error);
+    throw error;
+  }
+}
+
+/**
+ * Get list of movie genres
+ * @returns Promise with genre list
+ */
+export async function getMovieGenres(): Promise<any> {
+  const apiKey = getTMDBApiKey();
+  const url = `${TMDB_BASE_URL}/genre/movie/list?api_key=${apiKey}`;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`TMDB API error: ${response.status} ${response.statusText}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("❌ Error fetching movie genres:", error);
+    throw error;
+  }
+}
+
+/**
+ * Discover movies by genre, year, and other filters
+ * @param genreId - Genre ID (optional)
+ * @param year - Release year (optional)
+ * @param page - Page number (default: 1)
+ * @param sortBy - Sort by (default: 'popularity.desc')
+ * @returns Promise with discovered movies
+ */
+export async function discoverMovies(options: {
+  genreId?: number;
+  year?: number;
+  page?: number;
+  sortBy?: string;
+}): Promise<any> {
+  const apiKey = getTMDBApiKey();
+  const { genreId, year, page = 1, sortBy = 'popularity.desc' } = options;
+  
+  let url = `${TMDB_BASE_URL}/discover/movie?api_key=${apiKey}&page=${page}&sort_by=${sortBy}`;
+  
+  if (genreId) {
+    url += `&with_genres=${genreId}`;
+  }
+  
+  if (year) {
+    url += `&primary_release_year=${year}`;
+  }
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`TMDB API error: ${response.status} ${response.statusText}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("❌ Error discovering movies:", error);
     throw error;
   }
 }

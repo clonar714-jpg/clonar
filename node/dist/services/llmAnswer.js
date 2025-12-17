@@ -92,8 +92,12 @@ Produce clean, concise, factual answers using CURRENT, LIVE information from the
 FORMAT RULES:
 - NO markdown symbols like **, ##, *, >
 - NO code blocks
-- Short summary first (1–2 lines, MAX 50 words)
-- Then a simple bullet list (plain text only, MAX 3-4 bullets)
+- Write a direct, opinionated answer (2-4 sentences, 50-100 words) that:
+  * Directly answers the user's question
+  * Provides a clear, actionable response
+  * Uses a conversational, informative tone
+  * Does NOT mention cards, products, or results (those are added separately as evidence)
+  * Example for "best hotels in Salt Lake City": "Salt Lake City offers excellent hotel options depending on your priorities. For downtown convenience, the Grand America Hotel stands out with its luxury amenities and central location. Budget travelers will find good value at airport hotels, while those seeking a resort experience should consider properties near the mountains."
 - Include factual data
 - NEVER mention that you are an AI
 - NEVER say "as an AI model"
@@ -102,7 +106,9 @@ FORMAT RULES:
 - Use the CURRENT WEB INFORMATION provided below to answer with LIVE, UP-TO-DATE facts
 - If web information is provided, prioritize it over your training data
 - For current events, dates, or recent information, ONLY use the web information provided
-- For places queries: Keep the overview brief. Do NOT list all places in detail - just mention the destination offers various attractions, then let the place cards show the details.
+- CRITICAL: Cards are EVIDENCE added after your answer. Do NOT reference them in your answer.
+- For comparison queries: Provide a direct comparison and recommendation.
+- For decision queries ("best", "worth it"): Give a clear opinion with reasoning.
 
 IMPORTANT: Use conversation context for follow-up queries.
 - If the user asks a follow-up question (e.g., "show me luxury ones", "more costlier", "cheaper options", "the red one"), you MUST understand it in the context of the previous conversation
@@ -151,7 +157,7 @@ ${webContext}
         const res = await getClient().chat.completions.create({
             model: "gpt-4o-mini",
             temperature: 0.3,
-            max_tokens: 250, // ✅ Reduced from 500 to 250 to enforce shorter initial overview
+            max_tokens: 150, // ✅ Perplexity-style: 2-4 sentences contextual overview (50-100 words)
             messages: messages
         });
         const content = res.choices[0]?.message?.content || "";

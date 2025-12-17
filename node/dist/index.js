@@ -77,11 +77,34 @@ else {
 }
 // Health check endpoint
 app.get('/health', (req, res) => {
+    console.log(`🏥 Health check requested from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
     res.status(200).json({
         status: 'OK',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         environment: process.env.NODE_ENV,
+    });
+});
+// ✅ PRODUCTION-GRADE: Test endpoint to verify connectivity from emulator
+app.get('/api/test', (req, res) => {
+    console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
+    console.log(`   Headers: ${JSON.stringify(req.headers)}`);
+    res.status(200).json({
+        success: true,
+        message: 'Backend is reachable!',
+        timestamp: new Date().toISOString(),
+        ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
+    });
+});
+// ✅ PRODUCTION-GRADE: Test endpoint to verify connectivity
+app.get('/api/test', (req, res) => {
+    console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
+    console.log(`   Headers: ${JSON.stringify(req.headers)}`);
+    res.status(200).json({
+        success: true,
+        message: 'Backend is reachable!',
+        timestamp: new Date().toISOString(),
+        ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
     });
 });
 // Global multer error handler
@@ -135,6 +158,10 @@ const startServer = async () => {
             console.log(`🚀 Server running on http://localhost:${PORT}`);
             console.log(`📊 Environment: ${process.env.NODE_ENV}`);
             console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+            console.log(`🌐 Listening on ALL interfaces (0.0.0.0:${PORT}) - accessible from emulator at 10.0.2.2:${PORT}`);
+            console.log(`🧪 Test endpoint: http://localhost:${PORT}/api/test`);
+            console.log(`🌐 Listening on ALL interfaces (0.0.0.0:${PORT}) - accessible from emulator at 10.0.2.2:${PORT}`);
+            console.log(`🧪 Test endpoint: http://localhost:${PORT}/api/test`);
             if (process.env.NODE_ENV === 'development') {
                 console.log('⚙️  Dev Mode Active: Authentication checks are skipped for all routes');
             }

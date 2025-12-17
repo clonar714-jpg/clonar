@@ -46,6 +46,8 @@ import { mergeQueryWithContext } from "../followup/context";
 // ✅ Follow-up engine imports
 import { getFollowUpSuggestions } from "../followup";
 import { analyzeCardNeed } from "../followup/cardAnalyzer";
+// ✅ ANSWER-FIRST ARCHITECTURE: Plan answer before intent detection
+import { planAnswer } from "../planner/answerPlanner";
 
 // ✅ Personalization imports
 import { extractPreferenceSignals } from "../services/personalization/preferenceExtractor";
@@ -259,6 +261,45 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // ✅ ANSWER-FIRST ARCHITECTURE: Plan answer BEFORE intent detection
+    const lastTurnForPlanning = conversationHistory?.length
+      ? conversationHistory[conversationHistory.length - 1]
+      : null;
+    
+    const answerPlan = planAnswer({
+      query: cleanQuery,
+      conversationHistory: conversationHistory || [],
+      lastFollowUp: lastFollowUp || undefined,
+    });
+
+    console.log("🧠 Answer Plan:", {
+      userGoal: answerPlan.userGoal,
+      needsCards: answerPlan.needsCards,
+      maxCards: answerPlan.maxCards,
+      cardRole: answerPlan.cardRole,
+      ambiguity: answerPlan.ambiguity,
+    });
+
+    // ✅ If high ambiguity, return clarification question immediately
+    if (answerPlan.ambiguity === "high" && answerPlan.clarificationQuestion) {
+      console.log("❓ High ambiguity detected, returning clarification question");
+      return res.json({
+        summary: answerPlan.clarificationQuestion,
+        intent: "general",
+        cardType: null,
+        cards: [],
+        results: [],
+        sources: [],
+        followUpSuggestions: [],
+        confidence: {
+          intent: 0.3,
+          slots: 0,
+          cards: 0,
+          overall: 0.3,
+        },
+      });
+    }
+
     // ✅ FIX: When image is provided, COMPLETELY CLEAR conversation history to prevent old image context
     let filteredConversationHistory = conversationHistory || [];
     if (imageUrl && imageAnalysis) {
@@ -313,14 +354,14 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     // 2️⃣ UNIFIED ROUTING ENGINE
     // ⚠️ CRITICAL: Route with ORIGINAL query first to get correct intent
     // DO NOT add memory/context before intent classification!
-    const lastTurn = filteredConversationHistory?.length
+    const lastTurnForRouting = filteredConversationHistory?.length
       ? filteredConversationHistory[filteredConversationHistory.length - 1]
       : null;
 
     // Route with original query to get correct intent classification
     const routing = await routeQuery({
       query: cleanQuery, // ✅ Use ORIGINAL query for intent classification
-      lastTurn,
+      lastTurn: lastTurnForRouting,
       llmAnswer,
     });
 
@@ -740,11 +781,18 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
     // ✅ Movies should NOT be refined with price filters - use original query
     // ✅ FIX: Use updated finalIntent/finalCardType after LLM override
     const finalCardType = routing.finalCardType; // Use updated card type from LLM override
+    
+    // ✅ ANSWER-FIRST: Intent is domain hint only, answer plan controls card fetching
+    // If answer plan says no cards needed, skip card fetching regardless of intent
+    const shouldFetchCards = answerPlan.needsCards && finalCardType !== null;
+    
     const refinedQuery = (shouldEnhanceQuery && (finalCardType as string) !== "movies")
       ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
       : cleanQuery; // ✅ Keep original query for answer/general/movies intents
     
-    switch (finalCardType) {
+    // ✅ ANSWER-FIRST: Only fetch cards if answer plan allows it
+    if (shouldFetchCards) {
+      switch (finalCardType) {
       case "shopping":
         // 1. Fetch raw results (with refined query)
         let rawShoppingCards = await searchProducts(refinedQuery);
@@ -928,57 +976,233 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
         }
         break;
       case "movies" as any:
-        // 🎬 Movies Search using TMDB API
+        // 🎬 Movies Search using TMDB API with fallback logic
         try {
-          // Preprocess query: Remove common phrases but preserve movie titles
-          let movieQuery = cleanQuery
-            .replace(/showtimes?/gi, "")
-            .replace(/tickets?/gi, "")
-            .replace(/in\s+[A-Z][a-z\s]+/gi, "") // Remove "in [City]"
-            .replace(/under\s+\$?\d+/gi, "") // Remove "under $200"
-            .replace(/below\s+\$?\d+/gi, "") // Remove "below $200"
-            .replace(/\s+/g, " ") // Normalize whitespace
-            .trim();
+          // 🔮 STEP 0: LLM Query Repair (Perplexity-style) - MUST happen FIRST
+          const { repairQuery } = await import("../services/queryRepair");
+          const repairedQuery = await repairQuery(cleanQuery, "movies");
+          console.log(`🔮 Query repair (movies): "${cleanQuery}" → "${repairedQuery}"`);
           
-          // Extract year from query
-          const yearMatch = movieQuery.match(/\b(19|20)\d{2}\b/);
+          // 🎯 STEP 1: Classify Query Type FIRST (before preprocessing)
+          // This prevents preprocessing from destroying genre/new releases queries
+          type MovieQueryType = "genre" | "new_releases" | "specific_title" | "discovery" | "year_only" | "rating_based";
+          
+          const classifyMovieQueryType = (query: string): MovieQueryType => {
+            const lower = query.toLowerCase();
+            
+            // Check for new/recent releases patterns
+            if (/\b(new|recent|latest|upcoming|coming soon|just released|newly released)\s+(movies?|films?|releases?)/i.test(query)) {
+              return "new_releases";
+            }
+            
+            // Check for discovery patterns (best, top, popular, etc.)
+            if (/\b(best|top|popular|trending|must watch|must see|recommended|highly rated)\s+(movies?|films?)/i.test(query)) {
+              return "discovery";
+            }
+            
+            // Check for rating-based patterns
+            if (/\b(highly rated|top rated|well rated|critically acclaimed|award winning)\s+(movies?|films?)/i.test(query)) {
+              return "rating_based";
+            }
+            
+            // Check for genre patterns (genre name + movies/films)
+            const genrePatterns = [
+              /\b(action|adventure|animation|comedy|crime|documentary|drama|family|fantasy|history|horror|music|mystery|romance|science fiction|sci-fi|scifi|thriller|war|western)\s+(movies?|films?)/i,
+              /\b(movies?|films?)\s+(of|in)\s+(action|adventure|animation|comedy|crime|documentary|drama|family|fantasy|history|horror|music|mystery|romance|science fiction|sci-fi|scifi|thriller|war|western)/i
+            ];
+            
+            if (genrePatterns.some(pattern => pattern.test(query))) {
+              return "genre";
+            }
+            
+            // Check for year-only patterns (movies 2025, films from 2024)
+            if (/^(movies?|films?)\s+\d{4}/i.test(query) || /\b(movies?|films?)\s+(from|in|of)\s+\d{4}/i.test(query)) {
+              return "year_only";
+            }
+            
+            // Default: specific title query
+            return "specific_title";
+          };
+          
+          const queryType = classifyMovieQueryType(repairedQuery);
+          console.log(`🎯 Movie query type: "${repairedQuery}" → ${queryType}`);
+          
+          // Extract year from query (for all query types)
+          const yearMatch = repairedQuery.match(/\b(19|20)\d{2}\b/);
           const targetYear = yearMatch ? parseInt(yearMatch[0], 10) : null;
           
-          // Remove year from query for title extraction
-          if (targetYear) {
-            movieQuery = movieQuery.replace(/\b(19|20)\d{2}\b/g, "").trim();
-          }
+          // 🎯 STEP 2: Genre Detection (BEFORE preprocessing to preserve query structure)
+          const genreMap: Record<string, number> = {
+            'action': 28,
+            'adventure': 12,
+            'animation': 16,
+            'comedy': 35,
+            'crime': 80,
+            'documentary': 99,
+            'drama': 18,
+            'family': 10751,
+            'fantasy': 14,
+            'history': 36,
+            'horror': 27,
+            'music': 10402,
+            'mystery': 9648,
+            'romance': 10749,
+            'science fiction': 878,
+            'sci-fi': 878,
+            'scifi': 878,
+            'thriller': 53,
+            'war': 10752,
+            'western': 37,
+          };
           
-          // Remove "for good" if it appears before "movie"
-          movieQuery = movieQuery.replace(/for\s+good\s+/gi, "");
+          // 🎯 STEP 3: Process based on query type
+          let tmdbResults: any;
+          let detectedGenreId: number | null = null;
+          let detectedGenreName: string | null = null;
+          let movieQuery = repairedQuery; // Will be set based on query type
           
-          // If query contains "movie" or "film", extract the title part before it
-          if (movieQuery.toLowerCase().includes("movie") || movieQuery.toLowerCase().includes("film")) {
-            const titleMatch = movieQuery.match(/^(.+?)\s+(?:movie|film)/i);
-            if (titleMatch && titleMatch[1]) {
-              movieQuery = titleMatch[1].trim();
+          if (queryType === "genre") {
+            // Extract genre from query (before preprocessing)
+            const queryLower = repairedQuery.toLowerCase().trim();
+            for (const [genreName, genreId] of Object.entries(genreMap)) {
+              const genrePattern = new RegExp(`\\b${genreName.replace(/\s+/g, '\\s+')}\\b`, 'i');
+              if (genrePattern.test(queryLower)) {
+                detectedGenreId = genreId;
+                detectedGenreName = genreName;
+                break;
+              }
+            }
+            
+            if (detectedGenreId !== null) {
+              console.log(`🎯 Genre query detected: "${detectedGenreName}" (ID: ${detectedGenreId})`);
+              const { discoverMovies } = await import("../services/tmdbService");
+              tmdbResults = await discoverMovies({
+                genreId: detectedGenreId,
+                year: targetYear || undefined,
+                page: 1,
+                sortBy: 'popularity.desc',
+              });
+              console.log(`🎬 TMDB discover (genre: ${detectedGenreName}${targetYear ? `, year: ${targetYear}` : ''}): ${tmdbResults.results?.length || 0} movies found`);
             } else {
-              movieQuery = movieQuery.replace(/\s*(?:movie|film)\s*/gi, " ").trim();
+              // Genre pattern matched but genre not found in map - fallback to search
+              console.log(`⚠️ Genre pattern matched but genre not found, falling back to search`);
+              queryType = "specific_title" as MovieQueryType;
             }
           }
           
-          // Final cleanup: remove any remaining common words at the end
-          movieQuery = movieQuery.replace(/\s+(?:tickets?|showtimes?|in|near|around)\s*$/i, "").trim();
+          if (queryType === "new_releases") {
+            // Use discover API with recent release dates
+            const { discoverMovies } = await import("../services/tmdbService");
+            const currentYear = new Date().getFullYear();
+            const searchYear = targetYear || currentYear;
+            tmdbResults = await discoverMovies({
+              year: searchYear,
+              page: 1,
+              sortBy: 'release_date.desc', // Most recent first
+            });
+            console.log(`🎬 TMDB discover (new releases${targetYear ? `, year: ${targetYear}` : ''}): ${tmdbResults.results?.length || 0} movies found`);
+          }
           
-          console.log(`🎬 Movie search: "${cleanQuery}" → "${movieQuery}"${targetYear ? ` (Year: ${targetYear})` : ''}`);
+          if (queryType === "discovery" || queryType === "rating_based") {
+            // Use discover API sorted by popularity or vote average
+            const { discoverMovies } = await import("../services/tmdbService");
+            const searchYear = targetYear || undefined;
+            tmdbResults = await discoverMovies({
+              year: searchYear,
+              page: 1,
+              sortBy: queryType === "rating_based" ? 'vote_average.desc' : 'popularity.desc',
+            });
+            console.log(`🎬 TMDB discover (${queryType}${targetYear ? `, year: ${targetYear}` : ''}): ${tmdbResults.results?.length || 0} movies found`);
+          }
           
-          // Search TMDB
-          let tmdbResults = await searchMovies(movieQuery);
-          console.log(`🎬 TMDB search: ${tmdbResults.results?.length || 0} movies found`);
+          if (queryType === "year_only") {
+            // Use discover API for specific year
+            if (targetYear) {
+              const { discoverMovies } = await import("../services/tmdbService");
+              tmdbResults = await discoverMovies({
+                year: targetYear,
+                page: 1,
+                sortBy: 'popularity.desc',
+              });
+              console.log(`🎬 TMDB discover (year: ${targetYear}): ${tmdbResults.results?.length || 0} movies found`);
+            } else {
+              // No year found - fallback to search
+              queryType = "specific_title" as MovieQueryType;
+            }
+          }
           
-          if (!tmdbResults.results || tmdbResults.results.length === 0) {
+          // For specific_title queries, do preprocessing and search
+          if (queryType === "specific_title" || !tmdbResults) {
+            // Preprocess query: Remove common phrases but preserve movie titles
+            movieQuery = repairedQuery
+              .replace(/showtimes?/gi, "")
+              .replace(/tickets?/gi, "")
+              .replace(/in\s+[A-Z][a-z\s]+/gi, "") // Remove "in [City]"
+              .replace(/under\s+\$?\d+/gi, "") // Remove "under $200"
+              .replace(/below\s+\$?\d+/gi, "") // Remove "below $200"
+              .replace(/\s+/g, " ") // Normalize whitespace
+              .trim();
+            
+            // Remove year from query for title extraction
+            if (targetYear) {
+              movieQuery = movieQuery.replace(/\b(19|20)\d{2}\b/g, "").trim();
+            }
+            
+            // Remove "for good" if it appears before "movie"
+            movieQuery = movieQuery.replace(/for\s+good\s+/gi, "");
+            
+            // If query contains "movie" or "film", extract the title part before it
+            if (movieQuery.toLowerCase().includes("movie") || movieQuery.toLowerCase().includes("film")) {
+              const titleMatch = movieQuery.match(/^(.+?)\s+(?:movie|film)/i);
+              if (titleMatch && titleMatch[1]) {
+                movieQuery = titleMatch[1].trim();
+              } else {
+                movieQuery = movieQuery.replace(/\s*(?:movie|film)\s*/gi, " ").trim();
+              }
+            }
+            
+            // Final cleanup: remove any remaining common words at the end
+            movieQuery = movieQuery.replace(/\s+(?:tickets?|showtimes?|in|near|around)\s*$/i, "").trim();
+            
+            console.log(`🎬 Movie search: "${cleanQuery}" → "${movieQuery}"${targetYear ? ` (Year: ${targetYear})` : ''}`);
+            
+            // Attempt 1 — Primary TMDB search (use preprocessed query)
+            tmdbResults = await searchMovies(movieQuery);
+            console.log(`🎬 TMDB search (primary): ${tmdbResults.results?.length || 0} movies found`);
+            
+            // Attempt 2 — If no results, try without numbers/sequels (only for title searches)
+            if (!tmdbResults.results || tmdbResults.results.length === 0) {
+              const queryWithoutNumbers = movieQuery.replace(/\s*\d+\s*/g, " ").trim();
+              if (queryWithoutNumbers !== movieQuery && queryWithoutNumbers.length > 0) {
+                console.log(`🎬 Trying without numbers: "${queryWithoutNumbers}"`);
+                tmdbResults = await searchMovies(queryWithoutNumbers);
+                console.log(`🎬 TMDB search (no numbers): ${tmdbResults.results?.length || 0} movies found`);
+              }
+            }
+            
+            // Attempt 3 — If still no results, try just the first word (for very specific titles)
+            if (!tmdbResults.results || tmdbResults.results.length === 0) {
+              const firstWord = movieQuery.split(/\s+/)[0];
+              if (firstWord && firstWord.length > 3 && firstWord !== movieQuery) {
+                console.log(`🎬 Trying first word only: "${firstWord}"`);
+                tmdbResults = await searchMovies(firstWord);
+                console.log(`🎬 TMDB search (first word): ${tmdbResults.results?.length || 0} movies found`);
+              }
+            }
+          }
+          
+          if (!tmdbResults || !tmdbResults.results || tmdbResults.results.length === 0) {
+            const queryForError = queryType === "specific_title" ? movieQuery : repairedQuery;
+            console.warn(`⚠️ No movies found for "${queryForError}", returning empty results`);
             results = [];
             break;
           }
           
-          // Filter by year if specified
+          // Filter by year if specified (only for title searches; discover API queries already filtered by year)
           let filteredResults = [...tmdbResults.results];
-          if (targetYear) {
+          const usedDiscoverAPI = queryType === "genre" || queryType === "new_releases" || queryType === "discovery" || queryType === "rating_based" || queryType === "year_only";
+          if (targetYear && !usedDiscoverAPI) {
+            // Only filter by year if we used search API (genre queries already filter by year in discover API)
             filteredResults = filteredResults.filter((movie: any) => {
               if (!movie.release_date) return false;
               const movieYear = new Date(movie.release_date).getFullYear();
@@ -1016,32 +1240,97 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
           }
 
           // Helper function for time-based fallback
+          // A movie is "in theaters" if:
+          // - Released within last 120 days (still in theaters)
+          // - Releasing within next 60 days (upcoming releases, often in theaters for previews/limited release)
           const isMovieInTheatersByDate = (releaseDate: string | null): boolean => {
             if (!releaseDate) return false;
             try {
               const release = new Date(releaseDate);
               const now = new Date();
+              // Reset time to midnight for accurate day calculation
+              release.setHours(0, 0, 0, 0);
+              now.setHours(0, 0, 0, 0);
+              
               const daysSinceRelease = Math.floor((now.getTime() - release.getTime()) / (1000 * 60 * 60 * 24));
               const daysUntilRelease = -daysSinceRelease;
-              return (daysSinceRelease >= 0 && daysSinceRelease <= 120) || (daysUntilRelease > 0 && daysUntilRelease <= 30);
+              
+              // In theaters if: released within last 120 days OR releasing within next 60 days
+              const isInTheaters = (daysSinceRelease >= 0 && daysSinceRelease <= 120) || (daysUntilRelease > 0 && daysUntilRelease <= 60);
+              
+              return isInTheaters;
             } catch (e) {
               return false;
             }
           };
 
+          // Detect if this is a specific movie title query vs general movie search
+          // Specific queries: contain numbers, specific title words, or have exact title match in first result
+          const isSpecificMovieQuery = (() => {
+            // Check if query contains numbers (sequels, years) - likely specific
+            if (/\d+/.test(movieQuery)) return true;
+            
+            // Check if first result has very high relevance (exact or near-exact title match)
+            if (filteredResults.length > 0) {
+              const firstMovie = filteredResults[0];
+              const queryWords = movieQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              const titleWords = (firstMovie.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              
+              // Count matching words between query and title
+              const matchingWords = queryWords.filter(qw => titleWords.some(tw => tw.includes(qw) || qw.includes(tw)));
+              const matchRatio = queryWords.length > 0 ? matchingWords.length / queryWords.length : 0;
+              
+              // If >70% of query words match the title, it's likely a specific query
+              if (matchRatio >= 0.7) return true;
+              
+              // If query is short (1-3 words) and not generic terms, likely specific
+              const genericTerms = ['movie', 'film', 'movies', 'films', 'best', 'top', 'popular', 'new', 'latest'];
+              const hasGenericTerm = queryWords.some(qw => genericTerms.includes(qw));
+              if (queryWords.length <= 3 && !hasGenericTerm) return true;
+            }
+            
+            return false;
+          })();
+          
+          // For specific movie queries, return only the top 1 result (most relevant)
+          // For general queries, return up to 12 results
+          const maxResults = isSpecificMovieQuery ? 1 : 12;
+          
+          if (isSpecificMovieQuery) {
+            console.log(`🎯 Specific movie query detected: "${movieQuery}" → Returning top 1 result only`);
+          } else {
+            console.log(`🎯 General movie query detected: "${movieQuery}" → Returning up to ${maxResults} results`);
+          }
+          
           // Transform TMDB results to card format
-          results = filteredResults.slice(0, 12).map((movie: any) => {
+          results = filteredResults.slice(0, maxResults).map((movie: any) => {
             // Check if movie is in theaters
-            const isInTheaters = useTimeBasedFallback
-              ? isMovieInTheatersByDate(movie.release_date)
-              : nowPlayingMovieIds.has(movie.id);
+            // Use BOTH checks: TMDB "now playing" list OR time-based check
+            // This ensures movies in theaters are detected even if they're not in TMDB's "now playing" list
+            const isInTheatersByList = !useTimeBasedFallback && nowPlayingMovieIds.has(movie.id);
+            const isInTheatersByDate = isMovieInTheatersByDate(movie.release_date);
+            const isInTheaters = isInTheatersByList || isInTheatersByDate;
+            
+            // Debug logging for in-theaters detection
+            if (movie.title && movie.release_date) {
+              console.log(`🎬 "${movie.title}" (${movie.release_date}): inList=${isInTheatersByList}, byDate=${isInTheatersByDate}, final=${isInTheaters}`);
+            }
+            
+            // Build images array: poster + backdrop (if available)
+            const images: string[] = [];
+            if (movie.poster_path) {
+              images.push(`https://image.tmdb.org/t/p/w500${movie.poster_path}`);
+            }
+            if (movie.backdrop_path) {
+              images.push(`https://image.tmdb.org/t/p/w1280${movie.backdrop_path}`);
+            }
             
             return {
               title: movie.title,
               description: movie.overview || "",
-              image: movie.poster_path 
-                ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` 
-                : null,
+              image: images[0] || null, // Primary image (poster) for backward compatibility
+              images: images.length > 0 ? images : undefined, // Multiple images for carousel
+              poster: images[0] || null, // Alias for image
               rating: movie.vote_average ? `${movie.vote_average.toFixed(1)}/10` : null,
               releaseDate: movie.release_date || null,
               id: movie.id,
@@ -1173,6 +1462,17 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
           console.log(`✅ Places search (default): ${results.length} places found for query: "${cleanQuery}"`);
         }
         break;
+      }
+      
+      // ✅ ANSWER-FIRST: Enforce card budget from answer plan
+      if (results.length > answerPlan.maxCards && answerPlan.maxCards > 0) {
+        console.log(`🧠 Trimming results from ${results.length} to ${answerPlan.maxCards} (answer plan budget)`);
+        results = results.slice(0, answerPlan.maxCards);
+      }
+    } else {
+      // ✅ ANSWER-FIRST: No cards needed, results stay empty
+      console.log(`🧠 Answer plan says no cards needed, skipping card fetching`);
+      results = [];
     }
                
     // Use routing result for response metadata
@@ -1200,6 +1500,7 @@ async function handleRequest(req: Request, res: Response): Promise<void> {
         price: routing.price,
         city: routing.city,
       },
+      answerPlan: answerPlan, // ✅ ANSWER-FIRST: Pass answer plan
     }).catch((e: any) => {
       console.error("❌ Follow-up generation error:", e.message || e);
       return {

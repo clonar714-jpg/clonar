@@ -85,6 +85,18 @@ export function filterOutIrrelevantCards(intent, cards, secondaryIntents) {
                 card.source?.includes("place") ||
                 card.source?.includes("tripadvisor"));
         }
+        else if (lowerIntent === "movies") {
+            // Movie cards should have movie-related fields
+            isRelevant = !!(card.title ||
+                card.name ||
+                card.description ||
+                card.rating ||
+                card.releaseDate ||
+                card.id ||
+                card.source?.includes("TMDB") ||
+                card.source?.includes("movie") ||
+                card.isInTheaters !== undefined);
+        }
         else {
             // For other intents, accept any card with basic info
             isRelevant = !!(card.title || card.name || card.description);

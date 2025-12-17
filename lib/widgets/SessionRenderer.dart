@@ -8,12 +8,13 @@ import '../models/Product.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../providers/follow_up_engine_provider.dart';
-import '../providers/session_history_provider.dart';
 import '../widgets/StreamingTextWidget.dart';
 import '../widgets/HotelMapView.dart';
 import '../screens/FullScreenMapScreen.dart';
 import '../screens/HotelResultsScreen.dart';
 import '../screens/ShoppingGridScreen.dart';
+import '../screens/MovieDetailScreen.dart';
+import '../services/AgentService.dart';
 
 class SessionRenderModel {
   final QuerySession session;
@@ -66,8 +67,9 @@ class _SessionContentRenderer extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          // ✅ FIX 3: Add horizontal padding to query text (16px like description/images)
           Padding(
-            padding: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: Text(
               session.query,
               style: const TextStyle(
@@ -142,27 +144,52 @@ class _SessionContentRenderer extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildTags(session, ref),
+                  _buildTags(context, session, ref),
+                  // ✅ FIX: Add spacing between tags and content (16px for movies, hotels)
+                  if (session.resultType == 'movies' || session.resultType == 'hotel' || session.resultType == 'hotels')
+                    const SizedBox(height: 16),
                   // ✅ FIX 2: Add spacing between tags and map for hotels
                   if (session.resultType == 'hotel' || session.resultType == 'hotels')
-                    ...(_buildHotelMap(session) != null ? [const SizedBox(height: 16), _buildHotelMap(session)!] : []),
-                  // ✅ Perplexity-style: Query overview/description (contextual, informative, sets expectations)
-                  if (session.summary != null && session.summary!.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-                      child: StreamingTextWidget(
-                        targetText: session.summary ?? "",
-                        enableAnimation: false,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          color: AppColors.textPrimary,
-                          height: 1.65, // ✅ Perplexity: Slightly more line spacing for readability
-                          letterSpacing: -0.1, // ✅ Perplexity: Tighter letter spacing
-                          fontWeight: FontWeight.w400, // ✅ Perplexity: Normal weight (not bold)
+                    ...(_buildHotelMap(session) != null ? [_buildHotelMap(session)!] : []),
+                  // ✅ For movies: Show summary AFTER cards, not before
+                  if (session.resultType != 'movies')
+                    if (session.summary != null && session.summary!.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Overview',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            StreamingTextWidget(
+                              targetText: session.summary ?? "",
+                              enableAnimation: false,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                color: AppColors.textPrimary,
+                                height: 1.65, // ✅ Perplexity: Slightly more line spacing for readability
+                                letterSpacing: -0.1, // ✅ Perplexity: Tighter letter spacing
+                                fontWeight: FontWeight.w400, // ✅ Perplexity: Normal weight (not bold)
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                  _buildIntentBasedContent(context, session, ref),
+                  // ✅ For movies: Show Core Details and Box Office sections ONLY for specific queries (1 movie)
+                  // For general queries (multiple movies), these sections are not shown in SessionRenderer
+                  if (session.resultType == 'movies' && session.cards.length == 1)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: _MovieDetailsSections(movies: session.cards),
                     ),
-                  _buildIntentBasedContent(session, ref),
                   if ((session.resultType == 'places' || session.resultType == 'location' || session.resultType == 'movies' || session.resultType == 'shopping'))
                     _buildFollowUps(session, ref),
                   const SizedBox(height: 40),
@@ -175,7 +202,7 @@ class _SessionContentRenderer extends ConsumerWidget {
     );
   }
   
-  Widget _buildTags(QuerySession session, WidgetRef ref) {
+  Widget _buildTags(BuildContext context, QuerySession session, WidgetRef ref) {
     final tags = <Widget>[
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -200,10 +227,19 @@ class _SessionContentRenderer extends ConsumerWidget {
       tags.add(_buildPaidExperienceTag());
     }
     
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: tags,
+    // ✅ FIX: Add movie-specific tags (Showtimes, Cast & Crew, Trailers, Reviews)
+    if (session.resultType == 'movies' && session.cards.isNotEmpty) {
+      tags.addAll(_buildMovieTags(context, session, ref));
+    }
+    
+    // ✅ FIX 3: Add horizontal padding to tags (16px like description/images)
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: tags,
+      ),
     );
   }
   
@@ -273,17 +309,17 @@ class _SessionContentRenderer extends ConsumerWidget {
             ),
           );
         } else if (intent == 'shopping') {
-          // Navigate to ShoppingGridScreen with all products
-          final allProducts = <Product>[];
-          final sessions = ref.read(sessionHistoryProvider);
-          for (final s in sessions) {
-            allProducts.addAll(s.products);
-          }
-          if (allProducts.isNotEmpty) {
+          // ✅ FIX: Each session is isolated - only show products from THIS specific query
+          // Example: "new balance shoes" query → only new balance shoes
+          //          "nike running shoes" query → only nike shoes (not new balance + nike)
+          // Each QuerySession has its own cards array, so session.products only contains
+          // products from this specific query, not from other queries in the conversation
+          final sessionProducts = session.products;
+          if (sessionProducts.isNotEmpty) {
             Navigator.push(
               model.context,
               MaterialPageRoute(
-                builder: (context) => ShoppingGridScreen(products: allProducts),
+                builder: (context) => ShoppingGridScreen(products: sessionProducts),
               ),
             );
           } else {
@@ -424,7 +460,7 @@ class _SessionContentRenderer extends ConsumerWidget {
     );
   }
   
-  Widget _buildIntentBasedContent(QuerySession session, WidgetRef ref) {
+  Widget _buildIntentBasedContent(BuildContext context, QuerySession session, WidgetRef ref) {
     final intent = session.resultType;
     
     if (intent == 'shopping' && session.products.isNotEmpty) {
@@ -458,7 +494,7 @@ class _SessionContentRenderer extends ConsumerWidget {
       return _buildPlacesContent(session, ref);
     } else if (intent == 'movies') {
       // ✅ FIX 4: Relaxed - removed isEmpty check temporarily
-      return _buildMoviesContent(session, ref);
+      return _buildMoviesContent(context, session, ref);
     }
     
     return const SizedBox.shrink();
@@ -602,28 +638,18 @@ class _SessionContentRenderer extends ConsumerWidget {
     );
   }
   
-  Widget _buildMoviesContent(QuerySession session, WidgetRef ref) {
-    const maxVisible = 6;
-    final movies = session.cards.take(maxVisible).toList();
+  Widget _buildMoviesContent(BuildContext context, QuerySession session, WidgetRef ref) {
+    // Show all movies (no limit)
+    final movies = session.cards;
+    final totalMovies = movies.length;
     
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ...movies.map((movie) => RepaintBoundary(
           key: ValueKey('movie-${movie['id']}'),
-          child: _buildMovieCard(movie),
+          child: _buildMovieCard(context, movie, totalMovies),
         )),
-        if (session.cards.length > movies.length)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              '+${session.cards.length - movies.length} more movies',
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ),
       ],
     );
   }
@@ -713,210 +739,488 @@ class _SessionContentRenderer extends ConsumerWidget {
   }
   
   Widget _buildHotelCard(Map<String, dynamic> hotel) {
-    final name = hotel['name']?.toString() ?? 'Unknown Hotel';
-    final rating = _safeNumber(hotel['rating'], 0.0);
-    final price = _safeNumber(hotel['price'], 0.0);
-    final description = hotel['description']?.toString() ?? hotel['summary']?.toString() ?? '';
-    
-    // ✅ FIX: Properly extract images from various formats (string, List<string>, List<Map>)
-    final List<String> images = [];
-    final imagesData = hotel['images'];
-    if (imagesData != null) {
-      if (imagesData is List) {
-        for (final img in imagesData) {
-          if (img is String && img.isNotEmpty) {
-            images.add(img);
-          } else if (img is Map) {
-            // Try multiple fields: thumbnail, original_image, image, url
-            final thumbnail = img['thumbnail']?.toString();
-            final original = img['original_image']?.toString();
-            final image = img['image']?.toString();
-            final url = img['url']?.toString();
-            final urlToAdd = thumbnail ?? original ?? image ?? url;
-            if (urlToAdd != null && urlToAdd.isNotEmpty) {
-              images.add(urlToAdd);
-            }
-          }
-        }
-      } else if (imagesData is String && imagesData.isNotEmpty) {
-        images.add(imagesData);
+    return _HotelCardWidget(hotel: hotel, onTap: () => model.onHotelTap(hotel));
+  }
+  
+  // Build movie card with navigation
+  Widget _buildMovieCard(BuildContext context, Map<String, dynamic> movie, int totalMovies) {
+    final title = movie['title']?.toString() ?? 'Unknown Movie';
+    // Extract rating - handle both string format "7.5/10" and number format
+    final ratingValue = movie['rating'];
+    String rating = '';
+    if (ratingValue != null) {
+      if (ratingValue is String && ratingValue.isNotEmpty && ratingValue != 'null') {
+        rating = ratingValue;
+      } else if (ratingValue is num && ratingValue > 0) {
+        rating = '${ratingValue.toStringAsFixed(1)}/10';
+      } else if (ratingValue.toString().isNotEmpty && ratingValue.toString() != 'null') {
+        rating = ratingValue.toString();
       }
     }
+    final image = movie['poster']?.toString() ?? movie['image']?.toString() ?? '';
+    final releaseDate = movie['releaseDate']?.toString() ?? '';
+    final description = movie['description']?.toString() ?? '';
+    final movieId = movie['id'] as int? ?? 0;
     
-    // Fallback to thumbnail if no images found
-    if (images.isEmpty) {
-      final thumbnail = hotel['thumbnail']?.toString();
-      if (thumbnail != null && thumbnail.isNotEmpty) {
-        images.add(thumbnail);
+    // Extract multiple images if available
+    final List<String> images = [];
+    // Check for images array first (new format with multiple images)
+    if (movie['images'] != null) {
+      if (movie['images'] is List) {
+        for (var img in movie['images'] as List) {
+          final imgUrl = img.toString();
+          if (imgUrl.isNotEmpty && !images.contains(imgUrl)) {
+            images.add(imgUrl);
+          }
+        }
       }
+    }
+    // Fallback to single image if no images array
+    if (images.isEmpty && image.isNotEmpty) {
+      images.add(image);
     }
     
     return GestureDetector(
-      onTap: () => model.onHotelTap(hotel),
+      onTap: () {
+        if (movieId > 0) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (ctx) => MovieDetailScreen(
+                movieId: movieId,
+                movieTitle: title,
+              ),
+            ),
+          );
+        }
+      },
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        padding: const EdgeInsets.only(bottom: 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              name,
-              style: AppTypography.title1.copyWith(
-                fontWeight: FontWeight.bold,
-                fontSize: 20,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                if (rating > 0) ...[
-                  const Icon(Icons.star, color: Colors.amber, size: 18),
-                  const SizedBox(width: 4),
-                  Text(
-                    rating.toStringAsFixed(1),
-                    style: AppTypography.body1.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                const Spacer(),
-                if (price > 0)
-                  Text(
-                    '\$${price.toStringAsFixed(0)}',
-                    style: AppTypography.title1.copyWith(
-                      color: AppColors.accent,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-              ],
-            ),
-            if (images.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 160,
-                child: images.length == 1
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: CachedNetworkImage(
-                          imageUrl: images[0],
-                          fit: BoxFit.cover,
-                          placeholder: (context, url) => Container(
-                            color: Colors.grey.shade200,
-                            child: const Center(
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          ),
-                          errorWidget: (context, url, error) => Container(
-                            color: Colors.grey.shade200,
-                            child: const Icon(Icons.image_not_supported, color: Colors.grey),
+            // Movie poster(s) - horizontal scrolling if multiple
+            if (images.isNotEmpty)
+              images.length == 1
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: CachedNetworkImage(
+                        imageUrl: images[0],
+                        width: double.infinity,
+                        height: 200,
+                        fit: BoxFit.cover,
+                        placeholder: (context, url) => Container(
+                          height: 200,
+                          color: AppColors.surfaceVariant,
+                          child: const Center(
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         ),
-                      )
-                    : PageView.builder(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: images.length,
-                        itemBuilder: (context, index) {
-                          return Padding(
-                            padding: EdgeInsets.only(right: index < images.length - 1 ? 8 : 0),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: CachedNetworkImage(
-                                imageUrl: images[index],
-                                fit: BoxFit.cover,
-                                placeholder: (context, url) => Container(
-                                  color: Colors.grey.shade200,
-                                  child: const Center(
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  ),
-                                ),
-                                errorWidget: (context, url, error) => Container(
-                                  color: Colors.grey.shade200,
-                                  child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
+                        errorWidget: (context, url, error) => Container(
+                          height: 200,
+                          color: AppColors.surfaceVariant,
+                          child: const Icon(Icons.movie, size: 64, color: AppColors.textSecondary),
+                        ),
                       ),
-              ),
-              // Image indicator dots if more than 1 image
-              if (images.length > 1) ...[
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    images.length,
-                    (index) => Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: index == 0 ? AppColors.accent : Colors.grey.shade400,
+                    )
+                  : _MoviePosterCarousel(images: images),
+            // ✅ TMDB Rating after poster
+            if (rating.isNotEmpty && rating != 'null') ...[
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    const Icon(Icons.star, size: 18, color: Colors.amber),
+                    const SizedBox(width: 6),
+                    Text(
+                      rating,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
                       ),
                     ),
-                  ),
-                ),
-              ],
-            ] else ...[
-              // Show placeholder if no images
-              const SizedBox(height: 12),
-              Container(
-                height: 160,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Center(
-                  child: Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'TMDB',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
-            // ✅ FIX: Add action buttons (Website, Call, Directions) before description
-            const SizedBox(height: 12),
-            Row(
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Title
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  // Release date
+                  if (releaseDate.isNotEmpty)
+                    Text(
+                      releaseDate,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  // ✅ For general queries (multiple movies): Show plot/description
+                  // For specific queries (1 movie), plot is shown in Core Details as "Storyline"
+                  if (description.isNotEmpty && totalMovies > 1) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      description,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textPrimary,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // Movie poster carousel widget (for multiple images)
+  Widget _MoviePosterCarousel({required List<String> images}) {
+    return _MoviePosterCarouselWidget(images: images);
+  }
+  
+  // Build movie-specific tags (Showtimes, Cast & Crew, Trailers, Reviews)
+  List<Widget> _buildMovieTags(BuildContext context, QuerySession session, WidgetRef ref) {
+    if (session.cards.isEmpty) return [];
+    
+    final firstMovie = session.cards[0];
+    final movieId = firstMovie['id'] as int? ?? 0;
+    final movieTitle = firstMovie['title']?.toString();
+    final isInTheaters = firstMovie['isInTheaters'] == true;
+    
+    final tags = <Widget>[];
+    
+    // Showtimes tag - only show if movie is currently in theaters
+    if (isInTheaters && movieId > 0) {
+      tags.add(
+        GestureDetector(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (ctx) => MovieDetailScreen(
+                  movieId: movieId,
+                  movieTitle: movieTitle,
+                  initialTabIndex: 2, // Showtimes tab
+                  isInTheaters: isInTheaters, // Pass isInTheaters flag to ensure Showtimes tab is visible
+                ),
+              ),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: _buildHotelActionButton(
-                    'Website',
-                    Icons.language,
-                    () => _openHotelWebsite(hotel),
-                    enabled: _hasHotelWebsite(hotel),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _buildHotelActionButton(
-                    'Call',
-                    Icons.phone,
-                    () => _callHotel(hotel),
-                    enabled: _hasHotelPhone(hotel),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _buildHotelActionButton(
-                    'Directions',
-                    Icons.directions,
-                    () => _openHotelDirections(hotel),
-                    enabled: _hasHotelLocation(hotel),
+                Icon(Icons.schedule, size: 14, color: AppColors.textPrimary),
+                SizedBox(width: 4),
+                Text(
+                  'Showtimes',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
                   ),
                 ),
               ],
             ),
-            // ✅ FIX 1: Hotel description - same styling as products (no maxLines, full description)
-            if (description.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Text(
-                description,
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: AppColors.textSecondary,
-                  height: 1.5,
+          ),
+        ),
+      );
+    }
+    
+    // Cast & Crew tag
+    if (movieId > 0) {
+      tags.add(
+        GestureDetector(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (ctx) => MovieDetailScreen(
+                  movieId: movieId,
+                  movieTitle: movieTitle,
+                  initialTabIndex: 1, // Cast tab
                 ),
-                // ✅ FIX 1: Remove maxLines to match products (show full description)
               ),
-            ],
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.people, size: 14, color: AppColors.textPrimary),
+                SizedBox(width: 4),
+                Text(
+                  'Cast & Crew',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // Trailers & Clips tag
+    if (movieId > 0) {
+      tags.add(
+        GestureDetector(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (ctx) => MovieDetailScreen(
+                  movieId: movieId,
+                  movieTitle: movieTitle,
+                  initialTabIndex: 3, // Trailers tab
+                ),
+              ),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.play_circle_outline, size: 14, color: AppColors.textPrimary),
+                SizedBox(width: 4),
+                Text(
+                  'Trailers & Clips',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // Reviews tag
+    if (movieId > 0) {
+      tags.add(
+        GestureDetector(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (ctx) => MovieDetailScreen(
+                  movieId: movieId,
+                  movieTitle: movieTitle,
+                  initialTabIndex: 4, // Reviews tab
+                ),
+              ),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.star_outline, size: 14, color: AppColors.textPrimary),
+                SizedBox(width: 4),
+                Text(
+                  'Reviews',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    
+    return tags;
+  }
+  
+  Future<void> _openHotelWebsite(BuildContext context, Map<String, dynamic> hotel) async {
+    final link = hotel['link']?.toString() ?? hotel['website']?.toString() ?? hotel['url']?.toString() ?? '';
+    if (link.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Website not available')),
+      );
+      return;
+    }
+    
+    try {
+      final uri = Uri.parse(link.startsWith('http') ? link : 'https://$link');
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot open website')),
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Error opening website: $e');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error opening website')),
+      );
+    }
+  }
+  
+  Future<void> _callHotel(BuildContext context, Map<String, dynamic> hotel) async {
+    final phone = hotel['phone']?.toString() ?? hotel['phone_number']?.toString() ?? '';
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Phone number not available')),
+      );
+      return;
+    }
+    
+    try {
+      // Clean phone number (remove spaces, dashes, etc.)
+      final cleanPhone = phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+      final uri = Uri.parse('tel:$cleanPhone');
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot make phone call')),
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Error calling hotel: $e');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error making phone call')),
+      );
+    }
+  }
+  
+  Future<void> _openHotelDirections(BuildContext context, Map<String, dynamic> hotel) async {
+    final address = hotel['address']?.toString() ?? hotel['location']?.toString() ?? '';
+    final lat = hotel['latitude'] ?? hotel['lat'];
+    final lng = hotel['longitude'] ?? hotel['lng'];
+    
+    Uri? mapsUri;
+    
+    // Prefer coordinates if available
+    if (lat != null && lng != null) {
+      final latValue = lat is double ? lat : double.tryParse(lat.toString()) ?? 0.0;
+      final lngValue = lng is double ? lng : double.tryParse(lng.toString()) ?? 0.0;
+      if (latValue != 0.0 && lngValue != 0.0) {
+        mapsUri = Uri.parse('https://www.google.com/maps/search/?api=1&query=$latValue,$lngValue');
+      }
+    }
+    
+    // Fallback to address if no coordinates
+    if (mapsUri == null && address.isNotEmpty) {
+      mapsUri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}');
+    }
+    
+    if (mapsUri == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location not available')),
+      );
+      return;
+    }
+    
+    try {
+      if (await canLaunchUrl(mapsUri)) {
+        await launchUrl(mapsUri, mode: LaunchMode.externalApplication);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot open directions')),
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Error opening directions: $e');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error opening directions')),
+      );
+    }
+  }
+  
+  Widget _buildHotelActionButton(String label, IconData icon, VoidCallback onTap, {required bool enabled}) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        decoration: BoxDecoration(
+          color: enabled ? AppColors.surfaceVariant : Colors.grey.shade300,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: enabled ? AppColors.accent.withOpacity(0.3) : Colors.grey.shade400,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: enabled ? AppColors.accent : Colors.grey.shade600,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: enabled ? AppColors.textPrimary : Colors.grey.shade600,
+              ),
+            ),
           ],
         ),
       ),
@@ -924,207 +1228,7 @@ class _SessionContentRenderer extends ConsumerWidget {
   }
   
   Widget _buildPlaceCard(Map<String, dynamic> place) {
-    final name = place['name']?.toString() ?? place['title']?.toString() ?? 'Unknown Place';
-    final description = place['description']?.toString() ?? place['summary']?.toString() ?? '';
-    final rating = _safeNumber(place['rating'], 0.0);
-    
-    // ✅ FIX: Properly extract and deduplicate place images (remove duplicates)
-    final List<String> images = [];
-    final Set<String> seenUrls = {}; // Track seen URLs to prevent duplicates
-    
-    // First, collect all possible image sources
-    final imagesList = place['images'] as List?;
-    final singleImage = place['image']?.toString() ?? 
-                        place['thumbnail']?.toString() ?? 
-                        place['photo']?.toString();
-    
-    // Extract from images array if available (deduplicate as we go)
-    if (imagesList != null && imagesList.isNotEmpty) {
-      for (final img in imagesList) {
-        final imgUrl = img?.toString().trim() ?? '';
-        if (imgUrl.isNotEmpty && !seenUrls.contains(imgUrl)) {
-          images.add(imgUrl);
-          seenUrls.add(imgUrl);
-        }
-      }
-    }
-    
-    // Add single image field if not already in the list (avoid duplicate of first image)
-    if (singleImage != null && singleImage.isNotEmpty) {
-      final trimmedSingleImage = singleImage.trim();
-      if (!seenUrls.contains(trimmedSingleImage)) {
-        images.insert(0, trimmedSingleImage); // Add at beginning as primary image
-        seenUrls.add(trimmedSingleImage);
-      }
-    }
-    
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ✅ FIX 3: Show place images with horizontal scrolling (like hotels)
-          if (images.isNotEmpty)
-            SizedBox(
-              height: 160,
-              child: images.length == 1
-                  ? ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: CachedNetworkImage(
-                        imageUrl: images[0],
-                        height: 160,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                        placeholder: (context, url) => Container(
-                          height: 160,
-                          color: Colors.grey.shade200,
-                          child: const Center(
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        ),
-                        errorWidget: (context, url, error) => Container(
-                          height: 160,
-                          color: Colors.grey.shade200,
-                          child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                        ),
-                      ),
-                    )
-                  : PageView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: images.length,
-                      itemBuilder: (context, index) {
-                        return Padding(
-                          padding: EdgeInsets.only(right: index < images.length - 1 ? 8 : 0),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: CachedNetworkImage(
-                              imageUrl: images[index],
-                              fit: BoxFit.cover,
-                              placeholder: (context, url) => Container(
-                                color: Colors.grey.shade200,
-                                child: const Center(
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              ),
-                              errorWidget: (context, url, error) => Container(
-                                color: Colors.grey.shade200,
-                                child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          if (images.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            // Image indicator dots if more than 1 image
-            if (images.length > 1)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  images.length,
-                  (index) => Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: index == 0 ? AppColors.accent : Colors.grey.shade400,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-          Text(
-            name,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          if (rating > 0) ...[
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                const Icon(Icons.star, color: Colors.amber, size: 16),
-                const SizedBox(width: 4),
-                Text(
-                  rating.toStringAsFixed(1),
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-              ],
-            ),
-          ],
-          // ✅ FIX 1: Place description - same styling as products (no maxLines, full description)
-          if (description.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              description,
-              style: const TextStyle(
-                fontSize: 14,
-                color: AppColors.textSecondary,
-                height: 1.5,
-              ),
-              // ✅ FIX 1: Remove maxLines to match products (show full description)
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-  
-  Widget _buildMovieCard(Map<String, dynamic> movie) {
-    final title = movie['title']?.toString() ?? 'Unknown Movie';
-    final poster = movie['poster']?.toString() ?? movie['image']?.toString();
-    
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        children: [
-          if (poster != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: CachedNetworkImage(
-                imageUrl: poster,
-                width: 80,
-                height: 120,
-                fit: BoxFit.cover,
-                placeholder: (context, url) => Container(
-                  width: 80,
-                  height: 120,
-                  color: Colors.grey.shade200,
-                  child: const Center(
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-                errorWidget: (context, url, error) => Container(
-                  width: 80,
-                  height: 120,
-                  color: Colors.grey.shade200,
-                  child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                ),
-              ),
-            ),
-          if (poster != null) const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+    return _PlaceCardWidget(place: place);
   }
   
   Widget _buildViewAllHotelsButton(String query) {
@@ -1224,42 +1328,23 @@ class _SessionContentRenderer extends ConsumerWidget {
                 color: AppColors.border,
                 width: 0.8,
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 2,
-                  offset: const Offset(0, 1),
-                ),
-              ],
             ),
             child: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceVariant,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Icon(
-                    Icons.chevron_left,
-                    size: 14,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     suggestion,
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
+                    style: const TextStyle(
                       fontSize: 15,
-                      height: 1.5,
                       fontWeight: FontWeight.w500,
-                      letterSpacing: -0.2,
+                      color: AppColors.textPrimary,
                     ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
+                ),
+                const Icon(
+                  Icons.arrow_forward_ios,
+                  size: 14,
+                  color: AppColors.textSecondary,
                 ),
               ],
             ),
@@ -1268,168 +1353,328 @@ class _SessionContentRenderer extends ConsumerWidget {
       ),
     );
   }
+}
+
+// ✅ FIX 1: StatefulWidget for HotelCard to manage PageController
+class _HotelCardWidget extends StatefulWidget {
+  final Map<String, dynamic> hotel;
+  final VoidCallback onTap;
   
-  double _safeNumber(dynamic value, double fallback) {
-    if (value == null) return fallback;
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    final str = value.toString().trim();
-    if (str.isEmpty) return fallback;
-    return double.tryParse(str) ?? fallback;
+  const _HotelCardWidget({required this.hotel, required this.onTap});
+  
+  @override
+  State<_HotelCardWidget> createState() => _HotelCardWidgetState();
+}
+
+class _HotelCardWidgetState extends State<_HotelCardWidget> {
+  late PageController _pageController;
+  int _currentPageIndex = 0;
+  
+  @override
+  void initState() {
+    super.initState();
+    final images = _extractImages(widget.hotel);
+    if (images.length > 1) {
+      _pageController = PageController();
+      _pageController.addListener(_onPageChanged);
+    }
   }
   
-  // ✅ FIX: Helper methods for hotel action buttons
+  @override
+  void dispose() {
+    final images = _extractImages(widget.hotel);
+    if (images.length > 1) {
+      _pageController.removeListener(_onPageChanged);
+      _pageController.dispose();
+    }
+    super.dispose();
+  }
+  
+  void _onPageChanged() {
+    if (_pageController.hasClients) {
+      final newIndex = _pageController.page?.round() ?? 0;
+      if (newIndex != _currentPageIndex) {
+        setState(() {
+          _currentPageIndex = newIndex;
+        });
+      }
+    }
+  }
+  
+  List<String> _extractImages(Map<String, dynamic> hotel) {
+    final List<String> images = [];
+    final imagesData = hotel['images'];
+    if (imagesData != null) {
+      if (imagesData is List) {
+        for (final img in imagesData) {
+          if (img is String && img.isNotEmpty) {
+            images.add(img);
+          } else if (img is Map) {
+            final thumbnail = img['thumbnail']?.toString();
+            final original = img['original_image']?.toString();
+            final image = img['image']?.toString();
+            final url = img['url']?.toString();
+            final urlToAdd = thumbnail ?? original ?? image ?? url;
+            if (urlToAdd != null && urlToAdd.isNotEmpty) {
+              images.add(urlToAdd);
+            }
+          }
+        }
+      } else if (imagesData is String && imagesData.isNotEmpty) {
+        images.add(imagesData);
+      }
+    }
+    if (images.isEmpty) {
+      final thumbnail = hotel['thumbnail']?.toString();
+      if (thumbnail != null && thumbnail.isNotEmpty) {
+        images.add(thumbnail);
+      }
+    }
+    return images;
+  }
+  
+  double _safeNumber(dynamic value, double defaultValue) {
+    if (value == null) return defaultValue;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString()) ?? defaultValue;
+  }
+  
   bool _hasHotelWebsite(Map<String, dynamic> hotel) {
-    final link = hotel['link']?.toString() ?? hotel['website']?.toString() ?? hotel['url']?.toString() ?? '';
-    return link.isNotEmpty && (link.startsWith('http://') || link.startsWith('https://'));
+    return (hotel['website']?.toString() ?? hotel['url']?.toString() ?? '').isNotEmpty;
   }
   
   bool _hasHotelPhone(Map<String, dynamic> hotel) {
-    final phone = hotel['phone']?.toString() ?? hotel['phone_number']?.toString() ?? '';
-    return phone.isNotEmpty;
+    return (hotel['phone']?.toString() ?? hotel['phone_number']?.toString() ?? '').isNotEmpty;
   }
   
   bool _hasHotelLocation(Map<String, dynamic> hotel) {
-    final address = hotel['address']?.toString() ?? hotel['location']?.toString() ?? '';
-    final lat = hotel['latitude'] ?? hotel['lat'];
-    final lng = hotel['longitude'] ?? hotel['lng'];
-    return address.isNotEmpty || (lat != null && lng != null);
+    final lat = hotel['latitude'] ?? hotel['lat'] ?? hotel['gps_coordinates']?['latitude'];
+    final lng = hotel['longitude'] ?? hotel['lng'] ?? hotel['gps_coordinates']?['longitude'];
+    return lat != null && lng != null;
   }
   
-  Future<void> _openHotelWebsite(Map<String, dynamic> hotel) async {
-    final link = hotel['link']?.toString() ?? hotel['website']?.toString() ?? hotel['url']?.toString() ?? '';
-    if (link.isEmpty) {
-      ScaffoldMessenger.of(model.context).showSnackBar(
-        const SnackBar(content: Text('Website not available')),
-      );
-      return;
-    }
-    
-    try {
-      final uri = Uri.parse(link.startsWith('http') ? link : 'https://$link');
+  void _openHotelWebsite(Map<String, dynamic> hotel) async {
+    final url = hotel['website']?.toString() ?? hotel['url']?.toString();
+    if (url != null && url.isNotEmpty) {
+      final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        ScaffoldMessenger.of(model.context).showSnackBar(
-          const SnackBar(content: Text('Cannot open website')),
-        );
       }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ Error opening website: $e');
-      }
-      ScaffoldMessenger.of(model.context).showSnackBar(
-        const SnackBar(content: Text('Error opening website')),
-      );
     }
   }
   
-  Future<void> _callHotel(Map<String, dynamic> hotel) async {
-    final phone = hotel['phone']?.toString() ?? hotel['phone_number']?.toString() ?? '';
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(model.context).showSnackBar(
-        const SnackBar(content: Text('Phone number not available')),
-      );
-      return;
-    }
-    
-    try {
-      // Clean phone number (remove spaces, dashes, etc.)
-      final cleanPhone = phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
-      final uri = Uri.parse('tel:$cleanPhone');
+  void _callHotel(Map<String, dynamic> hotel) async {
+    final phone = hotel['phone']?.toString() ?? hotel['phone_number']?.toString();
+    if (phone != null && phone.isNotEmpty) {
+      final uri = Uri.parse('tel:$phone');
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri);
-      } else {
-        ScaffoldMessenger.of(model.context).showSnackBar(
-          const SnackBar(content: Text('Cannot make phone call')),
-        );
       }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ Error calling hotel: $e');
-      }
-      ScaffoldMessenger.of(model.context).showSnackBar(
-        const SnackBar(content: Text('Error making phone call')),
-      );
     }
   }
   
-  Future<void> _openHotelDirections(Map<String, dynamic> hotel) async {
-    final address = hotel['address']?.toString() ?? hotel['location']?.toString() ?? '';
-    final lat = hotel['latitude'] ?? hotel['lat'];
-    final lng = hotel['longitude'] ?? hotel['lng'];
-    
-    Uri? mapsUri;
-    
-    // Prefer coordinates if available
+  void _openHotelDirections(Map<String, dynamic> hotel) async {
+    final lat = hotel['latitude'] ?? hotel['lat'] ?? hotel['gps_coordinates']?['latitude'];
+    final lng = hotel['longitude'] ?? hotel['lng'] ?? hotel['gps_coordinates']?['longitude'];
     if (lat != null && lng != null) {
-      final latValue = lat is double ? lat : double.tryParse(lat.toString()) ?? 0.0;
-      final lngValue = lng is double ? lng : double.tryParse(lng.toString()) ?? 0.0;
-      if (latValue != 0.0 && lngValue != 0.0) {
-        mapsUri = Uri.parse('https://www.google.com/maps/search/?api=1&query=$latValue,$lngValue');
+      final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lng');
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
-    }
-    
-    // Fallback to address if no coordinates
-    if (mapsUri == null && address.isNotEmpty) {
-      mapsUri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}');
-    }
-    
-    if (mapsUri == null) {
-      ScaffoldMessenger.of(model.context).showSnackBar(
-        const SnackBar(content: Text('Location not available')),
-      );
-      return;
-    }
-    
-    try {
-      if (await canLaunchUrl(mapsUri)) {
-        await launchUrl(mapsUri, mode: LaunchMode.externalApplication);
-      } else {
-        ScaffoldMessenger.of(model.context).showSnackBar(
-          const SnackBar(content: Text('Cannot open directions')),
-        );
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ Error opening directions: $e');
-      }
-      ScaffoldMessenger.of(model.context).showSnackBar(
-        const SnackBar(content: Text('Error opening directions')),
-      );
     }
   }
   
-  Widget _buildHotelActionButton(String label, IconData icon, VoidCallback onTap, {required bool enabled}) {
+  Widget _buildHotelActionButton(String label, IconData icon, VoidCallback onPressed, {required bool enabled}) {
+    return ElevatedButton(
+      onPressed: enabled ? onPressed : null,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: enabled ? AppColors.primary : Colors.grey.shade300,
+        foregroundColor: enabled ? Colors.white : Colors.grey.shade600,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 16),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 13)),
+        ],
+      ),
+    );
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.hotel['name']?.toString() ?? 'Unknown Hotel';
+    final rating = _safeNumber(widget.hotel['rating'], 0.0);
+    final price = _safeNumber(widget.hotel['price'], 0.0);
+    final description = widget.hotel['description']?.toString() ?? widget.hotel['summary']?.toString() ?? '';
+    final images = _extractImages(widget.hotel);
+    
     return GestureDetector(
-      onTap: enabled ? onTap : null,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        decoration: BoxDecoration(
-          color: enabled ? AppColors.surfaceVariant : Colors.grey.shade300,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: enabled ? AppColors.accent.withOpacity(0.3) : Colors.grey.shade400,
-            width: 1,
-          ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+      onTap: widget.onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              icon,
-              size: 16,
-              color: enabled ? AppColors.accent : Colors.grey.shade600,
-            ),
-            const SizedBox(width: 6),
             Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: enabled ? AppColors.textPrimary : Colors.grey.shade600,
+              name,
+              style: AppTypography.title1.copyWith(
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
               ),
             ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (rating > 0) ...[
+                  const Icon(Icons.star, color: Colors.amber, size: 18),
+                  const SizedBox(width: 4),
+                  Text(
+                    rating.toStringAsFixed(1),
+                    style: AppTypography.body1.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                const Spacer(),
+                if (price > 0)
+                  Text(
+                    '\$${price.toStringAsFixed(0)}',
+                    style: AppTypography.title1.copyWith(
+                      color: AppColors.accent,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+              ],
+            ),
+            if (images.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 160,
+                child: images.length == 1
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: CachedNetworkImage(
+                          imageUrl: images[0],
+                          fit: BoxFit.cover,
+                          placeholder: (context, url) => Container(
+                            color: Colors.grey.shade200,
+                            child: const Center(
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                          errorWidget: (context, url, error) => Container(
+                            color: Colors.grey.shade200,
+                            child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                          ),
+                        ),
+                      )
+                    : PageView.builder(
+                        controller: _pageController,
+                        scrollDirection: Axis.horizontal,
+                        itemCount: images.length,
+                        itemBuilder: (context, index) {
+                          return Padding(
+                            padding: EdgeInsets.only(right: index < images.length - 1 ? 8 : 0),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: CachedNetworkImage(
+                                imageUrl: images[index],
+                                fit: BoxFit.cover,
+                                placeholder: (context, url) => Container(
+                                  color: Colors.grey.shade200,
+                                  child: const Center(
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  ),
+                                ),
+                                errorWidget: (context, url, error) => Container(
+                                  color: Colors.grey.shade200,
+                                  child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              // ✅ FIX 1: Image indicator dots update based on current page
+              if (images.length > 1) ...[
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    images.length,
+                    (index) => Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: index == _currentPageIndex ? AppColors.accent : Colors.grey.shade400,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ] else ...[
+              const SizedBox(height: 12),
+              Container(
+                height: 160,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade200,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Center(
+                  child: Icon(Icons.image_not_supported, color: Colors.grey, size: 48),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildHotelActionButton(
+                    'Website',
+                    Icons.language,
+                    () => _openHotelWebsite(widget.hotel),
+                    enabled: _hasHotelWebsite(widget.hotel),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildHotelActionButton(
+                    'Call',
+                    Icons.phone,
+                    () => _callHotel(widget.hotel),
+                    enabled: _hasHotelPhone(widget.hotel),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildHotelActionButton(
+                    'Directions',
+                    Icons.directions,
+                    () => _openHotelDirections(widget.hotel),
+                    enabled: _hasHotelLocation(widget.hotel),
+                  ),
+                ),
+              ],
+            ),
+            if (description.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                description,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: AppColors.textSecondary,
+                  height: 1.5,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -1437,3 +1682,629 @@ class _SessionContentRenderer extends ConsumerWidget {
   }
 }
 
+// ✅ FIX 1 & 2: StatefulWidget for PlaceCard to manage PageController and fix layout order
+class _PlaceCardWidget extends StatefulWidget {
+  final Map<String, dynamic> place;
+  
+  const _PlaceCardWidget({required this.place});
+  
+  @override
+  State<_PlaceCardWidget> createState() => _PlaceCardWidgetState();
+}
+
+class _PlaceCardWidgetState extends State<_PlaceCardWidget> {
+  late PageController _pageController;
+  int _currentPageIndex = 0;
+  
+  @override
+  void initState() {
+    super.initState();
+    final images = _extractImages(widget.place);
+    if (images.length > 1) {
+      _pageController = PageController();
+      _pageController.addListener(_onPageChanged);
+    }
+  }
+  
+  @override
+  void dispose() {
+    final images = _extractImages(widget.place);
+    if (images.length > 1) {
+      _pageController.removeListener(_onPageChanged);
+      _pageController.dispose();
+    }
+    super.dispose();
+  }
+  
+  void _onPageChanged() {
+    if (_pageController.hasClients) {
+      final newIndex = _pageController.page?.round() ?? 0;
+      if (newIndex != _currentPageIndex) {
+        setState(() {
+          _currentPageIndex = newIndex;
+        });
+      }
+    }
+  }
+  
+  List<String> _extractImages(Map<String, dynamic> place) {
+    final List<String> images = [];
+    final Set<String> seenUrls = {};
+    
+    final imagesList = place['images'] as List?;
+    final singleImage = place['image']?.toString() ?? 
+                        place['thumbnail']?.toString() ?? 
+                        place['photo']?.toString();
+    
+    if (imagesList != null && imagesList.isNotEmpty) {
+      for (final img in imagesList) {
+        final imgUrl = img?.toString().trim() ?? '';
+        if (imgUrl.isNotEmpty && !seenUrls.contains(imgUrl)) {
+          images.add(imgUrl);
+          seenUrls.add(imgUrl);
+        }
+      }
+    }
+    
+    if (singleImage != null && singleImage.isNotEmpty) {
+      final trimmedSingleImage = singleImage.trim();
+      if (!seenUrls.contains(trimmedSingleImage)) {
+        images.insert(0, trimmedSingleImage);
+        seenUrls.add(trimmedSingleImage);
+      }
+    }
+    
+    return images;
+  }
+  
+  double _safeNumber(dynamic value, double defaultValue) {
+    if (value == null) return defaultValue;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString()) ?? defaultValue;
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.place['name']?.toString() ?? widget.place['title']?.toString() ?? 'Unknown Place';
+    final description = widget.place['description']?.toString() ?? widget.place['summary']?.toString() ?? '';
+    final rating = _safeNumber(widget.place['rating'], 0.0);
+    final images = _extractImages(widget.place);
+    
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ✅ FIX 2: Place name and rating BEFORE images
+          Text(
+            name,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          if (rating > 0) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                const Icon(Icons.star, color: Colors.amber, size: 16),
+                const SizedBox(width: 4),
+                Text(
+                  rating.toStringAsFixed(1),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+          // ✅ FIX 2: Images AFTER name and rating
+          if (images.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 160,
+              child: images.length == 1
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: CachedNetworkImage(
+                        imageUrl: images[0],
+                        height: 160,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        placeholder: (context, url) => Container(
+                          height: 160,
+                          color: Colors.grey.shade200,
+                          child: const Center(
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ),
+                        errorWidget: (context, url, error) => Container(
+                          height: 160,
+                          color: Colors.grey.shade200,
+                          child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                        ),
+                      ),
+                    )
+                  : PageView.builder(
+                      controller: _pageController,
+                      scrollDirection: Axis.horizontal,
+                      itemCount: images.length,
+                      itemBuilder: (context, index) {
+                        return Padding(
+                          padding: EdgeInsets.only(right: index < images.length - 1 ? 8 : 0),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: CachedNetworkImage(
+                              imageUrl: images[index],
+                              fit: BoxFit.cover,
+                              placeholder: (context, url) => Container(
+                                color: Colors.grey.shade200,
+                                child: const Center(
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              ),
+                              errorWidget: (context, url, error) => Container(
+                                color: Colors.grey.shade200,
+                                child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            // ✅ FIX 1: Image indicator dots update based on current page
+            if (images.length > 1) ...[
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  images.length,
+                  (index) => Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: index == _currentPageIndex ? AppColors.accent : Colors.grey.shade400,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+          // ✅ FIX 2: Description AFTER images
+          if (description.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              description,
+              style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.textSecondary,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// Movie poster carousel StatefulWidget
+class _MoviePosterCarouselWidget extends StatefulWidget {
+  final List<String> images;
+  
+  const _MoviePosterCarouselWidget({required this.images});
+  
+  @override
+  State<_MoviePosterCarouselWidget> createState() => _MoviePosterCarouselWidgetState();
+}
+
+class _MoviePosterCarouselWidgetState extends State<_MoviePosterCarouselWidget> {
+  late PageController _pageController;
+  int _currentIndex = 0;
+  
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+  }
+  
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        SizedBox(
+          height: 200,
+          child: PageView.builder(
+            controller: _pageController,
+            scrollDirection: Axis.horizontal,
+            itemCount: widget.images.length,
+            onPageChanged: (index) {
+              setState(() {
+                _currentIndex = index;
+              });
+            },
+            itemBuilder: (context, index) {
+              return Padding(
+                padding: EdgeInsets.only(right: index < widget.images.length - 1 ? 8 : 0),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: CachedNetworkImage(
+                    imageUrl: widget.images[index],
+                    fit: BoxFit.cover,
+                    placeholder: (context, url) => Container(
+                      color: AppColors.surfaceVariant,
+                      child: const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                    errorWidget: (context, url, error) => Container(
+                      color: AppColors.surfaceVariant,
+                      child: const Icon(Icons.movie, size: 64, color: AppColors.textSecondary),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        if (widget.images.length > 1) ...[
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(
+              widget.images.length,
+              (index) => Container(
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: index == _currentIndex ? AppColors.accent : Colors.grey.shade400,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// Widget to display Core Details and Box Office sections for movies
+class _MovieDetailsSections extends StatefulWidget {
+  final List<Map<String, dynamic>> movies;
+
+  const _MovieDetailsSections({required this.movies});
+
+  @override
+  State<_MovieDetailsSections> createState() => _MovieDetailsSectionsState();
+}
+
+class _MovieDetailsSectionsState extends State<_MovieDetailsSections> {
+  Map<String, dynamic>? _movieDetails;
+  Map<String, dynamic>? _credits;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMovieDetails();
+  }
+
+  Future<void> _loadMovieDetails() async {
+    if (widget.movies.isEmpty) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+
+    final firstMovie = widget.movies[0];
+    final movieId = firstMovie['id'] as int? ?? 0;
+
+    if (movieId == 0) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+
+    try {
+      final details = await AgentService.getMovieDetails(movieId);
+      final credits = await AgentService.getMovieCredits(movieId);
+      
+      if (mounted) {
+        setState(() {
+          _movieDetails = details;
+          _credits = credits;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Error loading movie details: $e');
+      }
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  String _formatRuntime(int? minutes) {
+    if (minutes == null) return '';
+    final hours = minutes ~/ 60;
+    final mins = minutes % 60;
+    if (hours > 0 && mins > 0) {
+      return '$hours hours $mins minutes';
+    } else if (hours > 0) {
+      return '$hours hours';
+    } else if (mins > 0) {
+      return '$mins minutes';
+    }
+    return '';
+  }
+
+  Widget _buildCoreDetailsSection() {
+    final crew = _credits?['crew'] as List? ?? [];
+    final cast = _credits?['cast'] as List? ?? [];
+    final movieDetails = _movieDetails ?? {};
+    
+    // Extract director
+    final director = crew.firstWhere(
+      (c) => c['job'] == 'Director',
+      orElse: () => null,
+    );
+    
+    // Extract composer
+    final composer = crew.firstWhere(
+      (c) => c['job'] == 'Original Music Composer' || c['job'] == 'Music',
+      orElse: () => null,
+    );
+    
+    // Extract top cast (starring)
+    final topCast = cast.take(3).toList();
+    
+    // Extract runtime
+    final runtime = _formatRuntime(movieDetails['runtime'] as int?);
+    
+    // Extract storyline (overview)
+    final storyline = movieDetails['overview']?.toString() ?? '';
+    
+    if (director == null && topCast.isEmpty && runtime.isEmpty && storyline.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Core Details',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (director != null) ...[
+          _buildDetailRow('Director', '${director['name']?.toString() ?? 'Unknown'}.'),
+          const SizedBox(height: 12),
+        ],
+        if (topCast.isNotEmpty) ...[
+          _buildDetailRow(
+            'Starring',
+            topCast.asMap().entries.map((entry) {
+              final index = entry.key;
+              final actor = entry.value;
+              final name = actor['name']?.toString() ?? 'Unknown';
+              final character = actor['character']?.toString();
+              if (character != null && character.isNotEmpty) {
+                return '$name (as $character)';
+              }
+              if (index == topCast.length - 1 && topCast.length > 1) {
+                return 'and $name';
+              }
+              return name;
+            }).join(', '),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (storyline.isNotEmpty) ...[
+          _buildDetailRow('Storyline', '"$storyline"'),
+          const SizedBox(height: 12),
+        ],
+        if (composer != null) ...[
+          _buildDetailRow('Music', 'Composed by ${composer['name']?.toString() ?? 'Unknown'}.'),
+          const SizedBox(height: 12),
+        ],
+        if (runtime.isNotEmpty) ...[
+          _buildDetailRow('Running Time', 'Approximately $runtime.'),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return RichText(
+      text: TextSpan(
+        style: const TextStyle(
+          fontSize: 15,
+          color: AppColors.textPrimary,
+          height: 1.5,
+        ),
+        children: [
+          TextSpan(
+            text: '$label: ',
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          TextSpan(
+            text: value,
+            style: const TextStyle(
+              fontWeight: FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBoxOfficeSection() {
+    final movieDetails = _movieDetails ?? {};
+    final budget = movieDetails['budget'] as int?;
+    final revenue = movieDetails['revenue'] as int?;
+    final rating = (movieDetails['vote_average'] as num?)?.toDouble() ?? 0.0;
+    final voteCount = movieDetails['vote_count'] as int? ?? 0;
+    
+    // Format currency
+    String formatCurrency(int? amount) {
+      if (amount == null || amount == 0) return '';
+      if (amount >= 1000000000) {
+        return '\$${(amount / 1000000000).toStringAsFixed(2)}B';
+      } else if (amount >= 1000000) {
+        return '\$${(amount / 1000000).toStringAsFixed(2)}M';
+      } else if (amount >= 1000) {
+        return '\$${(amount / 1000).toStringAsFixed(2)}K';
+      }
+      return '\$$amount';
+    }
+    
+    final budgetFormatted = formatCurrency(budget);
+    final revenueFormatted = formatCurrency(revenue);
+    
+    // Generate box office content
+    final List<String> boxOfficeItems = [];
+    
+    if (budgetFormatted.isNotEmpty || revenueFormatted.isNotEmpty) {
+      if (budgetFormatted.isNotEmpty && revenueFormatted.isNotEmpty) {
+        boxOfficeItems.add('**Opening:** The film had a production budget of $budgetFormatted and grossed $revenueFormatted worldwide.');
+      } else if (budgetFormatted.isNotEmpty) {
+        boxOfficeItems.add('**Opening:** The film had a production budget of $budgetFormatted.');
+      } else if (revenueFormatted.isNotEmpty) {
+        boxOfficeItems.add('**Opening:** The film grossed $revenueFormatted worldwide.');
+      }
+    }
+    
+    if (revenueFormatted.isNotEmpty && budgetFormatted.isNotEmpty && budget != null && budget > 0) {
+      final profit = revenue! - budget;
+      final profitFormatted = formatCurrency(profit);
+      if (profit > 0) {
+        boxOfficeItems.add('**Weekend Performance:** The film generated a profit of $profitFormatted.');
+      }
+    }
+    
+    if (rating > 0 && voteCount > 0) {
+      final ratingText = rating >= 7.0 
+          ? 'positive' 
+          : rating >= 5.0 
+              ? 'mixed' 
+              : 'negative';
+      boxOfficeItems.add('**Critical Response:** The film has received $ratingText reviews, with an average rating of ${rating.toStringAsFixed(1)}/10 based on ${voteCount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')} votes.');
+    }
+    
+    if (boxOfficeItems.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 32),
+        const Text(
+          'Box Office & Reception',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...boxOfficeItems.map((item) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _buildBoxOfficeItem(item),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildBoxOfficeItem(String text) {
+    // Parse format: "**Label:** content"
+    final match = RegExp(r'\*\*(.+?):\*\*\s*(.+)').firstMatch(text);
+    if (match != null) {
+      final label = match.group(1) ?? '';
+      final content = match.group(2) ?? '';
+      return RichText(
+        text: TextSpan(
+          style: const TextStyle(
+            fontSize: 15,
+            color: AppColors.textPrimary,
+            height: 1.5,
+          ),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            TextSpan(
+              text: content,
+              style: const TextStyle(
+                fontWeight: FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    // Fallback if format doesn't match
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 15,
+        color: AppColors.textPrimary,
+        height: 1.5,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const SizedBox(
+        height: 100,
+        child: Center(
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+
+    if (_movieDetails == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildCoreDetailsSection(),
+        _buildBoxOfficeSection(),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+}

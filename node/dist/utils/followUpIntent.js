@@ -115,7 +115,7 @@ export async function detectFollowUpIntent(newQuery, previousIntent, lastAnswer,
     newQuery = newQuery.toLowerCase().trim();
     // 🧠 C9.2 — Check session memory FIRST
     if (sessionId) {
-        const session = getSession(sessionId);
+        const session = await getSession(sessionId).catch(() => null);
         // If strong domain already active → inherit it for weak queries
         if (session && session.domain !== "general") {
             if (queryIsWeak(newQuery)) {
@@ -201,7 +201,7 @@ export async function detectFollowUpIntent(newQuery, previousIntent, lastAnswer,
     }
     // 🧠 C9.2 — Fallback to session memory if available
     if (sessionId) {
-        const session = getSession(sessionId);
+        const session = await getSession(sessionId).catch(() => null);
         if (session && session.domain !== "general") {
             console.log(`🧠 Memory-aware: Falling back to session domain "${session.domain}"`);
             return session.domain;

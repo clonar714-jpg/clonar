@@ -8,7 +8,7 @@ import { llmRewrite } from "./llmRewrite";
  */
 export async function refineQuery(query, sessionId) {
     // 1. Build memory-enhanced query
-    const memoryQ = buildRefinedQuery(query, sessionId);
+    const memoryQ = await buildRefinedQuery(query, sessionId);
     // 2. LLM rewrite for clarity/completeness
     try {
         const rewritten = await llmRewrite(memoryQ);

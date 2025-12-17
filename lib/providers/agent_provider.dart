@@ -8,7 +8,6 @@ import '../isolates/text_parsing_isolate.dart'; // ✅ FIX 2
 import '../services/AgentService.dart';
 import 'session_history_provider.dart';
 import 'streaming_text_provider.dart';
-import 'scroll_provider.dart';
 
 enum AgentState { idle, loading, streaming, completed, error }
 
@@ -373,8 +372,7 @@ class AgentController extends StateNotifier<void> {
       
       print("🔥 Agent state set to completed - UI should rebuild now");
 
-      // ✅ PHASE 7: Trigger scroll to bottom when streaming finishes
-      ref.read(scrollProvider.notifier).scrollToBottom();
+      // ✅ FIX: Removed auto-scroll to bottom - user should see query at top and swipe up to see results
 
       if (kDebugMode) {
         debugPrint('✅ Agent query completed: $query');
@@ -524,7 +522,7 @@ class AgentController extends StateNotifier<void> {
               
               ref.read(sessionHistoryProvider.notifier).replaceLastSession(completeSession);
               ref.read(agentStateProvider.notifier).state = AgentState.completed;
-              ref.read(scrollProvider.notifier).scrollToBottom();
+              // ✅ FIX: Removed auto-scroll to bottom - user should see query at top and swipe up to see results
               
               if (kDebugMode) {
                 debugPrint('✅ Received cards (complete update)');

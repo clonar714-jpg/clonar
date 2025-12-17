@@ -83,17 +83,21 @@ async function gracefulShutdown(reason) {
 }
 /**
  * ✅ PHASE 10: Request timeout middleware
+ * ✅ FIX: Increased timeout for agent routes (places queries can take 20-30s)
  */
 export function requestTimeout(timeoutMs = 15000) {
     return (req, res, next) => {
+        // ✅ FIX: Agent routes need longer timeout (places queries take 20-30s)
+        const isAgentRoute = req.path === '/api/agent' || req.originalUrl?.includes('/api/agent');
+        const effectiveTimeout = isAgentRoute ? 60000 : timeoutMs; // 60s for agent, 15s for others
         const timeout = setTimeout(() => {
             if (!res.headersSent) {
                 res.status(408).json({
                     error: 'Request timeout',
-                    message: `Request exceeded ${timeoutMs}ms timeout`,
+                    message: `Request exceeded ${effectiveTimeout}ms timeout`,
                 });
             }
-        }, timeoutMs);
+        }, effectiveTimeout);
         // Clear timeout when response is sent
         res.on('finish', () => {
             clearTimeout(timeout);

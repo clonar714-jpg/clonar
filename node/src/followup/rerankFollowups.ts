@@ -4,28 +4,38 @@ import { getEmbedding, cosine } from "../embeddings/embeddingClient";
 /**
  * 🟦 C10.4 — EMBEDDING RERANKING OF FOLLOW-UPS (Perplexity secret)
  * After generating potential follow-ups, we rerank them using embeddings for relevance
+ * ✅ UPGRADE: Multi-context embedding reranking (query + answer + recent follow-ups)
  */
 export async function rerankFollowUps(
   query: string,
   candidates: string[],
-  topN: number = 5
-): Promise<string[]> {
+  topN: number = 5,
+  answerSummary?: string,
+  recentFollowups: string[] = []
+): Promise<Array<{ candidate: string; score: number }>> {
   if (!candidates || candidates.length === 0) return [];
 
-  // If we have few candidates, return them all
+  // If we have few candidates, return them all with default scores
   if (candidates.length <= topN) {
-    return candidates;
+    return candidates.map((c) => ({ candidate: c, score: 0.5 }));
   }
 
   try {
-    // ✅ FIX: Get query embedding once with retry logic
-    let qEmb;
+    // ✅ UPGRADE: Build multi-context string for embedding
+    const rerankContext = `
+Query: ${query}
+Answer: ${answerSummary ?? ""}
+Recent followups: ${recentFollowups.join(" | ")}
+`.trim();
+
+    // ✅ FIX: Get context embedding once with retry logic
+    let contextEmb;
     try {
-      qEmb = await getEmbedding(query);
+      contextEmb = await getEmbedding(rerankContext);
     } catch (err: any) {
-      console.error("❌ Failed to get query embedding:", err.message);
+      console.error("❌ Failed to get context embedding:", err.message);
       // Fallback: return first N candidates without reranking
-      return candidates.slice(0, topN);
+      return candidates.slice(0, topN).map((c) => ({ candidate: c, score: 0.5 }));
     }
 
     // ✅ FIX: Score candidates with error handling and rate limit protection
@@ -44,7 +54,7 @@ export async function rerankFollowUps(
 
           try {
             const candidateEmb = await getEmbedding(candidate);
-            const similarity = cosine(qEmb, candidateEmb);
+            const similarity = cosine(contextEmb, candidateEmb);
             return { candidate, score: similarity };
           } catch (err: any) {
             console.warn(`⚠️ Failed to get embedding for candidate "${candidate.substring(0, 30)}...":`, err.message);
@@ -68,20 +78,19 @@ export async function rerankFollowUps(
       }
     }
 
-    // Sort by score (highest first) and return top N
+    // Sort by score (highest first) and return top N with scores
     const ranked = scored
       .filter((item) => item.score >= 0) // Remove invalid candidates
       .sort((a, b) => b.score - a.score)
-      .slice(0, topN)
-      .map((x) => x.candidate);
+      .slice(0, topN);
 
-    console.log(`🎯 Reranked ${candidates.length} follow-ups → top ${ranked.length} (scores: ${scored.slice(0, topN).map(s => s.score.toFixed(3)).join(", ")})`);
+    console.log(`🎯 Reranked ${candidates.length} follow-ups → top ${ranked.length} (scores: ${ranked.map(s => s.score.toFixed(3)).join(", ")})`);
 
     return ranked;
   } catch (err: any) {
     console.error("❌ Follow-up reranking error:", err.message);
-    // Fallback: return first N candidates
-    return candidates.slice(0, topN);
+    // Fallback: return first N candidates with default scores
+    return candidates.slice(0, topN).map((c) => ({ candidate: c, score: 0.5 }));
   }
 }
 

@@ -64,8 +64,8 @@ class FollowUpController extends StateNotifier<void> {
         debugPrint('✅ Follow-up query submitted successfully');
       }
 
-      // ✅ PHASE 7: Trigger scroll to bottom via scroll provider
-      ref.read(scrollProvider.notifier).scrollToBottom();
+      // ✅ FIX: Scroll to top to show new query (user can swipe up to see results)
+      ref.read(scrollProvider.notifier).scrollToTop();
 
     } catch (e, st) {
       if (kDebugMode) {

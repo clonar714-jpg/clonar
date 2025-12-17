@@ -2,13 +2,18 @@
 // FOLLOW-UP ENGINE WRAPPER (ENTRY POINT)
 // 🟦 C10.5 — LLM NORMALIZATION (Perplexity polish)
 // ==================================================================
-import { initialBehaviorState, updateBehaviorState, } from "./behaviorTracker";
+import { initialBehaviorState, updateBehaviorState, inferUserGoal, } from "./behaviorTracker";
 import { generateSmartFollowUps } from "./smartFollowups";
 import { analyzeCardNeed } from "./cardAnalyzer";
 import { TEMPLATES } from "./templates";
 import { fillSlots } from "./slotFiller";
 import { extractAttributes } from "./attributeExtractor";
 import { rerankFollowUps } from "./rerankFollowups";
+import { inferIntentStage } from "./intentStage";
+import { detectAnswerCoverage } from "./answerCoverage";
+import { scoreFollowup } from "./followupScorer";
+import { noveltyScore } from "./novelty";
+import { extractAnswerGaps } from "./answerGapExtractor";
 // To store lightweight session-based behavior states
 // (Per session, not long-term user memory)
 const behaviorStore = new Map();
@@ -31,7 +36,7 @@ function setBehaviorState(sessionId, state) {
 // MAIN FUNCTION CALLED BY THE AGENT ROUTE
 // ==================================================================
 export async function getFollowUpSuggestions(params) {
-    const { query, answer, intent, lastFollowUp, parentQuery, cards = [], routingSlots } = params;
+    const { query, answer, intent, lastFollowUp, parentQuery, cards = [], routingSlots, answerPlan } = params;
     const sessionId = getSessionId(params.sessionId);
     // Load behavior state for this session
     const prevState = getBehaviorState(sessionId);
@@ -93,11 +98,49 @@ export async function getFollowUpSuggestions(params) {
     else if (attrs.style === "premium") {
         combined.push("Is there a better budget option?");
     }
-    // Step 5: Embedding-based reranking (C10.4)
-    const ranked = await rerankFollowUps(query, combined, 5);
+    // ✅ UPGRADE: Get follow-up history from behavior state
+    const recentFollowups = prevState.followUpHistory || [];
+    // ✅ UPGRADE: Infer intent stage
+    const intentStage = inferIntentStage(query, recentFollowups);
+    // ✅ UPGRADE: Detect answer coverage (what was already answered)
+    const answerCoverage = detectAnswerCoverage(answer);
+    // ✅ ANSWER-FIRST: Extract reasoning gaps from answer
+    const answerGaps = await extractAnswerGaps(query, answer, cards);
+    console.log(`🧠 Answer gaps extracted: ${answerGaps.potentialFollowUps.length} follow-ups from reasoning gaps`);
+    // ✅ ANSWER-FIRST: Add reasoning-based follow-ups (prioritize these)
+    if (answerGaps.potentialFollowUps.length > 0) {
+        combined.push(...answerGaps.potentialFollowUps);
+    }
+    // ✅ UPGRADE: Suppress follow-ups that cover already-answered dimensions
+    let filteredCombined = combined.filter((followup) => {
+        const lower = followup.toLowerCase();
+        // Suppress comparison follow-ups if answer already covers comparison
+        if (answerCoverage.comparison && /compare|vs|versus|alternative/i.test(lower)) {
+            return false;
+        }
+        // Suppress price follow-ups if answer already covers price
+        if (answerCoverage.price && /under|\$|price|cost|budget|cheap/i.test(lower)) {
+            return false;
+        }
+        // Suppress durability follow-ups if answer already covers durability
+        if (answerCoverage.durability && /durable|long-term|quality|last/i.test(lower)) {
+            return false;
+        }
+        // Suppress use case follow-ups if answer already covers use case
+        if (answerCoverage.useCase && /for running|for travel|for work|use case|purpose/i.test(lower)) {
+            return false;
+        }
+        return true;
+    });
+    // Step 5: Embedding-based reranking with multi-context (C10.4 + UPGRADE)
+    const answerSummary = answer.length > 200 ? answer.substring(0, 200) + "..." : answer;
+    const rankedWithScores = await rerankFollowUps(query, filteredCombined, 5, answerSummary, recentFollowups);
     // Fallback to smart follow-ups if we don't have enough ranked suggestions
-    let finalFollowUps = ranked;
-    if (ranked.length < 3) {
+    let allCandidates = rankedWithScores.map((r) => ({
+        candidate: r.candidate,
+        embeddingScore: r.score,
+    }));
+    if (rankedWithScores.length < 3) {
         console.log("⚠️ Few ranked follow-ups, using smart follow-ups as fallback");
         const smartFollowUps = await generateSmartFollowUps({
             query,
@@ -111,11 +154,82 @@ export async function getFollowUpSuggestions(params) {
             parentQuery: parentQuery || null,
             cards: cards || [],
         });
-        // Merge and deduplicate
-        const allFollowUps = [...ranked, ...smartFollowUps];
-        const unique = Array.from(new Set(allFollowUps));
-        finalFollowUps = unique.slice(0, 5);
+        // Merge and deduplicate, assign default embedding scores
+        const existingCandidates = new Set(rankedWithScores.map((r) => r.candidate.toLowerCase()));
+        const newSmartFollowUps = smartFollowUps
+            .filter((s) => !existingCandidates.has(s.toLowerCase()))
+            .map((candidate) => ({ candidate, embeddingScore: 0.5 }));
+        allCandidates = [...allCandidates, ...newSmartFollowUps].slice(0, 5);
     }
+    // ✅ UPGRADE: Score each follow-up using multi-factor scoring
+    const userGoal = inferUserGoal(prevState);
+    const scoredFollowups = allCandidates.map((item) => {
+        const followup = item.candidate;
+        const lower = followup.toLowerCase();
+        // Behavior score: match user's interest pattern
+        let behaviorScore = 0.5; // default
+        if (userGoal === "comparison" && /compare|vs|versus/i.test(lower)) {
+            behaviorScore = 1.0;
+        }
+        else if (userGoal === "budget_sensitive" && /budget|cheap|under|\$/i.test(lower)) {
+            behaviorScore = 1.0;
+        }
+        else if (userGoal === "variants" && /size|color|variation/i.test(lower)) {
+            behaviorScore = 1.0;
+        }
+        else if (userGoal === "performance" && /durable|quality|long-term/i.test(lower)) {
+            behaviorScore = 1.0;
+        }
+        // Stage match: align with current intent stage
+        let stageMatch = 0.5; // default
+        if (intentStage === "compare" && /compare|vs|versus|difference/i.test(lower)) {
+            stageMatch = 1.0;
+        }
+        else if (intentStage === "narrow" && /under|only|filter|specifically/i.test(lower)) {
+            stageMatch = 1.0;
+        }
+        else if (intentStage === "act" && /buy|book|reserve|order/i.test(lower)) {
+            stageMatch = 1.0;
+        }
+        else if (intentStage === "explore" && /best|top|recommend|what/i.test(lower)) {
+            stageMatch = 1.0;
+        }
+        // Gap match: fills gaps in answer coverage
+        let gapMatch = 0.0;
+        if (!answerCoverage.comparison && /compare|vs|versus|alternative/i.test(lower)) {
+            gapMatch = 1.0;
+        }
+        else if (!answerCoverage.price && /under|\$|price|cost|budget/i.test(lower)) {
+            gapMatch = 1.0;
+        }
+        else if (!answerCoverage.durability && /durable|long-term|quality/i.test(lower)) {
+            gapMatch = 1.0;
+        }
+        else if (!answerCoverage.useCase && /for |use case|purpose|suitable/i.test(lower)) {
+            gapMatch = 1.0;
+        }
+        // Novelty score
+        const novelty = noveltyScore(followup, recentFollowups);
+        // Boost novelty if user has asked many follow-ups
+        const adjustedNovelty = recentFollowups.length >= 3 ? novelty * 1.5 : novelty;
+        // Final score
+        const finalScore = scoreFollowup({
+            embeddingScore: item.embeddingScore,
+            behaviorScore,
+            stageMatch,
+            noveltyScore: Math.min(adjustedNovelty, 1.0), // Cap at 1.0
+            gapMatch,
+        });
+        return {
+            candidate: followup,
+            score: finalScore,
+        };
+    });
+    // ✅ UPGRADE: Sort by final score and return top 3
+    const finalFollowUps = scoredFollowups
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map((item) => item.candidate);
     // Update behavior state (still track for analytics)
     const behaviorState = updateBehaviorState(prevState, {
         intent,

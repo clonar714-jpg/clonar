@@ -4,8 +4,8 @@ import { getSession } from "./sessionMemory";
  * 🧠 C9.3 — Memory-Aware Query Refinement
  * Enhances follow-up queries with context from session memory
  */
-export function refineQueryWithMemory(query, sessionId) {
-    const s = getSession(sessionId);
+export async function refineQueryWithMemory(query, sessionId) {
+    const s = await getSession(sessionId);
     if (!s)
         return query;
     let refined = query.trim();

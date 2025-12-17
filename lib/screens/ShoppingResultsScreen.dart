@@ -209,6 +209,14 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
       debugPrint('ShoppingResultsScreen query: "${widget.query}"');
     }
     
+    // ✅ FIX 4: Ensure keyboard doesn't auto-pop when navigating back
+    // Unfocus the follow-up field immediately to prevent auto-focus
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _followUpFocusNode.unfocus();
+      }
+    });
+    
     // Add scroll listener for scroll-to-bottom button
     _scrollController.addListener(_handleScroll);
     
@@ -1245,29 +1253,21 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
       }
     });
     
-    // Listen to session history changes for auto-scroll
+    // ✅ FIX: Listen to session history changes - scroll to top when new query is added
     ref.listen<List<QuerySession>>(sessionHistoryProvider, (previous, next) {
       if (!mounted) return;
       if (next.length > (previous?.length ?? 0)) {
+        // New query added - scroll to top to show the query
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
-            ref.read(scrollProvider.notifier).scrollToBottom();
+            ref.read(scrollProvider.notifier).scrollToTop();
           }
         });
       }
     });
     
-    // Listen to agent state changes for auto-scroll when streaming finishes
-    ref.listen<AgentState>(agentStateProvider, (previous, next) {
-      if (!mounted) return;
-      if (previous == AgentState.streaming && next == AgentState.completed) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            ref.read(scrollProvider.notifier).scrollToBottom();
-          }
-        });
-      }
-    });
+    // ✅ FIX: Don't auto-scroll when results arrive - keep position at top
+    // Removed auto-scroll on agent state change - user should see query at top and swipe up to see results
 
     return PopScope(
       onPopInvokedWithResult: (didPop, result) {

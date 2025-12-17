@@ -1,6 +1,5 @@
 // src/routes/agent.ts
 import express from "express";
-import { shouldFetchCards } from "../utils/semanticIntent";
 import { routeQuery } from "../followup/router";
 import { refineQuery } from "../services/llmQueryRefiner";
 // ✅ PHASE 8: Agent Intelligence Upgrade imports
@@ -33,6 +32,8 @@ import { refineQuery as refineQueryC11 } from "../refinement/refineQuery";
 import { mergeQueryWithContext } from "../followup/context";
 // ✅ Follow-up engine imports
 import { getFollowUpSuggestions } from "../followup";
+// ✅ ANSWER-FIRST ARCHITECTURE: Plan answer before intent detection
+import { planAnswer } from "../planner/answerPlanner";
 // ✅ Personalization imports
 import { extractPreferenceSignals } from "../services/personalization/preferenceExtractor";
 import { storePreferenceSignal, getUserPreferences } from "../services/personalization/preferenceStorage";
@@ -54,11 +55,6 @@ async function processQueue() {
     const next = requestQueue.shift();
     if (!next)
         return;
-    // ✅ PATCH #6: Fix queue execution when response already sent
-    if (next.res.headersSent) {
-        console.warn("⚠️ Queue: response already sent — skipping request");
-        return processQueue();
-    }
     processingCount++;
     next.resolve(); // Release the request to be processed
     // Process the request
@@ -67,21 +63,13 @@ async function processQueue() {
     }
     catch (err) {
         console.error("❌ Request processing error:", err);
-        // ✅ CRITICAL FIX: Only send error if handleRequest didn't already respond
         if (!next.res.headersSent) {
-            try {
-                next.res.status(500).json({ error: "Request processing failed", detail: err.message });
-            }
-            catch (sendErr) {
-                // If headers already sent, ignore (handleRequest's safeSend already handled it)
-                console.warn("⚠️ Could not send error response (headers already sent)");
-            }
+            next.res.status(500).json({ error: "Request processing failed", detail: err.message });
         }
     }
     finally {
-        // ✅ PATCH #7: Fix handleRequest finally block - prevent double release
-        if (processingCount > 0)
-            processingCount--;
+        processingCount--;
+        // Process next in queue
         processQueue();
     }
 }
@@ -89,24 +77,11 @@ async function processQueue() {
  * ✅ FIX: Main request handler (extracted from router.post)
  */
 async function handleRequest(req, res) {
-    // ✅ CRITICAL FIX: Prevent double response with safeSend wrapper
-    let responded = false;
-    function safeSend(status, body) {
-        if (responded || res.headersSent) {
-            console.warn(`⚠️ Blocked duplicate send`);
-            return;
-        }
-        responded = true;
-        try {
-            res.status(status).json(body);
-        }
-        catch (e) {
-            console.warn("⚠️ safeSend failed after headersSent");
-        }
-    }
     try {
         const { query, conversationHistory, stream, sessionId, conversationId, userId, lastFollowUp, parentQuery, imageUrl } = req.body;
         let cleanQuery = query?.trim();
+        // ✅ DEBUG: Log incoming request to detect duplicates
+        console.log(`📥 [${new Date().toISOString()}] Incoming agent request - Query: "${cleanQuery}", ImageUrl: ${imageUrl ? 'Yes' : 'No'}`);
         // ✅ DEBUG: Log received imageUrl
         if (imageUrl) {
             console.log(`📸 Received imageUrl in request: ${typeof imageUrl}, value: ${imageUrl?.substring?.(0, 80) || imageUrl}`);
@@ -247,8 +222,43 @@ async function handleRequest(req, res) {
             }
         }
         if (!cleanQuery || typeof cleanQuery !== "string" || cleanQuery.trim().length === 0) {
-            safeSend(400, { error: "Invalid query" });
+            res.status(400).json({ error: "Invalid query" });
             return;
+        }
+        // ✅ ANSWER-FIRST ARCHITECTURE: Plan answer BEFORE intent detection
+        const lastTurnForPlanning = conversationHistory?.length
+            ? conversationHistory[conversationHistory.length - 1]
+            : null;
+        const answerPlan = planAnswer({
+            query: cleanQuery,
+            conversationHistory: conversationHistory || [],
+            lastFollowUp: lastFollowUp || undefined,
+        });
+        console.log("🧠 Answer Plan:", {
+            userGoal: answerPlan.userGoal,
+            needsCards: answerPlan.needsCards,
+            maxCards: answerPlan.maxCards,
+            cardRole: answerPlan.cardRole,
+            ambiguity: answerPlan.ambiguity,
+        });
+        // ✅ If high ambiguity, return clarification question immediately
+        if (answerPlan.ambiguity === "high" && answerPlan.clarificationQuestion) {
+            console.log("❓ High ambiguity detected, returning clarification question");
+            return res.json({
+                summary: answerPlan.clarificationQuestion,
+                intent: "general",
+                cardType: null,
+                cards: [],
+                results: [],
+                sources: [],
+                followUpSuggestions: [],
+                confidence: {
+                    intent: 0.3,
+                    slots: 0,
+                    cards: 0,
+                    overall: 0.3,
+                },
+            });
         }
         // ✅ FIX: When image is provided, COMPLETELY CLEAR conversation history to prevent old image context
         let filteredConversationHistory = conversationHistory || [];
@@ -274,15 +284,7 @@ async function handleRequest(req, res) {
                 createdAt: Date.now(),
                 lastActivity: Date.now(),
             });
-            // ✅ PATCH #4: Fix queue & streaming freeze
-            responded = true; // prevent queue double-send
-            getAnswerStream(cleanQuery, filteredConversationHistory, res)
-                .finally(() => {
-                // streaming ends → allow queue to continue
-                processingCount--;
-                processQueue();
-            });
-            return;
+            return getAnswerStream(cleanQuery, filteredConversationHistory, res);
         }
         // 1️⃣ ALWAYS generate LLM answer (but don't block for shopping/hotels)
         // ⚡ OPTIMIZATION: Start answer generation in parallel, don't wait for shopping/hotels
@@ -303,13 +305,13 @@ async function handleRequest(req, res) {
         // 2️⃣ UNIFIED ROUTING ENGINE
         // ⚠️ CRITICAL: Route with ORIGINAL query first to get correct intent
         // DO NOT add memory/context before intent classification!
-        const lastTurn = filteredConversationHistory?.length
+        const lastTurnForRouting = filteredConversationHistory?.length
             ? filteredConversationHistory[filteredConversationHistory.length - 1]
             : null;
         // Route with original query to get correct intent classification
         const routing = await routeQuery({
             query: cleanQuery, // ✅ Use ORIGINAL query for intent classification
-            lastTurn,
+            lastTurn: lastTurnForRouting,
             llmAnswer,
         });
         console.log("🚦 Routing decision:", routing);
@@ -369,14 +371,14 @@ async function handleRequest(req, res) {
             console.log(`🖼️ ========== IMAGE SEARCH DETECTED ==========`);
             console.log(`🖼️ New image URL: ${imageUrl.substring(0, 80)}...`);
             // ✅ AGGRESSIVE FIX: Always completely DELETE session for image searches (not just reset)
-            const session = getSession(sessionIdForMemory);
+            const session = await getSession(sessionIdForMemory);
             if (session) {
                 console.log(`🧹 FORCE DELETING session: domain=${session.domain}, brand=${session.brand}, lastImageUrl=${session.lastImageUrl?.substring(0, 40) || 'none'}...`);
                 // Completely delete the session (not just reset)
-                clearSession(sessionIdForMemory);
+                await clearSession(sessionIdForMemory);
             }
             // ✅ ALWAYS create completely fresh session for image searches
-            saveSession(sessionIdForMemory, {
+            await saveSession(sessionIdForMemory, {
                 domain: "general",
                 brand: null,
                 category: null,
@@ -499,14 +501,54 @@ async function handleRequest(req, res) {
                 console.log(`📚 Extracted parent query from conversation history: "${extractedParentQuery}"`);
             }
         }
-        // 🚀 PRODUCTION-GRADE: LLM-Based Context Understanding (replaces brittle keyword matching)
-        // Similar to how ChatGPT, Perplexity, and Cursor handle context intelligently
+        // 🚀 OPTIMIZED: Rule-Based First, LLM Fallback
+        // Use high-confidence rules for common patterns, LLM for edge cases
         if (shouldEnhanceQuery && extractedParentQuery) {
             try {
+                const { extractContextWithRules, mergeQueryWithRules } = await import("../services/refinementClassifier");
+                const { getCachedContext, setCachedContext } = await import("../services/llmContextCache");
                 const { extractContextWithLLM, mergeQueryContextWithLLM } = await import("../services/llmContextExtractor");
-                // Step 1: Extract context from current query using LLM (handles all edge cases)
-                const extractedContext = await extractContextWithLLM(cleanQuery, extractedParentQuery, filteredConversationHistory);
-                // ✅ FIX: Override intent if LLM extracted a different intent (e.g., hotels vs places)
+                let extractionResult = null;
+                // Step 1: Try rule-based extraction first (fast, no LLM call)
+                const ruleResult = extractContextWithRules(cleanQuery, extractedParentQuery);
+                if (ruleResult && ruleResult.confidence >= 0.85) {
+                    // High-confidence rule match - use it directly
+                    extractionResult = {
+                        context: ruleResult.extractedContext,
+                        confidence: ruleResult.confidence,
+                        method: 'rules',
+                    };
+                    if (process.env.NODE_ENV === 'development') {
+                        console.log(`✅ Rule-based extraction (confidence: ${ruleResult.confidence.toFixed(2)}): "${cleanQuery}"`);
+                    }
+                }
+                else {
+                    // Check cache for LLM result
+                    const cached = getCachedContext(cleanQuery, extractedParentQuery, filteredConversationHistory);
+                    if (cached) {
+                        // Use cached LLM result
+                        extractionResult = {
+                            context: cached.context,
+                            confidence: cached.confidence,
+                            method: 'llm-cached',
+                        };
+                        if (process.env.NODE_ENV === 'development') {
+                            console.log(`💾 Cached LLM extraction (confidence: ${cached.confidence.toFixed(2)}): "${cleanQuery}"`);
+                        }
+                    }
+                    else {
+                        // Call LLM (cache miss or no cache)
+                        const llmResult = await extractContextWithLLM(cleanQuery, extractedParentQuery, filteredConversationHistory);
+                        extractionResult = llmResult;
+                        // Cache the result
+                        setCachedContext(cleanQuery, extractedParentQuery, filteredConversationHistory, llmResult.context, llmResult.confidence);
+                        if (process.env.NODE_ENV === 'development') {
+                            console.log(`🧠 LLM extraction (confidence: ${llmResult.confidence.toFixed(2)}, method: ${llmResult.method}): "${cleanQuery}"`);
+                        }
+                    }
+                }
+                const extractedContext = extractionResult.context;
+                // ✅ FIX: Override intent if extracted a different intent (e.g., hotels vs places)
                 // This fixes cases where "near to downtown" is misclassified as places but should be hotels
                 if (extractedContext.intent && extractedContext.intent !== finalIntent) {
                     const intentMap = {
@@ -543,15 +585,28 @@ async function handleRequest(req, res) {
                         console.log(`🧠 Updated shouldEnhanceQuery: ${shouldEnhanceQuery} (intent: ${finalIntent}, cardType: ${routing.finalCardType})`);
                     }
                 }
-                // Step 2: Intelligently merge with parent query using LLM
-                const mergedQuery = await mergeQueryContextWithLLM(cleanQuery, extractedParentQuery, extractedContext, finalIntent);
+                // Step 2: Merge query based on extraction method
+                let mergedQuery;
+                if (extractionResult.method === 'rules') {
+                    // Use rule-based merging for rule-based extraction
+                    mergedQuery = mergeQueryWithRules(cleanQuery, extractedParentQuery, extractedContext, finalIntent);
+                    if (process.env.NODE_ENV === 'development' && mergedQuery !== cleanQuery) {
+                        console.log(`✅ Rule-based merging: "${cleanQuery}" → "${mergedQuery}"`);
+                    }
+                }
+                else {
+                    // Use LLM merging for LLM extraction (cached or fresh)
+                    mergedQuery = await mergeQueryContextWithLLM(cleanQuery, extractedParentQuery, extractedContext, finalIntent);
+                    if (process.env.NODE_ENV === 'development' && mergedQuery !== cleanQuery) {
+                        console.log(`🧠 LLM merging: "${cleanQuery}" → "${mergedQuery}"`);
+                    }
+                }
                 if (mergedQuery !== cleanQuery) {
                     contextAwareQuery = mergedQuery;
                     queryForRefinement = mergedQuery;
-                    console.log(`🧠 LLM Context Merging: "${cleanQuery}" → "${mergedQuery}"`);
                 }
                 else {
-                    // LLM determined no merging needed
+                    // No merging needed
                     queryForRefinement = cleanQuery;
                 }
             }
@@ -618,429 +673,669 @@ async function handleRequest(req, res) {
         // ✅ Movies should NOT be refined with price filters - use original query
         // ✅ FIX: Use updated finalIntent/finalCardType after LLM override
         const finalCardType = routing.finalCardType; // Use updated card type from LLM override
+        // ✅ ANSWER-FIRST: Intent is domain hint only, answer plan controls card fetching
+        // If answer plan says no cards needed, skip card fetching regardless of intent
+        const shouldFetchCards = answerPlan.needsCards && finalCardType !== null;
         const refinedQuery = (shouldEnhanceQuery && finalCardType !== "movies")
             ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
             : cleanQuery; // ✅ Keep original query for answer/general/movies intents
-        switch (finalCardType) {
-            case "shopping":
-                // 1. Fetch raw results (with refined query)
-                let rawShoppingCards = await searchProducts(refinedQuery);
-                // 🧠 C11.4 — Extra search pass if zero results
-                if (rawShoppingCards.length === 0) {
-                    console.warn("⚠️ Zero results, trying refined query...");
-                    const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
-                    rawShoppingCards = await searchProducts(extraRefined);
-                }
-                // 2. Hard lexical filters
-                rawShoppingCards = applyLexicalFilters(refinedQuery, rawShoppingCards);
-                // 3. Soft attribute filters
-                rawShoppingCards = await applyAttributeFilters(refinedQuery, rawShoppingCards);
-                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
-                const category = extractCategoryFromQuery(cleanQuery, finalIntent);
-                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: "Of My Taste" - Match items to preferences using embeddings
-                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
-                    results = await matchItemsToPreferences(rawShoppingCards, userId, finalIntent, category);
-                }
-                else if (userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
-                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
-                    results = await hybridRerank(rawShoppingCards, refinedQuery, userId, finalIntent, category, 0.6, 0.4);
-                }
-                else {
-                    // Regular reranking (no preferences)
-                    results = await rerankCards(refinedQuery, rawShoppingCards, "shopping");
-                }
-                // 5. LLM-based correction to remove mismatches
-                // ⚡ Get real answer now (should be ready by this point)
-                const resolvedAnswerData = await answerPromise;
-                llmAnswer = resolvedAnswerData.summary || resolvedAnswerData.answer || cleanQuery;
-                console.log(`⏱️ LLM answer generation took: ${Date.now() - answerStartTime}ms`);
-                results = await correctCards(refinedQuery, llmAnswer, results);
-                // 6. Generate descriptions ONLY for final displayed results (after all filtering)
-                if (results.length > 0) {
-                    await enrichProductsWithDescriptions(results);
-                }
-                break;
-            case "hotel":
-                // 1. Fetch raw results (with refined query)
-                let rawHotelCards = await searchHotels(refinedQuery);
-                // 🧠 C11.4 — Extra search pass if zero results
-                if (rawHotelCards.length === 0) {
-                    console.warn("⚠️ Zero results, trying refined query...");
-                    const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
-                    rawHotelCards = await searchHotels(extraRefined);
-                }
-                // 2. Hard lexical filters (price, etc.)
-                rawHotelCards = applyLexicalFilters(refinedQuery, rawHotelCards);
-                // 2b. Location filters (downtown, airport, etc.) - NEW
-                rawHotelCards = filterHotelsByLocation(rawHotelCards, refinedQuery);
-                // 3. Soft attribute filters
-                rawHotelCards = await applyAttributeFilters(refinedQuery, rawHotelCards);
-                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
-                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: "Of My Taste" - Match hotels to preferences using embeddings
-                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
-                    results = await matchItemsToPreferences(rawHotelCards, userId, finalIntent, undefined);
-                }
-                else if (userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
-                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
-                    results = await hybridRerank(rawHotelCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
-                }
-                else {
-                    // Regular reranking (no preferences)
-                    results = await rerankCards(refinedQuery, rawHotelCards, "hotels");
-                }
-                // 5. LLM-based correction (skipped for hotels - all hotels in location are relevant)
-                results = await correctCards(refinedQuery, llmAnswer, results);
-                // 6. Generate descriptions ONLY for final displayed results (after all filtering)
-                if (results.length > 0) {
-                    results = await enrichHotelsWithThemesAndDescriptions(results);
-                }
-                break;
-            case "restaurants":
-                // 1. Fetch raw results (with refined query)
-                let rawRestaurantCards = await searchRestaurants(refinedQuery);
-                // 🧠 C11.4 — Extra search pass if zero results
-                if (rawRestaurantCards.length === 0) {
-                    console.warn("⚠️ Zero results, trying refined query...");
-                    const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
-                    rawRestaurantCards = await searchRestaurants(extraRefined);
-                }
-                // 2. Hard lexical filters
-                rawRestaurantCards = applyLexicalFilters(refinedQuery, rawRestaurantCards);
-                // 2b. Location filters (downtown, airport, etc.) - NEW
-                rawRestaurantCards = filterRestaurantsByLocation(rawRestaurantCards, refinedQuery);
-                // 3. Soft attribute filters
-                rawRestaurantCards = await applyAttributeFilters(refinedQuery, rawRestaurantCards);
-                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
-                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: "Of My Taste" - Match restaurants to preferences using embeddings
-                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
-                    results = await matchItemsToPreferences(rawRestaurantCards, userId, finalIntent, undefined);
-                }
-                else if (userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
-                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
-                    results = await hybridRerank(rawRestaurantCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
-                }
-                else {
-                    // Regular reranking (no preferences)
-                    results = await rerankCards(refinedQuery, rawRestaurantCards, "restaurants");
-                }
-                // 5. LLM-based correction
-                results = await correctCards(refinedQuery, llmAnswer, results);
-                break;
-            case "flights":
-                // 1. Fetch raw results (with refined query)
-                let rawFlightCards = await searchFlights(refinedQuery);
-                // 🧠 C11.4 — Extra search pass if zero results
-                if (rawFlightCards.length === 0) {
-                    console.warn("⚠️ Zero results, trying refined query...");
-                    const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
-                    rawFlightCards = await searchFlights(extraRefined);
-                }
-                // 2. Hard lexical filters (price, route, etc.)
-                rawFlightCards = applyLexicalFilters(refinedQuery, rawFlightCards);
-                // 3. Soft attribute filters
-                rawFlightCards = await applyAttributeFilters(refinedQuery, rawFlightCards);
-                // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
-                if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: "Of My Taste" - Match flights to preferences using embeddings
-                    console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
-                    results = await matchItemsToPreferences(rawFlightCards, userId, finalIntent, undefined);
-                }
-                else if (userId && userId !== "global" && userId !== "dev-user-id") {
-                    // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
-                    console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
-                    results = await hybridRerank(rawFlightCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
-                }
-                else {
-                    // Regular reranking (no preferences)
-                    results = await rerankCards(refinedQuery, rawFlightCards, "flights");
-                }
-                // 5. LLM-based correction
-                results = await correctCards(refinedQuery, llmAnswer, results);
-                break;
-            case "places":
-                // 🎯 Places Search Engine (LLM-powered) - Use context-aware query if available
-                try {
-                    const placesQuery = shouldEnhanceQuery ? contextAwareQuery : cleanQuery;
-                    results = await searchPlaces(placesQuery);
-                    console.log(`✅ Places search: ${results.length} places found for query: "${placesQuery}"`);
-                    // Apply location filters (downtown, airport, etc.) - NEW
-                    results = filterPlacesByLocation(results, placesQuery);
-                    // ✅ PHASE 3: Preference matching for places
-                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
-                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
-                        results = await matchItemsToPreferences(results, userId, finalIntent, undefined);
-                    }
-                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
-                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
-                        results = await hybridRerank(results, placesQuery, userId, finalIntent, undefined, 0.6, 0.4);
-                    }
-                    if (results.length > 0) {
-                        const sample = results[0];
-                        console.log(`📋 Sample result:`, {
-                            name: sample.name,
-                            location: sample.location,
-                            hasGeo: !!sample.geo,
-                            geo: sample.geo,
-                            hasImage: !!sample.image_url,
-                            image_url: sample.image_url?.substring(0, 50) + '...',
-                        });
-                    }
-                }
-                catch (err) {
-                    console.error("❌ Places search error:", err.message);
-                    results = [];
-                }
-                break;
-            case "location":
-                // 🎯 Places Search Engine (LLM-powered) - Use context-aware query if available
-                try {
-                    const locationQuery = shouldEnhanceQuery ? contextAwareQuery : cleanQuery;
-                    results = await searchPlaces(locationQuery);
-                    console.log(`✅ Location search: ${results.length} places found for query: "${locationQuery}"`);
-                    console.log(`📋 Sample result:`, results[0] || "No results");
-                    if (results.length === 0) {
-                        console.warn("⚠️ No places returned from searchPlaces for location query");
-                    }
-                }
-                catch (err) {
-                    console.error("❌ Location search error:", err.message);
-                    console.error("❌ Error stack:", err.stack);
-                    results = [];
-                }
-                break;
-            case "movies":
-                // 🎬 Movies Search using TMDB API
-                try {
-                    // Preprocess query: Remove common phrases but preserve movie titles
-                    let movieQuery = cleanQuery
-                        .replace(/showtimes?/gi, "")
-                        .replace(/tickets?/gi, "")
-                        .replace(/in\s+[A-Z][a-z\s]+/gi, "") // Remove "in [City]"
-                        .replace(/under\s+\$?\d+/gi, "") // Remove "under $200"
-                        .replace(/below\s+\$?\d+/gi, "") // Remove "below $200"
-                        .replace(/\s+/g, " ") // Normalize whitespace
-                        .trim();
-                    // Extract year from query
-                    const yearMatch = movieQuery.match(/\b(19|20)\d{2}\b/);
-                    const targetYear = yearMatch ? parseInt(yearMatch[0], 10) : null;
-                    // Remove year from query for title extraction
-                    if (targetYear) {
-                        movieQuery = movieQuery.replace(/\b(19|20)\d{2}\b/g, "").trim();
-                    }
-                    // Remove "for good" if it appears before "movie"
-                    movieQuery = movieQuery.replace(/for\s+good\s+/gi, "");
-                    // If query contains "movie" or "film", extract the title part before it
-                    if (movieQuery.toLowerCase().includes("movie") || movieQuery.toLowerCase().includes("film")) {
-                        const titleMatch = movieQuery.match(/^(.+?)\s+(?:movie|film)/i);
-                        if (titleMatch && titleMatch[1]) {
-                            movieQuery = titleMatch[1].trim();
-                        }
-                        else {
-                            movieQuery = movieQuery.replace(/\s*(?:movie|film)\s*/gi, " ").trim();
-                        }
-                    }
-                    // Final cleanup: remove any remaining common words at the end
-                    movieQuery = movieQuery.replace(/\s+(?:tickets?|showtimes?|in|near|around)\s*$/i, "").trim();
-                    console.log(`🎬 Movie search: "${cleanQuery}" → "${movieQuery}"${targetYear ? ` (Year: ${targetYear})` : ''}`);
-                    // Search TMDB
-                    let tmdbResults = await searchMovies(movieQuery);
-                    console.log(`🎬 TMDB search: ${tmdbResults.results?.length || 0} movies found`);
-                    if (!tmdbResults.results || tmdbResults.results.length === 0) {
-                        results = [];
-                        break;
-                    }
-                    // Filter by year if specified
-                    let filteredResults = [...tmdbResults.results];
-                    if (targetYear) {
-                        filteredResults = filteredResults.filter((movie) => {
-                            if (!movie.release_date)
-                                return false;
-                            const movieYear = new Date(movie.release_date).getFullYear();
-                            return movieYear === targetYear;
-                        });
-                        // If no exact year match, allow ±1 year
-                        if (filteredResults.length === 0) {
-                            filteredResults = tmdbResults.results.filter((movie) => {
-                                if (!movie.release_date)
-                                    return false;
-                                const movieYear = new Date(movie.release_date).getFullYear();
-                                return Math.abs(movieYear - targetYear) <= 1;
-                            });
-                        }
-                        console.log(`🎯 Filtered to ${filteredResults.length} movies${targetYear ? ` from ${targetYear}` : ''}`);
-                    }
-                    // Get list of movies currently playing in theaters from TMDB
-                    let nowPlayingMovieIds = new Set();
-                    let useTimeBasedFallback = false;
-                    try {
-                        const { getNowPlayingMovies } = await import("@/services/tmdbService");
-                        const nowPlaying1 = await getNowPlayingMovies(1, 'US');
-                        const nowPlaying2 = await getNowPlayingMovies(2, 'US');
-                        const allNowPlaying = [
-                            ...(nowPlaying1.results || []),
-                            ...(nowPlaying2.results || []),
-                        ];
-                        nowPlayingMovieIds = new Set(allNowPlaying.map((m) => m.id));
-                        console.log(`🎬 Found ${nowPlayingMovieIds.size} movies currently playing in theaters`);
-                    }
-                    catch (err) {
-                        console.warn("⚠️ Failed to fetch now playing movies, falling back to time-based check:", err.message);
-                        useTimeBasedFallback = true;
-                    }
-                    // Helper function for time-based fallback
-                    const isMovieInTheatersByDate = (releaseDate) => {
-                        if (!releaseDate)
-                            return false;
-                        try {
-                            const release = new Date(releaseDate);
-                            const now = new Date();
-                            const daysSinceRelease = Math.floor((now.getTime() - release.getTime()) / (1000 * 60 * 60 * 24));
-                            const daysUntilRelease = -daysSinceRelease;
-                            return (daysSinceRelease >= 0 && daysSinceRelease <= 120) || (daysUntilRelease > 0 && daysUntilRelease <= 30);
-                        }
-                        catch (e) {
-                            return false;
-                        }
-                    };
-                    // Transform TMDB results to card format
-                    results = filteredResults.slice(0, 12).map((movie) => {
-                        // Check if movie is in theaters
-                        const isInTheaters = useTimeBasedFallback
-                            ? isMovieInTheatersByDate(movie.release_date)
-                            : nowPlayingMovieIds.has(movie.id);
-                        return {
-                            title: movie.title,
-                            description: movie.overview || "",
-                            image: movie.poster_path
-                                ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
-                                : null,
-                            rating: movie.vote_average ? `${movie.vote_average.toFixed(1)}/10` : null,
-                            releaseDate: movie.release_date || null,
-                            id: movie.id,
-                            source: "TMDB",
-                            link: `https://www.themoviedb.org/movie/${movie.id}`,
-                            isInTheaters: isInTheaters,
-                        };
-                    });
-                    console.log(`✅ Movies search: ${results.length} movies found`);
-                    const inTheatersCount = results.filter((m) => m.isInTheaters).length;
-                    console.log(`🎬 ${inTheatersCount} of ${results.length} movies are currently in theaters`);
-                    // ✅ PHASE 3: Preference matching for movies
-                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
-                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
-                        results = await matchItemsToPreferences(results, userId, finalIntent, undefined);
-                    }
-                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
-                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
-                        results = await hybridRerank(results, movieQuery, userId, finalIntent, undefined, 0.6, 0.4);
-                    }
-                }
-                catch (err) {
-                    console.error("❌ Movies search error:", err.message);
-                    results = [];
-                }
-                break;
-            default:
-                // For answer/general queries, check if shouldFetchCards suggests cards
-                const cardType = await shouldFetchCards(cleanQuery, llmAnswer);
-                // ✅ Use refinedQuery only if it's a shopping/travel intent, otherwise use cleanQuery
-                const cardTypeStr = cardType || "";
-                const queryForCardSearch = (cardTypeStr === "shopping" || ["hotels", "flights", "restaurants"].includes(cardTypeStr))
-                    ? refinedQuery
-                    : cleanQuery;
-                if (cardTypeStr === "shopping") {
-                    let rawShoppingCards2 = await searchProducts(queryForCardSearch);
+        // ✅ ANSWER-FIRST: Only fetch cards if answer plan allows it
+        if (shouldFetchCards) {
+            switch (finalCardType) {
+                case "shopping":
+                    // 1. Fetch raw results (with refined query)
+                    let rawShoppingCards = await searchProducts(refinedQuery);
                     // 🧠 C11.4 — Extra search pass if zero results
-                    if (rawShoppingCards2.length === 0) {
+                    if (rawShoppingCards.length === 0) {
                         console.warn("⚠️ Zero results, trying refined query...");
-                        const extraRefined = shouldEnhanceQuery
-                            ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
-                            : cleanQuery;
-                        rawShoppingCards2 = await searchProducts(extraRefined);
-                        // Apply same filtering pipeline again
-                        rawShoppingCards2 = applyLexicalFilters(extraRefined, rawShoppingCards2);
-                        rawShoppingCards2 = await applyAttributeFilters(extraRefined, rawShoppingCards2);
+                        const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
+                        rawShoppingCards = await searchProducts(extraRefined);
                     }
-                    rawShoppingCards2 = applyLexicalFilters(queryForCardSearch, rawShoppingCards2);
-                    rawShoppingCards2 = await applyAttributeFilters(queryForCardSearch, rawShoppingCards2);
-                    results = await rerankCards(queryForCardSearch, rawShoppingCards2, "shopping");
-                    results = await correctCards(queryForCardSearch, llmAnswer, results);
-                    // Generate descriptions ONLY for final displayed results
+                    // 2. Hard lexical filters
+                    rawShoppingCards = applyLexicalFilters(refinedQuery, rawShoppingCards);
+                    // 3. Soft attribute filters
+                    rawShoppingCards = await applyAttributeFilters(refinedQuery, rawShoppingCards);
+                    // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                    const category = extractCategoryFromQuery(cleanQuery, finalIntent);
+                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: "Of My Taste" - Match items to preferences using embeddings
+                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                        results = await matchItemsToPreferences(rawShoppingCards, userId, finalIntent, category);
+                    }
+                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                        results = await hybridRerank(rawShoppingCards, refinedQuery, userId, finalIntent, category, 0.6, 0.4);
+                    }
+                    else {
+                        // Regular reranking (no preferences)
+                        results = await rerankCards(refinedQuery, rawShoppingCards, "shopping");
+                    }
+                    // 5. LLM-based correction to remove mismatches
+                    // ⚡ Get real answer now (should be ready by this point)
+                    const answerData = await answerPromise;
+                    llmAnswer = answerData.summary || answerData.answer || cleanQuery;
+                    console.log(`⏱️ LLM answer generation took: ${Date.now() - answerStartTime}ms`);
+                    results = await correctCards(refinedQuery, llmAnswer, results);
+                    // 6. Generate descriptions ONLY for final displayed results (after all filtering)
                     if (results.length > 0) {
                         await enrichProductsWithDescriptions(results);
                     }
-                }
-                else if (cardTypeStr === "hotels") {
-                    let rawHotelCards2 = await searchHotels(queryForCardSearch);
+                    break;
+                case "hotel":
+                    // 1. Fetch raw results (with refined query)
+                    let rawHotelCards = await searchHotels(refinedQuery);
                     // 🧠 C11.4 — Extra search pass if zero results
-                    if (rawHotelCards2.length === 0) {
+                    if (rawHotelCards.length === 0) {
                         console.warn("⚠️ Zero results, trying refined query...");
-                        const extraRefined = shouldEnhanceQuery
-                            ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
-                            : cleanQuery;
-                        rawHotelCards2 = await searchHotels(extraRefined);
-                        // Apply same filtering pipeline again
-                        rawHotelCards2 = applyLexicalFilters(extraRefined, rawHotelCards2);
-                        rawHotelCards2 = await applyAttributeFilters(extraRefined, rawHotelCards2);
+                        const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
+                        rawHotelCards = await searchHotels(extraRefined);
                     }
-                    rawHotelCards2 = applyLexicalFilters(queryForCardSearch, rawHotelCards2);
-                    rawHotelCards2 = filterHotelsByLocation(rawHotelCards2, queryForCardSearch);
-                    rawHotelCards2 = await applyAttributeFilters(queryForCardSearch, rawHotelCards2);
-                    results = await rerankCards(queryForCardSearch, rawHotelCards2, "hotels");
-                    results = await correctCards(queryForCardSearch, llmAnswer, results);
-                    // Generate descriptions ONLY for final displayed results
+                    // 2. Hard lexical filters (price, etc.)
+                    rawHotelCards = applyLexicalFilters(refinedQuery, rawHotelCards);
+                    // 2b. Location filters (downtown, airport, etc.) - NEW
+                    rawHotelCards = filterHotelsByLocation(rawHotelCards, refinedQuery);
+                    // 3. Soft attribute filters
+                    rawHotelCards = await applyAttributeFilters(refinedQuery, rawHotelCards);
+                    // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: "Of My Taste" - Match hotels to preferences using embeddings
+                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                        results = await matchItemsToPreferences(rawHotelCards, userId, finalIntent, undefined);
+                    }
+                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                        results = await hybridRerank(rawHotelCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                    }
+                    else {
+                        // Regular reranking (no preferences)
+                        results = await rerankCards(refinedQuery, rawHotelCards, "hotels");
+                    }
+                    // 5. LLM-based correction (skipped for hotels - all hotels in location are relevant)
+                    results = await correctCards(refinedQuery, llmAnswer, results);
+                    // 6. Generate descriptions ONLY for final displayed results (after all filtering)
                     if (results.length > 0) {
                         results = await enrichHotelsWithThemesAndDescriptions(results);
                     }
-                }
-                else if (cardTypeStr === "flights") {
-                    let rawFlightCards2 = await searchFlights(queryForCardSearch);
+                    break;
+                case "restaurants":
+                    // 1. Fetch raw results (with refined query)
+                    let rawRestaurantCards = await searchRestaurants(refinedQuery);
                     // 🧠 C11.4 — Extra search pass if zero results
-                    if (rawFlightCards2.length === 0) {
+                    if (rawRestaurantCards.length === 0) {
                         console.warn("⚠️ Zero results, trying refined query...");
-                        const extraRefined = shouldEnhanceQuery
-                            ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
-                            : cleanQuery;
-                        rawFlightCards2 = await searchFlights(extraRefined);
-                        // Apply same filtering pipeline again
-                        rawFlightCards2 = applyLexicalFilters(extraRefined, rawFlightCards2);
-                        rawFlightCards2 = await applyAttributeFilters(extraRefined, rawFlightCards2);
+                        const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
+                        rawRestaurantCards = await searchRestaurants(extraRefined);
                     }
-                    rawFlightCards2 = applyLexicalFilters(queryForCardSearch, rawFlightCards2);
-                    rawFlightCards2 = await applyAttributeFilters(queryForCardSearch, rawFlightCards2);
-                    results = await rerankCards(queryForCardSearch, rawFlightCards2, "flights");
-                    results = await correctCards(queryForCardSearch, llmAnswer, results);
-                }
-                else if (cardTypeStr === "restaurants") {
-                    let rawRestaurantCards2 = await searchRestaurants(queryForCardSearch);
+                    // 2. Hard lexical filters
+                    rawRestaurantCards = applyLexicalFilters(refinedQuery, rawRestaurantCards);
+                    // 2b. Location filters (downtown, airport, etc.) - NEW
+                    rawRestaurantCards = filterRestaurantsByLocation(rawRestaurantCards, refinedQuery);
+                    // 3. Soft attribute filters
+                    rawRestaurantCards = await applyAttributeFilters(refinedQuery, rawRestaurantCards);
+                    // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: "Of My Taste" - Match restaurants to preferences using embeddings
+                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                        results = await matchItemsToPreferences(rawRestaurantCards, userId, finalIntent, undefined);
+                    }
+                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                        results = await hybridRerank(rawRestaurantCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                    }
+                    else {
+                        // Regular reranking (no preferences)
+                        results = await rerankCards(refinedQuery, rawRestaurantCards, "restaurants");
+                    }
+                    // 5. LLM-based correction
+                    results = await correctCards(refinedQuery, llmAnswer, results);
+                    break;
+                case "flights":
+                    // 1. Fetch raw results (with refined query)
+                    let rawFlightCards = await searchFlights(refinedQuery);
                     // 🧠 C11.4 — Extra search pass if zero results
-                    if (rawRestaurantCards2.length === 0) {
+                    if (rawFlightCards.length === 0) {
                         console.warn("⚠️ Zero results, trying refined query...");
-                        const extraRefined = shouldEnhanceQuery
-                            ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
-                            : cleanQuery;
-                        rawRestaurantCards2 = await searchRestaurants(extraRefined);
-                        // Apply same filtering pipeline again
-                        rawRestaurantCards2 = applyLexicalFilters(extraRefined, rawRestaurantCards2);
-                        rawRestaurantCards2 = await applyAttributeFilters(extraRefined, rawRestaurantCards2);
+                        const extraRefined = await refineQueryC11(queryForRefinement, sessionIdForMemory);
+                        rawFlightCards = await searchFlights(extraRefined);
                     }
-                    rawRestaurantCards2 = applyLexicalFilters(queryForCardSearch, rawRestaurantCards2);
-                    rawRestaurantCards2 = await applyAttributeFilters(queryForCardSearch, rawRestaurantCards2);
-                    results = await rerankCards(queryForCardSearch, rawRestaurantCards2, "restaurants");
-                    results = await correctCards(queryForCardSearch, llmAnswer, results);
-                }
-                else if (cardTypeStr === "places" || cardTypeStr === "location") {
-                    // 🎯 Places search for default case - Use original query (places don't need memory enhancement)
-                    results = await searchPlaces(cleanQuery);
-                    console.log(`✅ Places search (default): ${results.length} places found for query: "${cleanQuery}"`);
-                }
-                break;
+                    // 2. Hard lexical filters (price, route, etc.)
+                    rawFlightCards = applyLexicalFilters(refinedQuery, rawFlightCards);
+                    // 3. Soft attribute filters
+                    rawFlightCards = await applyAttributeFilters(refinedQuery, rawFlightCards);
+                    // 4. Rerank using embeddings (C7) OR Phase 3 preference matching
+                    if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: "Of My Taste" - Match flights to preferences using embeddings
+                        console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                        results = await matchItemsToPreferences(rawFlightCards, userId, finalIntent, undefined);
+                    }
+                    else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                        // ✅ PHASE 3: Hybrid reranking (combine query relevance + preferences)
+                        console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                        results = await hybridRerank(rawFlightCards, refinedQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                    }
+                    else {
+                        // Regular reranking (no preferences)
+                        results = await rerankCards(refinedQuery, rawFlightCards, "flights");
+                    }
+                    // 5. LLM-based correction
+                    results = await correctCards(refinedQuery, llmAnswer, results);
+                    break;
+                case "places":
+                    // 🎯 Places Search Engine (LLM-powered) - Use context-aware query if available
+                    try {
+                        const placesQuery = shouldEnhanceQuery ? contextAwareQuery : cleanQuery;
+                        results = await searchPlaces(placesQuery);
+                        console.log(`✅ Places search: ${results.length} places found for query: "${placesQuery}"`);
+                        // Apply location filters (downtown, airport, etc.) - NEW
+                        results = filterPlacesByLocation(results, placesQuery);
+                        // ✅ PHASE 3: Preference matching for places
+                        if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                            console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                            results = await matchItemsToPreferences(results, userId, finalIntent, undefined);
+                        }
+                        else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                            console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                            results = await hybridRerank(results, placesQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                        }
+                        if (results.length > 0) {
+                            const sample = results[0];
+                            console.log(`📋 Sample result:`, {
+                                name: sample.name,
+                                location: sample.location,
+                                hasGeo: !!sample.geo,
+                                geo: sample.geo,
+                                hasImage: !!sample.image_url,
+                                image_url: sample.image_url?.substring(0, 50) + '...',
+                            });
+                        }
+                    }
+                    catch (err) {
+                        console.error("❌ Places search error:", err.message);
+                        results = [];
+                    }
+                    break;
+                case "location":
+                    // 🎯 Places Search Engine (LLM-powered) - Use context-aware query if available
+                    try {
+                        const locationQuery = shouldEnhanceQuery ? contextAwareQuery : cleanQuery;
+                        results = await searchPlaces(locationQuery);
+                        console.log(`✅ Location search: ${results.length} places found for query: "${locationQuery}"`);
+                        console.log(`📋 Sample result:`, results[0] || "No results");
+                        if (results.length === 0) {
+                            console.warn("⚠️ No places returned from searchPlaces for location query");
+                        }
+                    }
+                    catch (err) {
+                        console.error("❌ Location search error:", err.message);
+                        console.error("❌ Error stack:", err.stack);
+                        results = [];
+                    }
+                    break;
+                case "movies":
+                    // 🎬 Movies Search using TMDB API with fallback logic
+                    try {
+                        // 🔮 STEP 0: LLM Query Repair (Perplexity-style) - MUST happen FIRST
+                        const { repairQuery } = await import("../services/queryRepair");
+                        const repairedQuery = await repairQuery(cleanQuery, "movies");
+                        console.log(`🔮 Query repair (movies): "${cleanQuery}" → "${repairedQuery}"`);
+                        const classifyMovieQueryType = (query) => {
+                            const lower = query.toLowerCase();
+                            // Check for new/recent releases patterns
+                            if (/\b(new|recent|latest|upcoming|coming soon|just released|newly released)\s+(movies?|films?|releases?)/i.test(query)) {
+                                return "new_releases";
+                            }
+                            // Check for discovery patterns (best, top, popular, etc.)
+                            if (/\b(best|top|popular|trending|must watch|must see|recommended|highly rated)\s+(movies?|films?)/i.test(query)) {
+                                return "discovery";
+                            }
+                            // Check for rating-based patterns
+                            if (/\b(highly rated|top rated|well rated|critically acclaimed|award winning)\s+(movies?|films?)/i.test(query)) {
+                                return "rating_based";
+                            }
+                            // Check for genre patterns (genre name + movies/films)
+                            const genrePatterns = [
+                                /\b(action|adventure|animation|comedy|crime|documentary|drama|family|fantasy|history|horror|music|mystery|romance|science fiction|sci-fi|scifi|thriller|war|western)\s+(movies?|films?)/i,
+                                /\b(movies?|films?)\s+(of|in)\s+(action|adventure|animation|comedy|crime|documentary|drama|family|fantasy|history|horror|music|mystery|romance|science fiction|sci-fi|scifi|thriller|war|western)/i
+                            ];
+                            if (genrePatterns.some(pattern => pattern.test(query))) {
+                                return "genre";
+                            }
+                            // Check for year-only patterns (movies 2025, films from 2024)
+                            if (/^(movies?|films?)\s+\d{4}/i.test(query) || /\b(movies?|films?)\s+(from|in|of)\s+\d{4}/i.test(query)) {
+                                return "year_only";
+                            }
+                            // Default: specific title query
+                            return "specific_title";
+                        };
+                        const queryType = classifyMovieQueryType(repairedQuery);
+                        console.log(`🎯 Movie query type: "${repairedQuery}" → ${queryType}`);
+                        // Extract year from query (for all query types)
+                        const yearMatch = repairedQuery.match(/\b(19|20)\d{2}\b/);
+                        const targetYear = yearMatch ? parseInt(yearMatch[0], 10) : null;
+                        // 🎯 STEP 2: Genre Detection (BEFORE preprocessing to preserve query structure)
+                        const genreMap = {
+                            'action': 28,
+                            'adventure': 12,
+                            'animation': 16,
+                            'comedy': 35,
+                            'crime': 80,
+                            'documentary': 99,
+                            'drama': 18,
+                            'family': 10751,
+                            'fantasy': 14,
+                            'history': 36,
+                            'horror': 27,
+                            'music': 10402,
+                            'mystery': 9648,
+                            'romance': 10749,
+                            'science fiction': 878,
+                            'sci-fi': 878,
+                            'scifi': 878,
+                            'thriller': 53,
+                            'war': 10752,
+                            'western': 37,
+                        };
+                        // 🎯 STEP 3: Process based on query type
+                        let tmdbResults;
+                        let detectedGenreId = null;
+                        let detectedGenreName = null;
+                        let movieQuery = repairedQuery; // Will be set based on query type
+                        if (queryType === "genre") {
+                            // Extract genre from query (before preprocessing)
+                            const queryLower = repairedQuery.toLowerCase().trim();
+                            for (const [genreName, genreId] of Object.entries(genreMap)) {
+                                const genrePattern = new RegExp(`\\b${genreName.replace(/\s+/g, '\\s+')}\\b`, 'i');
+                                if (genrePattern.test(queryLower)) {
+                                    detectedGenreId = genreId;
+                                    detectedGenreName = genreName;
+                                    break;
+                                }
+                            }
+                            if (detectedGenreId !== null) {
+                                console.log(`🎯 Genre query detected: "${detectedGenreName}" (ID: ${detectedGenreId})`);
+                                const { discoverMovies } = await import("../services/tmdbService");
+                                tmdbResults = await discoverMovies({
+                                    genreId: detectedGenreId,
+                                    year: targetYear || undefined,
+                                    page: 1,
+                                    sortBy: 'popularity.desc',
+                                });
+                                console.log(`🎬 TMDB discover (genre: ${detectedGenreName}${targetYear ? `, year: ${targetYear}` : ''}): ${tmdbResults.results?.length || 0} movies found`);
+                            }
+                            else {
+                                // Genre pattern matched but genre not found in map - fallback to search
+                                console.log(`⚠️ Genre pattern matched but genre not found, falling back to search`);
+                                queryType = "specific_title";
+                            }
+                        }
+                        if (queryType === "new_releases") {
+                            // Use discover API with recent release dates
+                            const { discoverMovies } = await import("../services/tmdbService");
+                            const currentYear = new Date().getFullYear();
+                            const searchYear = targetYear || currentYear;
+                            tmdbResults = await discoverMovies({
+                                year: searchYear,
+                                page: 1,
+                                sortBy: 'release_date.desc', // Most recent first
+                            });
+                            console.log(`🎬 TMDB discover (new releases${targetYear ? `, year: ${targetYear}` : ''}): ${tmdbResults.results?.length || 0} movies found`);
+                        }
+                        if (queryType === "discovery" || queryType === "rating_based") {
+                            // Use discover API sorted by popularity or vote average
+                            const { discoverMovies } = await import("../services/tmdbService");
+                            const searchYear = targetYear || undefined;
+                            tmdbResults = await discoverMovies({
+                                year: searchYear,
+                                page: 1,
+                                sortBy: queryType === "rating_based" ? 'vote_average.desc' : 'popularity.desc',
+                            });
+                            console.log(`🎬 TMDB discover (${queryType}${targetYear ? `, year: ${targetYear}` : ''}): ${tmdbResults.results?.length || 0} movies found`);
+                        }
+                        if (queryType === "year_only") {
+                            // Use discover API for specific year
+                            if (targetYear) {
+                                const { discoverMovies } = await import("../services/tmdbService");
+                                tmdbResults = await discoverMovies({
+                                    year: targetYear,
+                                    page: 1,
+                                    sortBy: 'popularity.desc',
+                                });
+                                console.log(`🎬 TMDB discover (year: ${targetYear}): ${tmdbResults.results?.length || 0} movies found`);
+                            }
+                            else {
+                                // No year found - fallback to search
+                                queryType = "specific_title";
+                            }
+                        }
+                        // For specific_title queries, do preprocessing and search
+                        if (queryType === "specific_title" || !tmdbResults) {
+                            // Preprocess query: Remove common phrases but preserve movie titles
+                            movieQuery = repairedQuery
+                                .replace(/showtimes?/gi, "")
+                                .replace(/tickets?/gi, "")
+                                .replace(/in\s+[A-Z][a-z\s]+/gi, "") // Remove "in [City]"
+                                .replace(/under\s+\$?\d+/gi, "") // Remove "under $200"
+                                .replace(/below\s+\$?\d+/gi, "") // Remove "below $200"
+                                .replace(/\s+/g, " ") // Normalize whitespace
+                                .trim();
+                            // Remove year from query for title extraction
+                            if (targetYear) {
+                                movieQuery = movieQuery.replace(/\b(19|20)\d{2}\b/g, "").trim();
+                            }
+                            // Remove "for good" if it appears before "movie"
+                            movieQuery = movieQuery.replace(/for\s+good\s+/gi, "");
+                            // If query contains "movie" or "film", extract the title part before it
+                            if (movieQuery.toLowerCase().includes("movie") || movieQuery.toLowerCase().includes("film")) {
+                                const titleMatch = movieQuery.match(/^(.+?)\s+(?:movie|film)/i);
+                                if (titleMatch && titleMatch[1]) {
+                                    movieQuery = titleMatch[1].trim();
+                                }
+                                else {
+                                    movieQuery = movieQuery.replace(/\s*(?:movie|film)\s*/gi, " ").trim();
+                                }
+                            }
+                            // Final cleanup: remove any remaining common words at the end
+                            movieQuery = movieQuery.replace(/\s+(?:tickets?|showtimes?|in|near|around)\s*$/i, "").trim();
+                            console.log(`🎬 Movie search: "${cleanQuery}" → "${movieQuery}"${targetYear ? ` (Year: ${targetYear})` : ''}`);
+                            // Attempt 1 — Primary TMDB search (use preprocessed query)
+                            tmdbResults = await searchMovies(movieQuery);
+                            console.log(`🎬 TMDB search (primary): ${tmdbResults.results?.length || 0} movies found`);
+                            // Attempt 2 — If no results, try without numbers/sequels (only for title searches)
+                            if (!tmdbResults.results || tmdbResults.results.length === 0) {
+                                const queryWithoutNumbers = movieQuery.replace(/\s*\d+\s*/g, " ").trim();
+                                if (queryWithoutNumbers !== movieQuery && queryWithoutNumbers.length > 0) {
+                                    console.log(`🎬 Trying without numbers: "${queryWithoutNumbers}"`);
+                                    tmdbResults = await searchMovies(queryWithoutNumbers);
+                                    console.log(`🎬 TMDB search (no numbers): ${tmdbResults.results?.length || 0} movies found`);
+                                }
+                            }
+                            // Attempt 3 — If still no results, try just the first word (for very specific titles)
+                            if (!tmdbResults.results || tmdbResults.results.length === 0) {
+                                const firstWord = movieQuery.split(/\s+/)[0];
+                                if (firstWord && firstWord.length > 3 && firstWord !== movieQuery) {
+                                    console.log(`🎬 Trying first word only: "${firstWord}"`);
+                                    tmdbResults = await searchMovies(firstWord);
+                                    console.log(`🎬 TMDB search (first word): ${tmdbResults.results?.length || 0} movies found`);
+                                }
+                            }
+                        }
+                        if (!tmdbResults || !tmdbResults.results || tmdbResults.results.length === 0) {
+                            const queryForError = queryType === "specific_title" ? movieQuery : repairedQuery;
+                            console.warn(`⚠️ No movies found for "${queryForError}", returning empty results`);
+                            results = [];
+                            break;
+                        }
+                        // Filter by year if specified (only for title searches; discover API queries already filtered by year)
+                        let filteredResults = [...tmdbResults.results];
+                        const usedDiscoverAPI = queryType === "genre" || queryType === "new_releases" || queryType === "discovery" || queryType === "rating_based" || queryType === "year_only";
+                        if (targetYear && !usedDiscoverAPI) {
+                            // Only filter by year if we used search API (genre queries already filter by year in discover API)
+                            filteredResults = filteredResults.filter((movie) => {
+                                if (!movie.release_date)
+                                    return false;
+                                const movieYear = new Date(movie.release_date).getFullYear();
+                                return movieYear === targetYear;
+                            });
+                            // If no exact year match, allow ±1 year
+                            if (filteredResults.length === 0) {
+                                filteredResults = tmdbResults.results.filter((movie) => {
+                                    if (!movie.release_date)
+                                        return false;
+                                    const movieYear = new Date(movie.release_date).getFullYear();
+                                    return Math.abs(movieYear - targetYear) <= 1;
+                                });
+                            }
+                            console.log(`🎯 Filtered to ${filteredResults.length} movies${targetYear ? ` from ${targetYear}` : ''}`);
+                        }
+                        // Get list of movies currently playing in theaters from TMDB
+                        let nowPlayingMovieIds = new Set();
+                        let useTimeBasedFallback = false;
+                        try {
+                            const { getNowPlayingMovies } = await import("@/services/tmdbService");
+                            const nowPlaying1 = await getNowPlayingMovies(1, 'US');
+                            const nowPlaying2 = await getNowPlayingMovies(2, 'US');
+                            const allNowPlaying = [
+                                ...(nowPlaying1.results || []),
+                                ...(nowPlaying2.results || []),
+                            ];
+                            nowPlayingMovieIds = new Set(allNowPlaying.map((m) => m.id));
+                            console.log(`🎬 Found ${nowPlayingMovieIds.size} movies currently playing in theaters`);
+                        }
+                        catch (err) {
+                            console.warn("⚠️ Failed to fetch now playing movies, falling back to time-based check:", err.message);
+                            useTimeBasedFallback = true;
+                        }
+                        // Helper function for time-based fallback
+                        // A movie is "in theaters" if:
+                        // - Released within last 120 days (still in theaters)
+                        // - Releasing within next 60 days (upcoming releases, often in theaters for previews/limited release)
+                        const isMovieInTheatersByDate = (releaseDate) => {
+                            if (!releaseDate)
+                                return false;
+                            try {
+                                const release = new Date(releaseDate);
+                                const now = new Date();
+                                // Reset time to midnight for accurate day calculation
+                                release.setHours(0, 0, 0, 0);
+                                now.setHours(0, 0, 0, 0);
+                                const daysSinceRelease = Math.floor((now.getTime() - release.getTime()) / (1000 * 60 * 60 * 24));
+                                const daysUntilRelease = -daysSinceRelease;
+                                // In theaters if: released within last 120 days OR releasing within next 60 days
+                                const isInTheaters = (daysSinceRelease >= 0 && daysSinceRelease <= 120) || (daysUntilRelease > 0 && daysUntilRelease <= 60);
+                                return isInTheaters;
+                            }
+                            catch (e) {
+                                return false;
+                            }
+                        };
+                        // Detect if this is a specific movie title query vs general movie search
+                        // Specific queries: contain numbers, specific title words, or have exact title match in first result
+                        const isSpecificMovieQuery = (() => {
+                            // Check if query contains numbers (sequels, years) - likely specific
+                            if (/\d+/.test(movieQuery))
+                                return true;
+                            // Check if first result has very high relevance (exact or near-exact title match)
+                            if (filteredResults.length > 0) {
+                                const firstMovie = filteredResults[0];
+                                const queryWords = movieQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+                                const titleWords = (firstMovie.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 2);
+                                // Count matching words between query and title
+                                const matchingWords = queryWords.filter(qw => titleWords.some(tw => tw.includes(qw) || qw.includes(tw)));
+                                const matchRatio = queryWords.length > 0 ? matchingWords.length / queryWords.length : 0;
+                                // If >70% of query words match the title, it's likely a specific query
+                                if (matchRatio >= 0.7)
+                                    return true;
+                                // If query is short (1-3 words) and not generic terms, likely specific
+                                const genericTerms = ['movie', 'film', 'movies', 'films', 'best', 'top', 'popular', 'new', 'latest'];
+                                const hasGenericTerm = queryWords.some(qw => genericTerms.includes(qw));
+                                if (queryWords.length <= 3 && !hasGenericTerm)
+                                    return true;
+                            }
+                            return false;
+                        })();
+                        // For specific movie queries, return only the top 1 result (most relevant)
+                        // For general queries, return up to 12 results
+                        const maxResults = isSpecificMovieQuery ? 1 : 12;
+                        if (isSpecificMovieQuery) {
+                            console.log(`🎯 Specific movie query detected: "${movieQuery}" → Returning top 1 result only`);
+                        }
+                        else {
+                            console.log(`🎯 General movie query detected: "${movieQuery}" → Returning up to ${maxResults} results`);
+                        }
+                        // Transform TMDB results to card format
+                        results = filteredResults.slice(0, maxResults).map((movie) => {
+                            // Check if movie is in theaters
+                            // Use BOTH checks: TMDB "now playing" list OR time-based check
+                            // This ensures movies in theaters are detected even if they're not in TMDB's "now playing" list
+                            const isInTheatersByList = !useTimeBasedFallback && nowPlayingMovieIds.has(movie.id);
+                            const isInTheatersByDate = isMovieInTheatersByDate(movie.release_date);
+                            const isInTheaters = isInTheatersByList || isInTheatersByDate;
+                            // Debug logging for in-theaters detection
+                            if (movie.title && movie.release_date) {
+                                console.log(`🎬 "${movie.title}" (${movie.release_date}): inList=${isInTheatersByList}, byDate=${isInTheatersByDate}, final=${isInTheaters}`);
+                            }
+                            // Build images array: poster + backdrop (if available)
+                            const images = [];
+                            if (movie.poster_path) {
+                                images.push(`https://image.tmdb.org/t/p/w500${movie.poster_path}`);
+                            }
+                            if (movie.backdrop_path) {
+                                images.push(`https://image.tmdb.org/t/p/w1280${movie.backdrop_path}`);
+                            }
+                            return {
+                                title: movie.title,
+                                description: movie.overview || "",
+                                image: images[0] || null, // Primary image (poster) for backward compatibility
+                                images: images.length > 0 ? images : undefined, // Multiple images for carousel
+                                poster: images[0] || null, // Alias for image
+                                rating: movie.vote_average ? `${movie.vote_average.toFixed(1)}/10` : null,
+                                releaseDate: movie.release_date || null,
+                                id: movie.id,
+                                source: "TMDB",
+                                link: `https://www.themoviedb.org/movie/${movie.id}`,
+                                isInTheaters: isInTheaters,
+                            };
+                        });
+                        console.log(`✅ Movies search: ${results.length} movies found`);
+                        const inTheatersCount = results.filter((m) => m.isInTheaters).length;
+                        console.log(`🎬 ${inTheatersCount} of ${results.length} movies are currently in theaters`);
+                        // ✅ PHASE 3: Preference matching for movies
+                        if (isPersonalizationQuery && userId && userId !== "global" && userId !== "dev-user-id") {
+                            console.log(`🎯 Phase 3: Using preference matching for "of my taste" query`);
+                            results = await matchItemsToPreferences(results, userId, finalIntent, undefined);
+                        }
+                        else if (userId && userId !== "global" && userId !== "dev-user-id") {
+                            console.log(`🎯 Phase 3: Using hybrid reranking (query + preferences)`);
+                            results = await hybridRerank(results, movieQuery, userId, finalIntent, undefined, 0.6, 0.4);
+                        }
+                    }
+                    catch (err) {
+                        console.error("❌ Movies search error:", err.message);
+                        results = [];
+                    }
+                    break;
+                default:
+                    // For answer/general queries, check if shouldFetchCards suggests cards
+                    const cardType = await shouldFetchCards(cleanQuery, llmAnswer);
+                    // ✅ Use refinedQuery only if it's a shopping/travel intent, otherwise use cleanQuery
+                    const cardTypeStr = cardType || "";
+                    const queryForCardSearch = (cardTypeStr === "shopping" || ["hotels", "flights", "restaurants"].includes(cardTypeStr))
+                        ? refinedQuery
+                        : cleanQuery;
+                    if (cardTypeStr === "shopping") {
+                        let rawShoppingCards2 = await searchProducts(queryForCardSearch);
+                        // 🧠 C11.4 — Extra search pass if zero results
+                        if (rawShoppingCards2.length === 0) {
+                            console.warn("⚠️ Zero results, trying refined query...");
+                            const extraRefined = shouldEnhanceQuery
+                                ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
+                                : cleanQuery;
+                            rawShoppingCards2 = await searchProducts(extraRefined);
+                            // Apply same filtering pipeline again
+                            rawShoppingCards2 = applyLexicalFilters(extraRefined, rawShoppingCards2);
+                            rawShoppingCards2 = await applyAttributeFilters(extraRefined, rawShoppingCards2);
+                        }
+                        rawShoppingCards2 = applyLexicalFilters(queryForCardSearch, rawShoppingCards2);
+                        rawShoppingCards2 = await applyAttributeFilters(queryForCardSearch, rawShoppingCards2);
+                        results = await rerankCards(queryForCardSearch, rawShoppingCards2, "shopping");
+                        results = await correctCards(queryForCardSearch, llmAnswer, results);
+                        // Generate descriptions ONLY for final displayed results
+                        if (results.length > 0) {
+                            await enrichProductsWithDescriptions(results);
+                            // ✅ FIX: Ensure all products have an ID for Flutter Product model
+                            results = results.map((product, index) => {
+                                if (!product.id) {
+                                    // Generate ID from title+price+link hash, or use index as fallback
+                                    const idSource = `${product.title || ''}_${product.price || ''}_${product.link || ''}`;
+                                    product.id = idSource.length > 0 ? Math.abs(idSource.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) : index + 1;
+                                }
+                                // ✅ FIX: Ensure description field exists (use snippet if description is missing)
+                                if (!product.description && product.snippet) {
+                                    product.description = product.snippet;
+                                }
+                                return product;
+                            });
+                        }
+                    }
+                    else if (cardTypeStr === "hotels") {
+                        let rawHotelCards2 = await searchHotels(queryForCardSearch);
+                        // 🧠 C11.4 — Extra search pass if zero results
+                        if (rawHotelCards2.length === 0) {
+                            console.warn("⚠️ Zero results, trying refined query...");
+                            const extraRefined = shouldEnhanceQuery
+                                ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
+                                : cleanQuery;
+                            rawHotelCards2 = await searchHotels(extraRefined);
+                            // Apply same filtering pipeline again
+                            rawHotelCards2 = applyLexicalFilters(extraRefined, rawHotelCards2);
+                            rawHotelCards2 = await applyAttributeFilters(extraRefined, rawHotelCards2);
+                        }
+                        rawHotelCards2 = applyLexicalFilters(queryForCardSearch, rawHotelCards2);
+                        rawHotelCards2 = filterHotelsByLocation(rawHotelCards2, queryForCardSearch);
+                        rawHotelCards2 = await applyAttributeFilters(queryForCardSearch, rawHotelCards2);
+                        results = await rerankCards(queryForCardSearch, rawHotelCards2, "hotels");
+                        results = await correctCards(queryForCardSearch, llmAnswer, results);
+                        // Generate descriptions ONLY for final displayed results
+                        if (results.length > 0) {
+                            results = await enrichHotelsWithThemesAndDescriptions(results);
+                        }
+                    }
+                    else if (cardTypeStr === "flights") {
+                        let rawFlightCards2 = await searchFlights(queryForCardSearch);
+                        // 🧠 C11.4 — Extra search pass if zero results
+                        if (rawFlightCards2.length === 0) {
+                            console.warn("⚠️ Zero results, trying refined query...");
+                            const extraRefined = shouldEnhanceQuery
+                                ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
+                                : cleanQuery;
+                            rawFlightCards2 = await searchFlights(extraRefined);
+                            // Apply same filtering pipeline again
+                            rawFlightCards2 = applyLexicalFilters(extraRefined, rawFlightCards2);
+                            rawFlightCards2 = await applyAttributeFilters(extraRefined, rawFlightCards2);
+                        }
+                        rawFlightCards2 = applyLexicalFilters(queryForCardSearch, rawFlightCards2);
+                        rawFlightCards2 = await applyAttributeFilters(queryForCardSearch, rawFlightCards2);
+                        results = await rerankCards(queryForCardSearch, rawFlightCards2, "flights");
+                        results = await correctCards(queryForCardSearch, llmAnswer, results);
+                    }
+                    else if (cardTypeStr === "restaurants") {
+                        let rawRestaurantCards2 = await searchRestaurants(queryForCardSearch);
+                        // 🧠 C11.4 — Extra search pass if zero results
+                        if (rawRestaurantCards2.length === 0) {
+                            console.warn("⚠️ Zero results, trying refined query...");
+                            const extraRefined = shouldEnhanceQuery
+                                ? await refineQueryC11(queryForRefinement, sessionIdForMemory)
+                                : cleanQuery;
+                            rawRestaurantCards2 = await searchRestaurants(extraRefined);
+                            // Apply same filtering pipeline again
+                            rawRestaurantCards2 = applyLexicalFilters(extraRefined, rawRestaurantCards2);
+                            rawRestaurantCards2 = await applyAttributeFilters(extraRefined, rawRestaurantCards2);
+                        }
+                        rawRestaurantCards2 = applyLexicalFilters(queryForCardSearch, rawRestaurantCards2);
+                        rawRestaurantCards2 = await applyAttributeFilters(queryForCardSearch, rawRestaurantCards2);
+                        results = await rerankCards(queryForCardSearch, rawRestaurantCards2, "restaurants");
+                        results = await correctCards(queryForCardSearch, llmAnswer, results);
+                    }
+                    else if (cardTypeStr === "places" || cardTypeStr === "location") {
+                        // 🎯 Places search for default case - Use original query (places don't need memory enhancement)
+                        results = await searchPlaces(cleanQuery);
+                        console.log(`✅ Places search (default): ${results.length} places found for query: "${cleanQuery}"`);
+                    }
+                    break;
+            }
+            // ✅ ANSWER-FIRST: Enforce card budget from answer plan
+            if (results.length > answerPlan.maxCards && answerPlan.maxCards > 0) {
+                console.log(`🧠 Trimming results from ${results.length} to ${answerPlan.maxCards} (answer plan budget)`);
+                results = results.slice(0, answerPlan.maxCards);
+            }
+        }
+        else {
+            // ✅ ANSWER-FIRST: No cards needed, results stay empty
+            console.log(`🧠 Answer plan says no cards needed, skipping card fetching`);
+            results = [];
         }
         // Use routing result for response metadata
         const responseIntent = routing.finalIntent;
@@ -1065,6 +1360,7 @@ async function handleRequest(req, res) {
                 price: routing.price,
                 city: routing.city,
             },
+            answerPlan: answerPlan, // ✅ ANSWER-FIRST: Pass answer plan
         }).catch((e) => {
             console.error("❌ Follow-up generation error:", e.message || e);
             return {
@@ -1287,7 +1583,7 @@ async function handleRequest(req, res) {
         const isPlacesOrLocationOrMovies = responseIntent === "places" || responseIntent === "location" || responseIntent === "movies";
         let memoryFilteredCards = finalCards;
         if (!isPlacesOrLocationOrMovies) {
-            const session = getSession(sessionIdForMemory);
+            const session = await getSession(sessionIdForMemory);
             if (session) {
                 // Filter by brand if session has brand
                 if (session.brand) {
@@ -1587,7 +1883,7 @@ async function handleRequest(req, res) {
         const priceNumber = followUpPayload.slots.price
             ? parseInt(followUpPayload.slots.price.toString().replace(/[^\d]/g, ""))
             : null;
-        saveSession(sessionIdForMemory, {
+        await saveSession(sessionIdForMemory, {
             domain: responseIntent,
             brand: routing.brand || followUpPayload.slots.brand || null,
             category: routing.category || followUpPayload.slots.category || null,
@@ -1600,6 +1896,23 @@ async function handleRequest(req, res) {
             lastQuery: cleanQuery,
             lastAnswer: llmAnswer,
         });
+        // ✅ TASK 2: Hard result size limit - truncate arrays before sending
+        const MAX_RESULTS = 40;
+        if (safeCards.length > MAX_RESULTS) {
+            console.log(`✂️ Truncating results: ${safeCards.length} → ${MAX_RESULTS} items`);
+            safeCards = safeCards.slice(0, MAX_RESULTS);
+        }
+        if (responseData.destination_images && responseData.destination_images.length > MAX_RESULTS) {
+            console.log(`✂️ Truncating destination_images: ${responseData.destination_images.length} → ${MAX_RESULTS} items`);
+            responseData.destination_images = responseData.destination_images.slice(0, MAX_RESULTS);
+        }
+        if (responseData.locationCards && responseData.locationCards.length > MAX_RESULTS) {
+            console.log(`✂️ Truncating locationCards: ${responseData.locationCards.length} → ${MAX_RESULTS} items`);
+            responseData.locationCards = responseData.locationCards.slice(0, MAX_RESULTS);
+        }
+        // Update responseData with truncated cards
+        responseData.cards = safeCards;
+        responseData.results = safeCards;
         // ✅ PHASE 9: Edge Case Defense - enforce DisplayContent schema integrity
         // Ensure all required fields exist and are valid
         if (!responseData.summary || responseData.summary.trim().length === 0) {
@@ -1636,13 +1949,67 @@ async function handleRequest(req, res) {
                 cardsFiltered: finalCards.length - safeCards.length,
             };
         }
-        safeSend(200, responseData);
+        // ✅ TASK 1: Support partial response / streaming via query parameter or body flag
+        const shouldStream = req.query.stream === "true" || req.query.stream === true || req.body.stream === true || req.body.stream === "true";
+        if (shouldStream && !res.headersSent) {
+            // Use SSE for streaming partial response
+            const { SSE } = await import("../utils/sse");
+            const sse = new SSE(res);
+            sse.init();
+            // Send summary first (immediate) - allows UI to render text while cards are being processed
+            sse.send("summary", {
+                summary: responseData.summary,
+                answer: responseData.answer,
+                intent: responseData.intent,
+                cardType: responseData.cardType,
+                resultType: responseData.resultType,
+                sources: responseData.sources,
+            });
+            // Send cards after (non-blocking, allows UI to render summary immediately)
+            // Use setImmediate to ensure summary is sent first, then cards follow
+            setImmediate(() => {
+                try {
+                    sse.send("cards", {
+                        cards: responseData.cards,
+                        results: responseData.results,
+                        destination_images: responseData.destination_images,
+                        locationCards: responseData.locationCards,
+                        sections: responseData.sections,
+                        followUps: responseData.followUps,
+                        followUpSuggestions: responseData.followUpSuggestions,
+                        slots: responseData.slots,
+                        behavior: responseData.behavior,
+                        behaviorState: responseData.behaviorState,
+                    });
+                    // Send end event to signal completion
+                    sse.send("end", {
+                        success: true,
+                        intent: responseData.intent,
+                    });
+                    sse.close();
+                }
+                catch (err) {
+                    console.error("❌ Error sending cards in stream:", err);
+                    sse.close();
+                }
+            });
+            return;
+        }
+        // ✅ FIX: Check if response was already sent (e.g., by timeout middleware)
+        if (!res.headersSent) {
+            res.json(responseData);
+        }
+        else {
+            console.warn("⚠️ Response already sent (likely timeout), skipping duplicate response");
+        }
         return;
     }
     catch (err) {
         console.error("❌ Agent error:", err);
-        safeSend(500, { error: "Agent failed", detail: err.message });
-        return;
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Agent failed", detail: err.message });
+            return;
+        }
     }
 }
 /**
@@ -1654,43 +2021,46 @@ async function handleRequest(req, res) {
  * ✅ FIX: Added request queuing to prevent overwhelming the system
  */
 router.post("/", async (req, res) => {
-    // ✅ CRITICAL FIX: Prevent double response at router level
-    let routerResponded = false;
-    function routerSafeSend(status, body) {
-        if (routerResponded || res.headersSent) {
-            console.warn("⚠️ Router: blocked duplicate send");
-            return;
-        }
-        routerResponded = true;
-        res.status(status).json(body);
-    }
+    // ✅ PRODUCTION-GRADE: Log ALL incoming requests FIRST (before any processing)
+    const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const timestamp = new Date().toISOString();
+    console.log(`\n📥 [${timestamp}] [${requestId}] ========== NEW REQUEST ==========`);
+    console.log(`   Method: POST /api/agent`);
+    console.log(`   Query: "${req.body?.query || 'MISSING'}"`);
+    console.log(`   Has conversationHistory: ${!!req.body?.conversationHistory}`);
+    console.log(`   ConversationHistory length: ${Array.isArray(req.body?.conversationHistory) ? req.body.conversationHistory.length : 'N/A'}`);
+    console.log(`   Headers: user-id=${req.headers['user-id'] || 'MISSING'}, content-type=${req.headers['content-type'] || 'MISSING'}`);
+    console.log(`   Body keys: ${Object.keys(req.body || {}).join(', ') || 'EMPTY'}`);
     // ✅ FIX: Check queue size
     if (requestQueue.length >= MAX_QUEUE_SIZE) {
-        routerSafeSend(503, {
+        console.error(`❌ [${requestId}] Queue full (${requestQueue.length}/${MAX_QUEUE_SIZE}), rejecting`);
+        return res.status(503).json({
             error: "Server busy",
             message: "Too many requests in queue. Please try again in a moment."
         });
-        return;
     }
     // ✅ FIX: If we have capacity, process immediately
     if (processingCount < MAX_CONCURRENT_REQUESTS) {
+        console.log(`✅ [${requestId}] Processing immediately (${processingCount}/${MAX_CONCURRENT_REQUESTS} active)`);
         processingCount++;
         try {
             await handleRequest(req, res);
+            console.log(`✅ [${requestId}] Request completed successfully`);
         }
         catch (err) {
-            console.error("❌ Request error:", err);
-            routerSafeSend(500, { error: "Request failed", detail: err.message });
+            console.error(`❌ [${requestId}] Request error:`, err);
+            if (!res.headersSent) {
+                res.status(500).json({ error: "Request failed", detail: err.message });
+            }
         }
         finally {
-            // ✅ PATCH #7: Fix handleRequest finally block - prevent double release
-            if (processingCount > 0)
-                processingCount--;
+            processingCount--;
             processQueue();
         }
     }
     else {
         // ✅ FIX: Queue the request
+        console.log(`⏳ [${requestId}] Queued (${requestQueue.length} in queue, ${processingCount} processing)`);
         await new Promise((resolve) => {
             requestQueue.push({ req, res, resolve });
             processQueue();

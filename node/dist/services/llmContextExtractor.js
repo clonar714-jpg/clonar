@@ -15,9 +15,10 @@ function getClient() {
     return client;
 }
 /**
- * 🎯 LLM-Based Context Extraction
+ * 🎯 LLM-Based Context Extraction with Confidence
  * Intelligently extracts all context from a query using LLM understanding
  * Handles: case sensitivity, typos, variations, implicit context
+ * Returns confidence score (0.7-0.9 for LLM, lower for fallback)
  */
 export async function extractContextWithLLM(query, parentQuery, conversationHistory) {
     try {
@@ -88,19 +89,33 @@ Return ONLY the JSON object, no other text.`;
         if (extracted.brand) {
             extracted.brand = normalizeBrandName(extracted.brand);
         }
-        console.log(`🧠 LLM Context Extraction: "${query}" →`, extracted);
-        return extracted;
+        // LLM confidence: 0.7-0.9 (higher if query is clear, lower if ambiguous)
+        const confidence = extracted.isRefinement && extracted.needsParentContext ? 0.75 : 0.85;
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`🧠 LLM Context Extraction: "${query}" →`, extracted, `(confidence: ${confidence})`);
+        }
+        return {
+            context: extracted,
+            confidence,
+            method: 'llm',
+        };
     }
     catch (err) {
         console.error("❌ LLM context extraction error:", err.message);
         // Fallback to basic extraction
-        return fallbackExtraction(query, parentQuery);
+        const fallback = fallbackExtraction(query, parentQuery);
+        return {
+            context: fallback,
+            confidence: 0.5, // Low confidence for fallback
+            method: 'fallback',
+        };
     }
 }
 /**
  * 🎯 LLM-Based Query Merging
  * Intelligently merges parent query context with current query
  * Handles all edge cases: case sensitivity, typos, implicit context
+ * Only called when LLM extraction was used (not for rule-based)
  */
 export async function mergeQueryContextWithLLM(currentQuery, parentQuery, extractedContext, intent) {
     try {

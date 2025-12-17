@@ -4,8 +4,8 @@ import { getSession } from "../memory/sessionMemory";
  * 🧠 C11.1 — MEMORY-AWARE QUERY BUILDER
  * Uses session state to build the strongest possible query
  */
-export function buildRefinedQuery(query, sessionId) {
-    const s = getSession(sessionId);
+export async function buildRefinedQuery(query, sessionId) {
+    const s = await getSession(sessionId);
     if (!s)
         return query;
     let q = query.toLowerCase().trim();
