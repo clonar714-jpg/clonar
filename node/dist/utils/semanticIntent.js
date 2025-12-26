@@ -223,12 +223,35 @@ function fastKeywordIntent(q) {
     }
     // ✅ STEP 3: Check movies with context-aware detection
     // Special handling: "movie tickets" vs "flight tickets"
-    if (isMovieTicketContext(lower))
+    // ✅ FIX 2: Require BOTH movie keywords AND absence of product model patterns
+    // Hard exclusion: If query contains camera/laptop/vehicle model patterns → block movies intent
+    const productModelPatterns = [
+        // Camera models
+        /\b(x-t\d+|a\d+|eos|d\d+|z\d+|alpha|nex-|a7|a9|r\d+|m\d+)\b/i,
+        // Laptop models
+        /\b(m\d+|macbook|thinkpad|xps|spectre|zenbook|vivobook|inspiron|pavilion)\b/i,
+        // Vehicle models
+        /\b(rav4|cr-v|corolla|civic|camry|accord|prius|f-150|silverado|model\s*[3syx]|x\d+|q\d+)\b/i,
+        // Product model indicators
+        /\b(\d+mp|\d+gb|\d+tb|inch|inches|mm|f\/|iso|shutter)\b/i,
+    ];
+    const hasProductModelPattern = productModelPatterns.some(pattern => pattern.test(lower));
+    // Only return movies if:
+    // 1. Has movie keywords
+    // 2. AND does NOT have product model patterns
+    if (hasProductModelPattern) {
+        // Product model detected - block movies intent
+        // Continue to next checks (shopping, etc.)
+    }
+    else if (isMovieTicketContext(lower)) {
         return "movies";
-    if (isWatchMovieContext(lower))
+    }
+    else if (isWatchMovieContext(lower)) {
         return "movies";
-    if (MOVIE_TERMS.some(k => lower.includes(k)))
+    }
+    else if (MOVIE_TERMS.some(k => lower.includes(k))) {
         return "movies";
+    }
     // ✅ STEP 4: Check places FIRST (before shopping) for location-based queries
     // This ensures "things to do in [city]" is correctly identified as places, not shopping
     // Use fuzzy matching to handle typos like "thinds" → "things"

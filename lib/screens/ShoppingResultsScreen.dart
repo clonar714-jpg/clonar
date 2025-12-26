@@ -1302,10 +1302,16 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                   
                   // ✅ FIX: Move session restoration to initState to avoid blocking build
                   // If no sessions and we have initial conversation history, restore it
-                  if (sessions.isEmpty && widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
+                  // ✅ CRITICAL FIX: Clear session history first to ensure only this chat's sessions are shown
+                  if (widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
                     // ✅ PRODUCTION FIX: Defer session restoration to avoid blocking build
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (!mounted) return;
+                      
+                      // ✅ CRITICAL FIX: Clear existing sessions first to prevent showing chats from other conversations
+                      ref.read(sessionHistoryProvider.notifier).clear();
+                      
+                      // Now restore only this chat's conversation history
                       for (final sessionData in widget.initialConversationHistory!) {
                         final session = QuerySession(
                           query: sessionData['query'] as String,

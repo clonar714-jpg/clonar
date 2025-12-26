@@ -8,6 +8,8 @@ class Product {
   final double? discountPrice;
   final String source;
   final double rating;
+  final int? reviews;
+  final String? link;
   final List<String> images;
   final List<Variant> variants;
 
@@ -19,6 +21,8 @@ class Product {
     this.discountPrice,
     required this.source,
     required this.rating,
+    this.reviews,
+    this.link,
     required this.images,
     this.variants = const [],
   });
@@ -32,6 +36,8 @@ class Product {
       discountPrice: (json['discountPrice'] as num?)?.toDouble(), // ✅ null-safe: nullable double
       source: json['source'] as String? ?? 'Unknown Source', // ✅ null-safe: default to 'Unknown Source'
       rating: (json['rating'] as num?)?.toDouble() ?? 0.0, // ✅ null-safe: default to 0.0 if null
+      reviews: (json['reviews'] as num?)?.toInt(), // ✅ null-safe: nullable int
+      link: json['link'] as String?, // ✅ null-safe: nullable string
       images: _parseImagesList(json['images']), // ✅ null-safe: handle null/empty images
       variants: _parseVariantsList(json['variants']), // ✅ null-safe: handle null/empty variants
     );

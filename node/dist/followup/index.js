@@ -36,7 +36,7 @@ function setBehaviorState(sessionId, state) {
 // MAIN FUNCTION CALLED BY THE AGENT ROUTE
 // ==================================================================
 export async function getFollowUpSuggestions(params) {
-    const { query, answer, intent, lastFollowUp, parentQuery, cards = [], routingSlots, answerPlan } = params;
+    const { query, answer, intent, lastFollowUp, parentQuery, cards = [], routingSlots, answerPlan, confidenceBand } = params;
     const sessionId = getSessionId(params.sessionId);
     // Load behavior state for this session
     const prevState = getBehaviorState(sessionId);
@@ -226,10 +226,34 @@ export async function getFollowUpSuggestions(params) {
         };
     });
     // ✅ UPGRADE: Sort by final score and return top 3
-    const finalFollowUps = scoredFollowups
+    let finalFollowUps = scoredFollowups
         .sort((a, b) => b.score - a.score)
         .slice(0, 3)
         .map((item) => item.candidate);
+    // ✅ CONFIDENCE-AWARE: Adjust follow-up tone based on confidence (subtle)
+    if (confidenceBand) {
+        if (confidenceBand === "high") {
+            // High confidence: More decisive follow-ups (already direct, minimal change)
+            finalFollowUps = finalFollowUps.map(f => {
+                // Make follow-ups more direct if they're questions
+                if (f.includes("?")) {
+                    return f.replace(/Would you like|Want to|Interested in/gi, "Want");
+                }
+                return f;
+            });
+        }
+        else if (confidenceBand === "low") {
+            // Low confidence: More exploratory follow-ups
+            finalFollowUps = finalFollowUps.map(f => {
+                // Make follow-ups more exploratory
+                if (!f.includes("?")) {
+                    return f.replace(/^/, "Want to explore ");
+                }
+                return f.replace(/Want|Want to/gi, "Want to narrow down");
+            });
+        }
+        // Medium confidence: Keep as-is (balanced)
+    }
     // Update behavior state (still track for analytics)
     const behaviorState = updateBehaviorState(prevState, {
         intent,

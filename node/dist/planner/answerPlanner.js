@@ -41,33 +41,66 @@ export function planAnswer(input) {
         userGoal = "browse";
     }
     // ======================================================================
-    // STEP 2: Assess Ambiguity
+    // STEP 2: Assess Ambiguity (Perplexity-accurate)
     // ======================================================================
-    let ambiguity = "low";
-    // High ambiguity: very short queries, vague terms
-    if (queryWords < 4 || /\b(it|this|that|one|some|any)\b/i.test(query)) {
-        ambiguity = "high";
+    let ambiguity = "none";
+    // Hard ambiguity = missing REQUIRED information with no safe defaults
+    // Location-based queries without city/device location
+    if (/\b(near me|nearby|around me|close to me)\b/i.test(query) &&
+        !/\b(in|at|near|from|to)\s+[A-Z][a-zA-Z\s]{2,}/i.test(query)) {
+        ambiguity = "hard";
     }
-    // Medium ambiguity: missing context (no brand, location, category)
-    else if (!/\b(brand|location|category|price|under|above)\b/i.test(query) &&
-        queryWords < 6) {
-        ambiguity = "medium";
+    // Very vague queries with no context
+    else if (queryWords < 3 ||
+        (queryWords < 4 && /\b(it|this|that|one|some|any)\b/i.test(query))) {
+        ambiguity = "hard";
     }
-    // Low ambiguity: specific query with details
+    // Soft ambiguity = multiple interpretations BUT industry defaults exist
+    else if (
+    // Queries with price + category have safe defaults
+    (/\b(under|below|above|over|under \$|below \$)\d+/i.test(query) && /\b(laptop|phone|watch|shoes|hotel|restaurant)\b/i.test(query)) ||
+        // "worth it", "best", "under $X" queries have safe defaults
+        /\b(worth it|is.*worth|best|top|recommend|suggest)\b/i.test(query) ||
+        // Comparison queries have safe defaults
+        /\b(vs|versus|compare|comparison|difference between)\b/i.test(query)) {
+        ambiguity = "soft";
+    }
+    // None ambiguity: specific query with all required details
     else {
-        ambiguity = "low";
+        ambiguity = "none";
     }
     // ======================================================================
-    // STEP 3: Determine Card Role
+    // STEP 3: Determine Card Role (Goal > Domain > Intent precedence)
     // ======================================================================
     let cardRole = "none";
     let needsCards = false;
     let maxCards = 0;
+    // CRITICAL: Learn goal = ZERO cards (prevents domain leakage)
+    if (userGoal === "learn") {
+        cardRole = "none";
+        needsCards = false;
+        maxCards = 0; // NEVER show cards for learn queries
+    }
+    // Locate goal = cards only AFTER location known
+    else if (userGoal === "locate") {
+        if (ambiguity === "hard") {
+            // No location available - no cards
+            cardRole = "none";
+            needsCards = false;
+            maxCards = 0;
+        }
+        else {
+            // Location known - cards allowed
+            cardRole = "evidence";
+            needsCards = true;
+            maxCards = 5;
+        }
+    }
     // Cards are EVIDENCE, never the main answer
-    if (userGoal === "decide" || userGoal === "compare") {
+    else if (userGoal === "decide" || userGoal === "compare") {
         cardRole = "evidence";
         needsCards = true;
-        maxCards = 3; // Max 3 for decision/comparison
+        maxCards = 3; // Max 2-3 for decision/comparison
     }
     else if (userGoal === "choose") {
         cardRole = "options";
@@ -77,28 +110,26 @@ export function planAnswer(input) {
     else if (userGoal === "browse") {
         cardRole = "options";
         needsCards = true;
-        maxCards = 8; // More for browsing
-    }
-    else if (userGoal === "learn" || userGoal === "locate") {
-        // Pure explanation or location - cards optional
-        cardRole = "evidence";
-        needsCards = false;
-        maxCards = 0;
+        maxCards = 6; // Up to 6 for browsing
     }
     // ======================================================================
-    // STEP 4: Generate Clarification Question (if ambiguous)
+    // STEP 4: Generate Clarification Question (ONLY for hard ambiguity)
     // ======================================================================
     let clarificationQuestion;
-    if (ambiguity === "high") {
-        // Generate context-aware clarification
-        if (/\b(it|this|that)\b/i.test(query)) {
-            clarificationQuestion = "Could you provide more details? What specifically are you looking for?";
+    if (ambiguity === "hard") {
+        // Location-based queries: ask ONLY for location
+        if (/\b(near me|nearby|around me|close to me)\b/i.test(query)) {
+            clarificationQuestion = "What location are you looking for?";
+        }
+        // Very vague queries: ask for specifics
+        else if (/\b(it|this|that)\b/i.test(query)) {
+            clarificationQuestion = "What specifically are you looking for?";
         }
         else if (queryWords < 3) {
-            clarificationQuestion = "I'd like to help you better. Could you tell me more about what you're looking for?";
+            clarificationQuestion = "Could you provide more details about what you're looking for?";
         }
         else {
-            clarificationQuestion = "To give you the best answer, could you clarify what you're looking for?";
+            clarificationQuestion = "Could you clarify what you're looking for?";
         }
     }
     // ======================================================================
@@ -114,10 +145,10 @@ export function planAnswer(input) {
         }
     }
     // ======================================================================
-    // STEP 6: Override for High Ambiguity
+    // STEP 6: Override for Hard Ambiguity
     // ======================================================================
-    if (ambiguity === "high") {
-        // Don't fetch cards for highly ambiguous queries
+    if (ambiguity === "hard") {
+        // Don't fetch cards for hard ambiguous queries
         needsCards = false;
         maxCards = 0;
         cardRole = "none";

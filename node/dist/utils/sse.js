@@ -9,6 +9,12 @@ export class SSE {
     init() {
         if (this.initialized)
             return;
+        // ✅ FIX: Check if headers already sent (prevents ERR_HTTP_HEADERS_SENT)
+        if (this.res.headersSent) {
+            console.warn("⚠️ SSE headers already sent, skipping init");
+            this.initialized = true; // Mark as initialized to prevent further attempts
+            return;
+        }
         this.res.setHeader("Content-Type", "text/event-stream");
         this.res.setHeader("Cache-Control", "no-cache, no-transform");
         this.res.setHeader("Connection", "keep-alive");
@@ -47,7 +53,7 @@ export class SSE {
             payload = { type, data: null };
         }
         this.res.write(`data: ${JSON.stringify(payload)}\n\n`);
-        // Force flush if available
+        // Force flush if available (Express Response doesn't have flush, but some implementations do)
         if (typeof this.res.flush === 'function') {
             this.res.flush();
         }

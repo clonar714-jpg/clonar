@@ -3,10 +3,19 @@ import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import '../models/query_session_model.dart';
 import 'follow_up_dedupe_provider.dart';
 
-/// ✅ PHASE 5 + PHASE 10: Follow-up engine provider - generates contextual follow-up suggestions
+/// ✅ PHASE 5 + PHASE 10: Follow-up engine provider - uses LLM-generated suggestions first
 final followUpEngineProvider = FutureProvider.family<List<String>, QuerySession>((ref, session) async {
   ref.keepAlive(); // ✅ PHASE 10: Keep alive for better performance
   try {
+    // ✅ CRITICAL: Use LLM-generated follow-ups first (from backend)
+    if (session.followUpSuggestions.isNotEmpty) {
+      if (kDebugMode) {
+        debugPrint('✅ Using LLM-generated follow-ups: ${session.followUpSuggestions}');
+      }
+      return session.followUpSuggestions;
+    }
+    
+    // Fallback to heuristic-based suggestions if LLM didn't generate any
     final suggestions = <String>[];
     final intent = session.intent?.toLowerCase() ?? session.cardType?.toLowerCase() ?? '';
     final summary = session.summary ?? '';

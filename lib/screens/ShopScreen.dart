@@ -1361,6 +1361,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     if (kDebugMode) {
       debugPrint('📱 Loading chat: ${chat.title}, has history: ${chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty}');
     }
+    
+    // ✅ CRITICAL FIX: Clear session history before loading previous chat
+    // This ensures only the selected chat's sessions are shown, not all subsequent chats
+    ref.read(sessionHistoryProvider.notifier).clear();
+    if (kDebugMode) {
+      debugPrint('🧹 Cleared session history before loading previous chat: ${chat.title}');
+    }
+    
     // ✅ Navigate to ShoppingResultsScreen with conversation history
     Navigator.push(
       context,

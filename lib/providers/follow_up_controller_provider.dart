@@ -15,51 +15,24 @@ class FollowUpController extends StateNotifier<void> {
   /// Handle follow-up query submission
   Future<void> handleFollowUp(String followUp, QuerySession parentSession) async {
     if (kDebugMode) {
-      debugPrint('🎯 Handling follow-up: "$followUp" for parent: "${parentSession.query}"');
+      debugPrint('🎯🎯🎯 HANDLING FOLLOW-UP: "$followUp" for parent: "${parentSession.query}"');
     }
 
     try {
+      print("🔥🔥🔥 FOLLOW-UP: Step 1 - Resetting streaming text");
       // ✅ Step 1: Reset streaming text
       ref.read(streamingTextProvider.notifier).reset();
 
-      // ✅ Step 2: Create new QuerySession with context
-      final newSession = QuerySession(
-        query: followUp,
-        isStreaming: true,
-        isParsing: false,
-        // Inherit context from parent session
-        imageUrl: parentSession.imageUrl,
-      );
-
-      // ✅ Step 3: Push new session into sessionHistoryProvider
-      ref.read(sessionHistoryProvider.notifier).addSession(newSession);
-
-      // ✅ Step 4: Build conversation history for context
-      final sessions = ref.read(sessionHistoryProvider);
-      final history = <Map<String, dynamic>>[];
-      
-      // Include parent session and previous sessions for context
-      for (final session in sessions) {
-        if (session.query.isNotEmpty && 
-            session.summary != null && 
-            session.summary!.isNotEmpty) {
-          history.add({
-            'query': session.query,
-            'summary': session.summary,
-            'intent': session.intent ?? session.resultType,
-            'cardType': session.cardType ?? session.resultType,
-          });
-        }
-      }
-
-      // ✅ Step 5: Submit query to agent with context
-      // Note: We'll need to update agentControllerProvider to accept context
-      // For now, we'll use the existing submitQuery method
+      print("🔥🔥🔥 FOLLOW-UP: Step 2 - Calling submitQuery");
+      // ✅ FIX: Don't create session here - submitQuery will create it
+      // Just call submitQuery directly, it will handle session creation and history
       await ref.read(agentControllerProvider.notifier).submitQuery(
         followUp,
         imageUrl: parentSession.imageUrl,
+        useStreaming: true, // ✅ Explicitly enable streaming
       );
 
+      print("🔥🔥🔥 FOLLOW-UP: Step 3 - Query submitted, scrolling to top");
       if (kDebugMode) {
         debugPrint('✅ Follow-up query submitted successfully');
       }
@@ -68,6 +41,8 @@ class FollowUpController extends StateNotifier<void> {
       ref.read(scrollProvider.notifier).scrollToTop();
 
     } catch (e, st) {
+      print("🔥🔥🔥 FOLLOW-UP ERROR: $e");
+      print("🔥🔥🔥 FOLLOW-UP STACK: $st");
       if (kDebugMode) {
         debugPrint('❌ Error handling follow-up: $e\n$st');
       }

@@ -8,11 +8,16 @@ class QuerySession {
   final String? summary;
   final String? intent;
   final String? cardType;
-  final List<Map<String, dynamic>> cards;
+  final List<Map<String, dynamic>> cards; // ✅ DEPRECATED: Use cardsByDomain instead
+  // ✅ PERPLEXITY-STYLE: Structured cards by domain
+  final Map<String, dynamic>? cardsByDomain; // { products: [], hotels: [], places: [], movies: [] }
+  // ✅ PERPLEXITY-STYLE: UI requirements from backend
+  final Map<String, dynamic>? uiRequirements; // { needsCards, needsImages, needsMaps, ... }
   final List<dynamic> results;
   final List<Map<String, dynamic>>? sections; // ✅ FIX: Hotel sections from backend
   final List<Map<String, dynamic>>? mapPoints; // ✅ FIX: Map points for hotels
   final List<String> destinationImages;
+  final List<Map<String, dynamic>>? videos; // ✅ NEW: Videos from search results { url, thumbnail, title }
   final List<Map<String, dynamic>> locationCards;
   final List<Map<String, dynamic>> sources; // ✅ FIX: Sources from backend
   final List<String> followUpSuggestions; // ✅ FIX: Follow-up suggestions from backend
@@ -24,25 +29,34 @@ class QuerySession {
   final DateTime timestamp;
   final String? imageUrl;
   
-  // ✅ Backward compatibility fields (computed from cards/results)
-  String get resultType => intent ?? cardType ?? 'answer';
+  // ✅ SIMPLIFIED: No more hotel/learn query logic - just use sections directly
+  String get resultType => 'answer'; // Always 'answer' - no more intent detection
   bool get isLoading => isStreaming || isParsing;
-  List<Product> get products => _extractProducts();
-  List<Map<String, dynamic>> get hotelResults => _extractHotels();
-  List<Map<String, dynamic>>? get hotelSections => _extractHotelSections();
-  List<Map<String, dynamic>>? get hotelMapPoints => _extractHotelMapPoints();
   List<Map<String, dynamic>> get rawResults => results.whereType<Map<String, dynamic>>().toList();
+  
+  // ✅ DEPRECATED: These are no longer used (kept for backward compatibility only)
+  @Deprecated('Use sections directly instead')
+  List<Product> get products => [];
+  @Deprecated('Use sections directly instead')
+  List<Map<String, dynamic>> get hotelResults => [];
+  @Deprecated('Use sections directly instead')
+  List<Map<String, dynamic>>? get hotelSections => null;
+  @Deprecated('Use sections directly instead')
+  List<Map<String, dynamic>>? get hotelMapPoints => null;
 
   QuerySession({
     required this.query,
     this.summary,
     this.intent,
     this.cardType,
-    this.cards = const [],
+    this.cards = const [], // ✅ DEPRECATED: Keep for backward compatibility
+    this.cardsByDomain, // ✅ NEW: Structured cards by domain
+    this.uiRequirements, // ✅ NEW: UI requirements from backend
     this.results = const [],
     this.sections, // ✅ FIX: Hotel sections
     this.mapPoints, // ✅ FIX: Map points
     this.destinationImages = const [],
+    this.videos, // ✅ NEW: Videos from search results
     this.locationCards = const [],
     this.sources = const [], // ✅ FIX: Sources from backend
     this.followUpSuggestions = const [], // ✅ FIX: Follow-up suggestions from backend
@@ -163,14 +177,7 @@ class QuerySession {
     }
   }
   
-  List<Map<String, dynamic>>? _extractHotelSections() {
-    // ✅ FIX: Extract from sections field if available
-    if (sections != null && sections!.isNotEmpty) {
-      return sections!.map((e) => Map<String, dynamic>.from(e)).toList();
-    }
-    // Fallback: try to extract from results if it contains sections
-    return null;
-  }
+  // ✅ REMOVED: _extractHotelSections - no longer needed, use sections directly
   
   List<Map<String, dynamic>>? _extractHotelMapPoints() {
     // ✅ FIX: Extract from mapPoints field if available
@@ -189,11 +196,14 @@ class QuerySession {
     String? summary,
     String? intent,
     String? cardType,
-    List<Map<String, dynamic>>? cards,
+    List<Map<String, dynamic>>? cards, // ✅ DEPRECATED
+    Map<String, dynamic>? cardsByDomain, // ✅ NEW
+    Map<String, dynamic>? uiRequirements, // ✅ NEW
     List<dynamic>? results,
     List<Map<String, dynamic>>? sections, // ✅ FIX: Hotel sections
     List<Map<String, dynamic>>? mapPoints, // ✅ FIX: Map points
     List<String>? destinationImages,
+    List<Map<String, dynamic>>? videos, // ✅ NEW: Videos from search results
     List<Map<String, dynamic>>? locationCards,
     List<Map<String, dynamic>>? sources, // ✅ FIX: Sources
     List<String>? followUpSuggestions, // ✅ FIX: Follow-up suggestions
@@ -210,11 +220,14 @@ class QuerySession {
       summary: summary ?? this.summary,
       intent: intent ?? this.intent,
       cardType: cardType ?? this.cardType,
-      cards: cards ?? this.cards,
+      cards: cards ?? this.cards, // ✅ DEPRECATED
+      cardsByDomain: cardsByDomain ?? this.cardsByDomain, // ✅ NEW
+      uiRequirements: uiRequirements ?? this.uiRequirements, // ✅ NEW
       results: results ?? this.results,
       sections: sections ?? this.sections, // ✅ FIX: Hotel sections
       mapPoints: mapPoints ?? this.mapPoints, // ✅ FIX: Map points
       destinationImages: destinationImages ?? this.destinationImages,
+      videos: videos ?? this.videos, // ✅ NEW: Videos from search results
       locationCards: locationCards ?? this.locationCards,
       sources: sources ?? this.sources, // ✅ FIX: Sources
       followUpSuggestions: followUpSuggestions ?? this.followUpSuggestions, // ✅ FIX: Follow-up suggestions
@@ -234,11 +247,14 @@ class QuerySession {
       'summary': summary,
       'intent': intent,
       'cardType': cardType,
-      'cards': cards,
+      'cards': cards, // ✅ DEPRECATED
+      'cardsByDomain': cardsByDomain, // ✅ NEW
+      'uiRequirements': uiRequirements, // ✅ NEW
       'results': results,
       'sections': sections, // ✅ FIX: Include sections for hotels
       'mapPoints': mapPoints, // ✅ FIX: Include map points for hotels
       'destinationImages': destinationImages,
+      'videos': videos, // ✅ NEW: Include videos from search results
       'locationCards': locationCards,
       'sources': sources, // ✅ FIX: Include sources
       'followUpSuggestions': followUpSuggestions, // ✅ FIX: Include follow-up suggestions
@@ -256,7 +272,9 @@ class QuerySession {
       summary: json['summary'] as String?,
       intent: json['intent'] as String?,
       cardType: json['cardType'] as String?,
-      cards: (json['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+      cards: (json['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [], // ✅ DEPRECATED
+      cardsByDomain: json['cardsByDomain'] != null ? Map<String, dynamic>.from(json['cardsByDomain']) : null, // ✅ NEW
+      uiRequirements: json['uiRequirements'] != null ? Map<String, dynamic>.from(json['uiRequirements']) : null, // ✅ NEW
       results: json['results'] as List? ?? [],
       sections: (json['sections'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(), // ✅ FIX: Include sections
       mapPoints: (json['mapPoints'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(), // ✅ FIX: Include map points

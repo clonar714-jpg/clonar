@@ -5,6 +5,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/query_session_model.dart';
 import '../models/Product.dart';
+import '../models/AnswerContext.dart';
+import '../models/UiMode.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 import '../providers/follow_up_engine_provider.dart';
@@ -15,6 +17,8 @@ import '../screens/HotelResultsScreen.dart';
 import '../screens/ShoppingGridScreen.dart';
 import '../screens/MovieDetailScreen.dart';
 import '../services/AgentService.dart';
+import 'result_shells/ResultShellRouter.dart';
+import 'PerplexityAnswerWidget.dart';
 
 class SessionRenderModel {
   final QuerySession session;
@@ -80,129 +84,914 @@ class _SessionContentRenderer extends ConsumerWidget {
             ),
           ),
           
-          // ✅ FIX: Show loading indicator ONLY when there's no data
-          // ROOT CAUSE FIX: Don't check isStreaming/isParsing flags - they may not flip correctly
-          // Data presence is the only reliable signal
-          Builder(
-            builder: (context) {
-              final hasSummary = session.summary != null && session.summary!.isNotEmpty;
-              final hasCards = session.cards.isNotEmpty;
-              final hasLocationCards = session.locationCards.isNotEmpty;
-              final hasRawResults = session.rawResults.isNotEmpty;
-              final hasHotelSections = session.hotelSections != null && session.hotelSections!.isNotEmpty;
-              final hasHotelResults = session.hotelResults.isNotEmpty;
-              
-              final hasNoData = !hasSummary && 
-                               !hasCards && 
-                               !hasLocationCards && 
-                               !hasRawResults && 
-                               !hasHotelSections && 
-                               !hasHotelResults;
-              
-              // ✅ ROOT CAUSE FIX: Loading depends ONLY on data presence, not flags
-              final isLoading = hasNoData;
-              
-              // ✅ FIX: Log loading state for debugging
-              if (isLoading) {
-                print("⏳ LOADING STATE - Query: '${session.query}'");
-                print("  - hasSummary: $hasSummary");
-                print("  - hasCards: $hasCards (${session.cards.length})");
-                print("  - hasLocationCards: $hasLocationCards (${session.locationCards.length})");
-                print("  - hasRawResults: $hasRawResults (${session.rawResults.length})");
-                print("  - hasHotelSections: $hasHotelSections (${session.hotelSections?.length ?? 0})");
-                print("  - hasHotelResults: $hasHotelResults (${session.hotelResults.length})");
-                print("  - hasNoData: $hasNoData");
-                print("  - isLoading: $isLoading (based on data only, not flags)");
-              } else {
-                print("✅ NOT LOADING - Query: '${session.query}' - Data present, rendering content");
-                print("  - hasSummary: $hasSummary");
-                print("  - hasCards: $hasCards (${session.cards.length})");
-                print("  - hasLocationCards: $hasLocationCards (${session.locationCards.length})");
-                print("  - Will render content now");
-              }
-              
-              if (isLoading) {
-                return Container(
-                  padding: const EdgeInsets.symmetric(vertical: 60),
-                  child: Column(
-                    children: [
-                      const CircularProgressIndicator(),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Searching...',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }
-              
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildTags(context, session, ref),
-                  // ✅ FIX: Add spacing between tags and content (16px for movies, hotels)
-                  if (session.resultType == 'movies' || session.resultType == 'hotel' || session.resultType == 'hotels')
-                    const SizedBox(height: 16),
-                  // ✅ FIX 2: Add spacing between tags and map for hotels
-                  if (session.resultType == 'hotel' || session.resultType == 'hotels')
-                    ...(_buildHotelMap(session) != null ? [_buildHotelMap(session)!] : []),
-                  // ✅ For movies: Show summary AFTER cards, not before
-                  if (session.resultType != 'movies')
-                    if (session.summary != null && session.summary!.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Overview',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: AppColors.textPrimary,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            StreamingTextWidget(
-                              targetText: session.summary ?? "",
-                              enableAnimation: false,
-                              style: const TextStyle(
-                                fontSize: 15,
-                                color: AppColors.textPrimary,
-                                height: 1.65, // ✅ Perplexity: Slightly more line spacing for readability
-                                letterSpacing: -0.1, // ✅ Perplexity: Tighter letter spacing
-                                fontWeight: FontWeight.w400, // ✅ Perplexity: Normal weight (not bold)
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  _buildIntentBasedContent(context, session, ref),
-                  // ✅ For movies: Show Core Details and Box Office sections ONLY for specific queries (1 movie)
-                  // For general queries (multiple movies), these sections are not shown in SessionRenderer
-                  if (session.resultType == 'movies' && session.cards.length == 1)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                      child: _MovieDetailsSections(movies: session.cards),
-                    ),
-                  if ((session.resultType == 'places' || session.resultType == 'location' || session.resultType == 'movies' || session.resultType == 'shopping'))
-                    _buildFollowUps(session, ref),
-                  const SizedBox(height: 40),
-                ],
-              );
-            },
+          // ✅ CRITICAL: Direct call - NO Builder wrapper
+          // If you see "✅ NOT LOADING" in logs, app is running OLD CODE - do: flutter clean && flutter run --profile
+          _buildContentDirectly(session),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ CRITICAL: Direct content builder - NO Builder wrapper, NO routing
+  Widget _buildContentDirectly(QuerySession session) {
+    // ✅ CRITICAL: Log IMMEDIATELY when method is called
+    print('🔥🔥🔥 _buildContentDirectly() CALLED for query: "${session.query}"');
+    print('🔥🔥🔥   - Session summary: ${session.summary != null && session.summary!.isNotEmpty}');
+    print('🔥🔥🔥   - Session sections: ${session.sections?.length ?? 0}');
+    
+    // ✅ SIMPLIFIED: Only check for summary and sections (no more hotel/learn logic)
+    final hasSummary = session.summary != null && session.summary!.isNotEmpty;
+    final hasSections = session.sections != null && session.sections!.isNotEmpty;
+    
+    final hasNoData = !hasSummary && !hasSections;
+    
+    // ✅ ROOT CAUSE FIX: Loading depends ONLY on data presence, not flags
+    final isLoading = hasNoData;
+    
+    // ✅ FIX: Log loading state for debugging
+    if (isLoading) {
+      print("⏳ LOADING STATE - Query: '${session.query}'");
+      print("  - hasSummary: $hasSummary");
+      print("  - hasSections: $hasSections (${session.sections?.length ?? 0})");
+      print("  - hasNoData: $hasNoData");
+      print("  - isLoading: $isLoading (based on data only, not flags)");
+      
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 60),
+        child: Column(
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(
+              'Searching...',
+              style: TextStyle(
+                fontSize: 14,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    // ✅ CRITICAL: This MUST execute - log immediately to verify
+    print('🔥🔥🔥 SessionRenderer: About to build PerplexityAnswerWidget for "${session.query}"');
+    print('🔥🔥🔥   - isLoading: $isLoading (MUST be false)');
+    print('🔥🔥🔥   - hasSummary: $hasSummary');
+    print('🔥🔥🔥   - hasSections: $hasSections (${session.sections?.length ?? 0})');
+    print('🔥🔥🔥   - Session sections: ${session.sections}');
+    print('🔥🔥🔥   - Session sources: ${session.sources.length}');
+    
+    // ✅ SIMPLIFIED: Directly use PerplexityAnswerWidget for ALL queries
+    // No more goal-aware routing - LLM-driven means one widget for everything
+    // ✅ CRITICAL: This is the ONLY code path that should execute
+    final widget = Column(
+      key: ValueKey('answer-${session.query}-${session.sections?.length ?? 0}'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // ✅ SIMPLIFIED: Use PerplexityAnswerWidget directly (shows "Answer" header, not "Explanation")
+        // Just answer content - sections have their own titles
+        PerplexityAnswerWidget(
+          key: ValueKey('perplexity-${session.query}'),
+          session: session,
+        ),
+        
+        const SizedBox(height: 40),
+      ],
+    );
+    
+    print('🔥🔥🔥 SessionRenderer: Built PerplexityAnswerWidget widget, returning now');
+    return widget;
+  }
+  
+  // ✅ GOAL-AWARE: Build content using goal-specific shells (delegates to existing methods for now)
+  Widget _buildGoalAwareContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    // ✅ CRITICAL: Log which path we're taking
+    print('🎯 _buildGoalAwareContent: userGoal=${answerContext.userGoal}, isClarification=${answerContext.isClarificationOnly}');
+    
+    if (answerContext.isClarificationOnly) {
+      print('  - → Using _buildClarificationCard');
+      return _buildClarificationCard(session, answerContext);
+    }
+    
+    switch (answerContext.userGoal) {
+      case 'learn':
+        // ✅ SIMPLIFIED: Use ResultShellRouter (routes to LearnResultShell which uses PerplexityAnswerWidget)
+        print('  - → Routing to ResultShellRouter for learn goal');
+        return ResultShellRouter(
+          session: session,
+          answerContext: answerContext,
+          model: model,
+        );
+      case 'compare':
+        // ✅ SIMPLIFIED: Use ResultShellRouter (routes to LearnResultShell which uses PerplexityAnswerWidget)
+        return ResultShellRouter(
+          session: session,
+          answerContext: answerContext,
+          model: model,
+        );
+      case 'decide':
+        // ✅ FIX: Use ResultShellRouter for decide queries (properly handles evidence section)
+        return ResultShellRouter(
+          session: session,
+          answerContext: answerContext,
+          model: model,
+        );
+      case 'browse':
+        // ✅ SIMPLIFIED: Use ResultShellRouter (routes to LearnResultShell which uses PerplexityAnswerWidget)
+        return ResultShellRouter(
+          session: session,
+          answerContext: answerContext,
+          model: model,
+        );
+      case 'locate':
+        // ✅ SIMPLIFIED: Use ResultShellRouter (routes to LearnResultShell which uses PerplexityAnswerWidget)
+        return ResultShellRouter(
+          session: session,
+          answerContext: answerContext,
+          model: model,
+        );
+      default:
+        // ✅ SIMPLIFIED: Use ResultShellRouter (routes to LearnResultShell which uses PerplexityAnswerWidget)
+        return ResultShellRouter(
+          session: session,
+          answerContext: answerContext,
+          model: model,
+        );
+    }
+  }
+  
+  // ✅ LEARN: Answer only, no cards, no domain chips
+  Widget _buildLearnContent(QuerySession session, AnswerContext context, WidgetRef ref) {
+    // ✅ SIMPLIFIED: Use PerplexityAnswerWidget for all learn queries
+    return ResultShellRouter(
+      session: session,
+      answerContext: context,
+      model: model,
+    );
+  }
+  
+  // ✅ LEARN: Build answer section with reading-friendly typography
+  Widget _buildLearnAnswerSection(String summary, AnswerContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "Answer", // ✅ Changed from context.intentHeader to "Answer"
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          StreamingTextWidget(
+            targetText: summary,
+            enableAnimation: false,
+            style: const TextStyle(
+              fontSize: 15,
+              color: AppColors.textPrimary,
+              height: 1.75, // More line spacing for reading
+              letterSpacing: 0.1, // Slightly more letter spacing
+              fontWeight: FontWeight.w400,
+            ),
           ),
         ],
       ),
     );
   }
   
+  // ✅ LEARN: Build key takeaways block
+  Widget _buildKeyTakeaways(String summary) {
+    // Extract key points using sentence chunking
+    final takeaways = _extractKeyTakeaways(summary);
+    
+    if (takeaways.isEmpty) return const SizedBox.shrink();
+    
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceVariant.withOpacity(0.3),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: AppColors.border.withOpacity(0.5),
+            width: 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Key takeaways",
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            // ✅ UI Enforcement Rule: Hide if empty (better than duplicated ones)
+            if (takeaways.isNotEmpty)
+              ...takeaways.map((takeaway) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "• ",
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          takeaway,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppColors.textSecondary,
+                            height: 1.5,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // ✅ LEARN: Extract key takeaways from summary (concept-based abstraction)
+  // ✅ FIX: Changed from sentence-based to concept-based to prevent duplication
+  List<String> _extractKeyTakeaways(String summary) {
+    // Step 1: Extract core concepts (noun phrases, technical terms)
+    final concepts = _extractCoreConcepts(summary);
+    
+    // Step 2: Convert to abstract labels (remove verbs, examples, connectors)
+    final takeaways = concepts.map((c) => _toAbstractLabel(c)).toList();
+    
+    // Step 3: Hard de-duplication - remove any takeaway that appears in summary
+    final summaryLower = summary.toLowerCase();
+    final uniqueTakeaways = takeaways
+        .where((t) => !summaryLower.contains(t.toLowerCase()))
+        .where((t) => t.length > 5 && t.length < 50) // Reasonable length for labels
+        .toList();
+    
+    // Step 4: Quality check - if less than 2 unique takeaways, return empty
+    if (uniqueTakeaways.length < 2) {
+      return [];
+    }
+    
+    // Step 5: Return max 3 items
+    return uniqueTakeaways.take(3).toList();
+  }
+  
+  // Extract core concepts: noun phrases, technical terms, key entities
+  List<String> _extractCoreConcepts(String text) {
+    final concepts = <String>[];
+    final lowerText = text.toLowerCase();
+    
+    // Pattern 1: Technical terms (capitalized words, acronyms)
+    final techPattern = RegExp(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b');
+    final techMatches = techPattern.allMatches(text);
+    for (final match in techMatches) {
+      final term = match.group(0)?.trim();
+      if (term != null && term.length > 3) {
+        concepts.add(term);
+      }
+    }
+    
+    // Pattern 2: Noun phrases (adjective + noun patterns)
+    final nounPhrasePattern = RegExp(r'\b(?:embedding|vector|semantic|retrieval|augmented|generation|similarity|metric|document|system|model|algorithm|technique|method|approach|framework|architecture|component|feature|capability|limitation|advantage|benefit|tradeoff|alternative|application|use case|scalability|performance|efficiency)\b', caseSensitive: false);
+    final nounMatches = nounPhrasePattern.allMatches(lowerText);
+    for (final match in nounMatches) {
+      final term = match.group(0)?.trim();
+      if (term != null) {
+        // Try to get the full noun phrase (adjective + noun)
+        final start = match.start;
+        final end = match.end;
+        if (start > 0 && end < text.length) {
+          final context = text.substring(
+            start > 10 ? start - 10 : 0,
+            end < text.length - 10 ? end + 10 : text.length
+          );
+          // Extract 2-4 word phrases around the term
+          final escapedTerm = term.replaceAll(RegExp(r'[.*+?^${}()|[\]\\]'), r'\$&');
+          final phrasePattern = RegExp('\\b(?:\\w+\\s+){1,3}$escapedTerm(?:\\s+\\w+){0,2}\\b', caseSensitive: false);
+          final phraseMatch = phrasePattern.firstMatch(context);
+          if (phraseMatch != null) {
+            concepts.add(phraseMatch.group(0)!.trim());
+          } else {
+            concepts.add(term);
+          }
+        } else {
+          concepts.add(term);
+        }
+      }
+    }
+    
+    // Pattern 3: Key action-result pairs (extract the result/concept, not the action)
+    // e.g., "converts text into embeddings" -> "embedding-based conversion"
+    final actionPattern = RegExp(r'\b(?:converts?|transforms?|uses?|applies?|implements?|enables?|provides?|offers?|supports?)\s+[\w\s]+(?:into|to|for|as|with)\s+([\w\s]+)', caseSensitive: false);
+    final actionMatches = actionPattern.allMatches(text);
+    for (final match in actionMatches) {
+      final result = match.group(1)?.trim();
+      if (result != null && result.length > 3 && result.length < 30) {
+        concepts.add(result);
+      }
+    }
+    
+    // Remove duplicates and return
+    return concepts.toSet().toList();
+  }
+  
+  // Convert concept to abstract label (remove verbs, examples, connectors)
+  String _toAbstractLabel(String concept) {
+    // Remove common verbs and connectors
+    final cleaned = concept
+        .replaceAll(RegExp(r'\b(?:is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|can|could|should|may|might|must)\b', caseSensitive: true), '')
+        .replaceAll(RegExp(r'\b(?:the|a|an|this|that|these|those|it|they|we|you)\b', caseSensitive: true), '')
+        .replaceAll(RegExp(r'\b(?:and|or|but|so|because|since|although|however|therefore|thus|hence)\b', caseSensitive: true), '')
+        .replaceAll(RegExp(r'\b(?:using|with|by|for|from|to|in|on|at|of)\b', caseSensitive: true), '')
+        .replaceAll(RegExp(r'[.!?,;:()\[\]{}]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    
+    // Capitalize first letter
+    if (cleaned.isEmpty) return concept;
+    return cleaned[0].toUpperCase() + cleaned.substring(1);
+  }
+  
+  // ✅ DEPRECATED: This old method should NOT be used anymore
+  // All queries should use PerplexityAnswerWidget directly (LLM-driven)
+  Widget _buildCompareContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    print('⚠️ WARNING: _buildCompareContent called - should use PerplexityAnswerWidget instead');
+    // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
+    return PerplexityAnswerWidget(session: session);
+  }
+  
+  // ✅ OLD METHOD (DEPRECATED - kept for reference only)
+  Widget _buildCompareContent_OLD(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    final summary = session.summary ?? "";
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ✅ COMPARE: Comparison summary block (short framing paragraph)
+        if (summary.isNotEmpty)
+          _buildComparisonSummaryBlock(summary, answerContext),
+        
+        // ✅ COMPARE: Comparison split block (MUST exist - two labeled sides)
+        _buildComparisonSplitBlock(summary),
+        
+        // ✅ COMPARE: Evidence cards (max 2, after reasoning)
+        if (answerContext.shouldShowEvidenceSection && session.cards.length <= 2)
+          _buildEvidenceSection(context, session, ref, userGoal: answerContext.userGoal),
+        
+        // ✅ COMPARE: Footer
+        _buildCompareFooter(),
+        
+        // ✅ COMPARE: Ranked follow-ups
+        _buildFollowUps(session, ref, isCompare: true),
+      ],
+    );
+  }
+  
+  // ✅ COMPARE: Build comparison summary block
+  Widget _buildComparisonSummaryBlock(String summary, AnswerContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "Answer", // ✅ Changed from context.intentHeader to "Answer"
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            "Side-by-side overview",
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Extract first paragraph as framing
+          StreamingTextWidget(
+            targetText: _extractFramingParagraph(summary),
+            enableAnimation: false,
+            style: const TextStyle(
+              fontSize: 15,
+              color: AppColors.textPrimary,
+              height: 1.65,
+              letterSpacing: -0.1,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ COMPARE: Extract framing paragraph (first sentence or first ~100 chars)
+  String _extractFramingParagraph(String text) {
+    final firstSentenceEnd = text.indexOf('.');
+    if (firstSentenceEnd > 0 && firstSentenceEnd < 150) {
+      return text.substring(0, firstSentenceEnd + 1);
+    }
+    // Fallback: first ~100 chars
+    return text.length > 100 ? text.substring(0, 100) + '...' : text;
+  }
+  
+  // ✅ COMPARE: Build comparison split block (two labeled sides)
+  Widget _buildComparisonSplitBlock(String summary) {
+    // Extract comparison sides from summary using heuristics
+    final sides = _extractComparisonSides(summary);
+    
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceVariant.withOpacity(0.3),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: AppColors.border.withOpacity(0.5),
+            width: 1,
+          ),
+        ),
+        child: Column(
+          children: [
+            // Side A
+            if (sides['sideA'] != null)
+              _buildComparisonSide(
+                heading: sides['sideAHeading'] ?? "Better for",
+                content: sides['sideA']!,
+                isFirst: true,
+              ),
+            
+            // Divider
+            if (sides['sideA'] != null && sides['sideB'] != null)
+              Container(
+                height: 1,
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                color: AppColors.border.withOpacity(0.5),
+              ),
+            
+            // Side B
+            if (sides['sideB'] != null)
+              _buildComparisonSide(
+                heading: sides['sideBHeading'] ?? "Better for",
+                content: sides['sideB']!,
+                isFirst: false,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // ✅ COMPARE: Extract comparison sides from summary
+  Map<String, String?> _extractComparisonSides(String summary) {
+    final result = <String, String?>{};
+    
+    // Heuristic 1: Look for "X excels at" or "X is better when"
+    final excelsPattern = RegExp(r'([A-Z][a-zA-Z\s]+?)\s+(?:excels at|is better when|is stronger for|shines in)\s+([^.!?]+)', caseSensitive: false);
+    final excelsMatch = excelsPattern.firstMatch(summary);
+    if (excelsMatch != null) {
+      result['sideAHeading'] = "Better for ${excelsMatch.group(2)?.trim()}";
+      result['sideA'] = "${excelsMatch.group(1)?.trim()} excels at ${excelsMatch.group(2)?.trim()}.";
+    }
+    
+    // Heuristic 2: Look for "Y is better" or "Y offers"
+    final betterPattern = RegExp(r'([A-Z][a-zA-Z\s]+?)\s+(?:is better|offers|provides|has)\s+([^.!?]+)', caseSensitive: false);
+    final betterMatch = betterPattern.firstMatch(summary);
+    if (betterMatch != null && betterMatch.group(1) != excelsMatch?.group(1)) {
+      result['sideBHeading'] = "Better for ${betterMatch.group(2)?.trim()}";
+      result['sideB'] = "${betterMatch.group(1)?.trim()} is better for ${betterMatch.group(2)?.trim()}.";
+    }
+    
+    // Heuristic 3: Split by "vs" or "versus" and extract from each side
+    if (result.isEmpty) {
+      final vsPattern = RegExp(r'([^v]+?)\s+vs\.?\s+([^.!?]+)', caseSensitive: false);
+      final vsMatch = vsPattern.firstMatch(summary);
+      if (vsMatch != null) {
+        result['sideA'] = vsMatch.group(1)?.trim() ?? "";
+        result['sideB'] = vsMatch.group(2)?.trim() ?? "";
+        result['sideAHeading'] = "First option";
+        result['sideBHeading'] = "Second option";
+      }
+    }
+    
+    // Fallback: Split summary into two parts
+    if (result.isEmpty) {
+      final sentences = summary.split(RegExp(r'[.!?]+\s+'));
+      if (sentences.length >= 2) {
+        result['sideA'] = sentences[0].trim();
+        result['sideB'] = sentences[1].trim();
+        result['sideAHeading'] = "First option";
+        result['sideBHeading'] = "Second option";
+      } else if (sentences.isNotEmpty) {
+        // Single sentence - split in half
+        final mid = summary.length ~/ 2;
+        result['sideA'] = summary.substring(0, mid).trim();
+        result['sideB'] = summary.substring(mid).trim();
+        result['sideAHeading'] = "First option";
+        result['sideBHeading'] = "Second option";
+      }
+    }
+    
+    return result;
+  }
+  
+  // ✅ COMPARE: Build a comparison side
+  Widget _buildComparisonSide({required String heading, required String content, required bool isFirst}) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, isFirst ? 16 : 12, 16, isFirst ? 12 : 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            heading,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: AppColors.accent,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            content,
+            style: const TextStyle(
+              fontSize: 14,
+              color: AppColors.textPrimary,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ DEPRECATED: This old method should NOT be used anymore
+  // All queries should use PerplexityAnswerWidget directly (LLM-driven)
+  Widget _buildDecideContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    print('⚠️ WARNING: _buildDecideContent called - should use PerplexityAnswerWidget instead');
+    // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
+    return PerplexityAnswerWidget(session: session);
+  }
+  
+  // ✅ OLD METHOD (DEPRECATED - kept for reference only)
+  Widget _buildDecideContent_OLD(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    final summary = session.summary ?? "";
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ✅ DECIDE: Verdict header
+        _buildVerdictHeader(summary, answerContext),
+        
+        // ✅ DECIDE: Good fit / Not ideal blocks
+        _buildVerdictBlocks(summary),
+        
+        // ✅ DECIDE: Evidence cards (max 2, after verdict)
+        if (answerContext.shouldShowEvidenceSection && session.cards.length <= 2)
+          _buildEvidenceSection(context, session, ref, userGoal: answerContext.userGoal),
+        
+        // ✅ DECIDE: Follow-ups framed as "See alternatives", "Compare with X"
+        _buildFollowUps(session, ref, isDecide: true),
+      ],
+    );
+  }
+  
+  // ✅ DECIDE: Build verdict header
+  Widget _buildVerdictHeader(String summary, AnswerContext context) {
+    // Extract verdict from summary (look for "yes", "no", "worth it", "recommend")
+    final verdict = _extractVerdict(summary);
+    
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "Answer", // ✅ Changed from context.intentHeader to "Answer"
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Verdict text (bold, prominent)
+          if (verdict['text'] != null)
+            Text(
+              verdict['text']!,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: verdict['isPositive'] == true 
+                  ? AppColors.accent 
+                  : AppColors.textPrimary,
+                height: 1.4,
+              ),
+            ),
+          const SizedBox(height: 8),
+          // Condition text
+          if (verdict['condition'] != null)
+            Text(
+              verdict['condition']!,
+              style: TextStyle(
+                fontSize: 14,
+                color: AppColors.textSecondary,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ DECIDE: Extract verdict from summary
+  Map<String, dynamic> _extractVerdict(String summary) {
+    final lower = summary.toLowerCase();
+    
+    // Look for "yes" or "no" patterns
+    if (RegExp(r'\b(yes|recommend|worth it|good choice|solid option)\b').hasMatch(lower)) {
+      final conditionMatch = RegExp(r'(?:if|when|for)\s+([^.!?]+)').firstMatch(summary);
+      return {
+        'text': _extractFirstSentence(summary),
+        'isPositive': true,
+        'condition': conditionMatch != null ? "If you ${conditionMatch.group(1)?.trim()}" : null,
+      };
+    } else if (RegExp(r'\b(no|not worth|skip|avoid|not ideal)\b').hasMatch(lower)) {
+      final conditionMatch = RegExp(r'(?:if|when|for)\s+([^.!?]+)').firstMatch(summary);
+      return {
+        'text': _extractFirstSentence(summary),
+        'isPositive': false,
+        'condition': conditionMatch != null ? "If you ${conditionMatch.group(1)?.trim()}" : null,
+      };
+    }
+    
+    // Fallback: use first sentence
+    return {
+      'text': _extractFirstSentence(summary),
+      'isPositive': null,
+      'condition': null,
+    };
+  }
+  
+  String _extractFirstSentence(String text) {
+    final firstSentenceEnd = text.indexOf('.');
+    if (firstSentenceEnd > 0) {
+      return text.substring(0, firstSentenceEnd + 1);
+    }
+    return text.length > 100 ? text.substring(0, 100) + '...' : text;
+  }
+  
+  // ✅ DECIDE: Build verdict blocks (Good fit if / Not ideal if)
+  Widget _buildVerdictBlocks(String summary) {
+    final blocks = _extractVerdictBlocks(summary);
+    
+    if (blocks.isEmpty) return const SizedBox.shrink();
+    
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: blocks.map((block) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: block['isPositive'] == true
+                  ? AppColors.accent.withOpacity(0.1)
+                  : AppColors.surfaceVariant.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: block['isPositive'] == true
+                    ? AppColors.accent.withOpacity(0.3)
+                    : AppColors.border.withOpacity(0.5),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    block['isPositive'] == true ? Icons.check_circle : Icons.cancel,
+                    size: 20,
+                    color: block['isPositive'] == true 
+                      ? AppColors.accent 
+                      : AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          block['label'] ?? "",
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          block['text'] ?? "",
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppColors.textSecondary,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+  
+  // ✅ DECIDE: Extract verdict blocks from summary
+  List<Map<String, dynamic>> _extractVerdictBlocks(String summary) {
+    final blocks = <Map<String, dynamic>>[];
+    
+    // Look for "good fit if", "ideal if", "not ideal if", "skip if"
+    final goodFitPattern = RegExp(r'(?:good fit|ideal|recommended|worth it)\s+(?:if|when|for)\s+([^.!?]+)', caseSensitive: false);
+    final goodFitMatch = goodFitPattern.firstMatch(summary);
+    if (goodFitMatch != null) {
+      blocks.add({
+        'label': 'Good fit if',
+        'text': goodFitMatch.group(1)?.trim() ?? "",
+        'isPositive': true,
+      });
+    }
+    
+    final notIdealPattern = RegExp(r'(?:not ideal|skip|avoid|not worth|not recommended)\s+(?:if|when|for)\s+([^.!?]+)', caseSensitive: false);
+    final notIdealMatch = notIdealPattern.firstMatch(summary);
+    if (notIdealMatch != null) {
+      blocks.add({
+        'label': 'Not ideal if',
+        'text': notIdealMatch.group(1)?.trim() ?? "",
+        'isPositive': false,
+      });
+    }
+    
+    // Fallback: extract pros/cons if available
+    if (blocks.isEmpty) {
+      final prosPattern = RegExp(r'(?:pros?|advantages?|benefits?)[:\s]+([^.!?]+)', caseSensitive: false);
+      final prosMatch = prosPattern.firstMatch(summary);
+      if (prosMatch != null) {
+        blocks.add({
+          'label': 'Good fit if',
+          'text': prosMatch.group(1)?.trim() ?? "",
+          'isPositive': true,
+        });
+      }
+      
+      final consPattern = RegExp(r'(?:cons?|disadvantages?|drawbacks?)[:\s]+([^.!?]+)', caseSensitive: false);
+      final consMatch = consPattern.firstMatch(summary);
+      if (consMatch != null) {
+        blocks.add({
+          'label': 'Not ideal if',
+          'text': consMatch.group(1)?.trim() ?? "",
+          'isPositive': false,
+        });
+      }
+    }
+    
+    return blocks;
+  }
+  
+  // ✅ DEPRECATED: These old methods should NOT be used anymore
+  // All queries should use PerplexityAnswerWidget directly (LLM-driven)
+  // These are kept for backward compatibility but should be removed
+  Widget _buildBrowseContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    print('⚠️ WARNING: _buildBrowseContent called - should use PerplexityAnswerWidget instead');
+    // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
+    return PerplexityAnswerWidget(session: session);
+  }
+  
+  Widget _buildLocateContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
+    print('⚠️ WARNING: _buildLocateContent called - should use PerplexityAnswerWidget instead');
+    // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
+    return PerplexityAnswerWidget(session: session);
+  }
+  
+  // ✅ COMPARE: Footer for comparison
+  Widget _buildCompareFooter() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Text(
+        "Winner depends on your priorities and use case.",
+        style: TextStyle(
+          fontSize: 13,
+          fontStyle: FontStyle.italic,
+          color: AppColors.textSecondary,
+        ),
+      ),
+    );
+  }
+  
+  // ✅ LEARN: Follow-ups as depth expanders
+  Widget _buildLearnFollowUps(QuerySession session, WidgetRef ref) {
+    final followUpsAsync = ref.watch(followUpEngineProvider(session));
+    
+    return followUpsAsync.when(
+      data: (followUps) {
+        if (followUps.isEmpty) return const SizedBox.shrink();
+        final limited = followUps.take(3).toList();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 32),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                "Related",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...limited.asMap().entries.map((entry) {
+              return _buildDepthExpanderItem(entry.value, entry.key, session);
+            }),
+          ],
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+  
+  Widget _buildDepthExpanderItem(String suggestion, int index, QuerySession session) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => model.onFollowUpTap(suggestion, session),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.expand_more,
+                  size: 18,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    suggestion,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  
   Widget _buildTags(BuildContext context, QuerySession session, WidgetRef ref) {
+    // ✅ FIX 2: Use UiMode resolver (userGoal ONLY) to determine if shopping tag should be shown
+    final answerContext = AnswerContext.fromSession(session, null);
+    final uiMode = resolveUiMode(answerContext.userGoal);
+    
     final tags = <Widget>[
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -219,7 +1008,9 @@ class _SessionContentRenderer extends ConsumerWidget {
           ),
         ),
       ),
-      _buildIntentTag(session.resultType, session, ref),
+      // ✅ FIX 2: Only show shopping tag for browse mode (NOT based on intent or cards)
+      if (uiMode == UiMode.browse && session.resultType == 'shopping')
+        _buildIntentTag(session.resultType, session, ref),
     ];
     
     // ✅ FIX: Add "Paid Experiences" tag for ALL places queries (future: will show Expedia/affiliate API results)
@@ -460,45 +1251,8 @@ class _SessionContentRenderer extends ConsumerWidget {
     );
   }
   
-  Widget _buildIntentBasedContent(BuildContext context, QuerySession session, WidgetRef ref) {
-    final intent = session.resultType;
-    
-    if (intent == 'shopping' && session.products.isNotEmpty) {
-      return _buildShoppingContent(session);
-    } else if (intent == 'hotel' || intent == 'hotels') {
-      // ✅ FIX 4: Relax empty-guard logic - check hotelSections first, then hotelResults
-      // Temporarily removed isEmpty checks to see if backend data is being filtered out
-      if (session.hotelSections != null && session.hotelSections!.isNotEmpty) {
-        if (kDebugMode) {
-          debugPrint('🏨 Rendering hotel sections: ${session.hotelSections!.length} sections');
-        }
-        return _buildHotelSectionsContent(session, ref);
-      } else if (session.hotelResults.isNotEmpty) {
-        if (kDebugMode) {
-          debugPrint('🏨 Rendering hotel results: ${session.hotelResults.length} hotels');
-        }
-        return _buildHotelContent(session, ref);
-      } else {
-        // ✅ FIX 4: Even if empty, log to see what's happening
-        if (kDebugMode) {
-          debugPrint('⚠️ Hotel intent but no data:');
-          debugPrint('  - hotelSections: ${session.hotelSections?.length ?? 0}');
-          debugPrint('  - hotelResults: ${session.hotelResults.length}');
-          debugPrint('  - sections field: ${session.sections?.length ?? 0}');
-          debugPrint('  - cards: ${session.cards.length}');
-          debugPrint('  - results: ${session.results.length}');
-        }
-      }
-    } else if ((intent == 'places' || intent == 'location')) {
-      // ✅ FIX 4: Relaxed - removed isEmpty check temporarily
-      return _buildPlacesContent(session, ref);
-    } else if (intent == 'movies') {
-      // ✅ FIX 4: Relaxed - removed isEmpty check temporarily
-      return _buildMoviesContent(context, session, ref);
-    }
-    
-    return const SizedBox.shrink();
-  }
+  // ✅ REMOVED: _buildIntentBasedContent - no longer needed, all queries use ResultShellRouter
+  // This method was for old card-based rendering, which we've removed
   
   Widget _buildShoppingContent(QuerySession session) {
     const maxVisible = 12;
@@ -1275,25 +2029,634 @@ class _SessionContentRenderer extends ConsumerWidget {
     );
   }
   
-  Widget _buildFollowUps(QuerySession session, WidgetRef ref) {
+  // ✅ DEPRECATED: This old method should NOT be used anymore
+  // All queries should use PerplexityAnswerWidget directly (LLM-driven)
+  Widget _buildAnswerSection(QuerySession session, AnswerContext context) {
+    print('⚠️ WARNING: _buildAnswerSection called - should use PerplexityAnswerWidget instead');
+    // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
+    return PerplexityAnswerWidget(session: session);
+  }
+  
+  // ✅ OLD METHOD (DEPRECATED - kept for reference only)
+  Widget _buildAnswerSection_OLD(QuerySession session, AnswerContext context) {
+    final summary = session.summary ?? "";
+    
+    // ✅ COMPARE: For compare goal, always use neutral tone (ignore confidence)
+    final isCompare = context.userGoal == "compare";
+    
+    // ✅ CONFIDENCE-AWARE: Style based on confidence band (unless compare)
+    TextStyle answerStyle = const TextStyle(
+      fontSize: 15,
+      color: AppColors.textPrimary,
+      height: 1.65,
+      letterSpacing: -0.1,
+      fontWeight: FontWeight.w400,
+    );
+    
+    if (!isCompare) {
+      // Only apply confidence styling for non-compare goals
+      if (context.confidenceBand == "high") {
+        // High confidence: Bold first sentence
+        answerStyle = answerStyle.copyWith(fontWeight: FontWeight.w600);
+      } else if (context.confidenceBand == "low") {
+        // Low confidence: Slightly muted
+        answerStyle = answerStyle.copyWith(
+          color: AppColors.textPrimary.withOpacity(0.85),
+        );
+      }
+    }
+    
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ✅ FIXED: Use "Answer" header instead of context.intentHeader
+          Text(
+            "Answer", // ✅ Changed from context.intentHeader to "Answer"
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          // ✅ COMPARE: Subtitle for compare goal
+          if (isCompare) ...[
+            const SizedBox(height: 4),
+            Text(
+              "Side-by-side overview",
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          // ✅ COMPARE: For compare, structure answer with paragraphs and dividers
+          // ✅ CONFIDENCE-AWARE: Answer text with confidence-based styling (or neutral for compare)
+          isCompare 
+            ? _buildCompareAnswerText(summary, answerStyle)
+            : _buildConfidenceAwareText(summary, answerStyle),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ COMPARE: Build answer text structured for comparison
+  Widget _buildCompareAnswerText(String text, TextStyle baseStyle) {
+    // Split into paragraphs (by double newlines or periods followed by space)
+    final paragraphs = text.split(RegExp(r'\n\n|\.\s+(?=[A-Z])'));
+    final cleanParagraphs = paragraphs.where((p) => p.trim().isNotEmpty).toList();
+    
+    if (cleanParagraphs.length <= 1) {
+      // Single paragraph - just render normally
+      return StreamingTextWidget(
+        targetText: text,
+        enableAnimation: false,
+        style: baseStyle,
+      );
+    }
+    
+    // Multiple paragraphs - render with subtle dividers
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: cleanParagraphs.asMap().entries.map((entry) {
+        final index = entry.key;
+        final paragraph = entry.value.trim();
+        
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (index > 0) ...[
+              // Subtle divider between entities
+              const SizedBox(height: 16),
+              Container(
+                height: 1,
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                color: AppColors.border.withOpacity(0.3),
+              ),
+              const SizedBox(height: 8),
+            ],
+            StreamingTextWidget(
+              targetText: paragraph + (paragraph.endsWith('.') ? '' : '.'),
+              enableAnimation: false,
+              style: baseStyle,
+            ),
+          ],
+        );
+      }).toList(),
+    );
+  }
+  
+  // ✅ CONFIDENCE-AWARE: Build text with bold first sentence for high confidence
+  Widget _buildConfidenceAwareText(String text, TextStyle baseStyle) {
+    if (baseStyle.fontWeight == FontWeight.w600) {
+      // High confidence: Bold first sentence
+      final firstSentenceEnd = text.indexOf('.');
+      if (firstSentenceEnd > 0) {
+        return RichText(
+          text: TextSpan(
+            style: baseStyle.copyWith(fontWeight: FontWeight.w600),
+            children: [
+              TextSpan(text: text.substring(0, firstSentenceEnd + 1)),
+              TextSpan(
+                text: text.substring(firstSentenceEnd + 1),
+                style: baseStyle.copyWith(fontWeight: FontWeight.w400),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+    
+    return StreamingTextWidget(
+      targetText: text,
+      enableAnimation: false,
+      style: baseStyle,
+    );
+  }
+  
+  // ✅ DEPRECATED: This old method should NOT be used anymore
+  // All queries should use PerplexityAnswerWidget directly (LLM-driven)
+  Widget _buildClarificationCard(QuerySession session, AnswerContext context) {
+    print('⚠️ WARNING: _buildClarificationCard called - should use PerplexityAnswerWidget instead');
+    // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
+    return PerplexityAnswerWidget(session: session);
+  }
+  
+  // ✅ OLD METHOD (DEPRECATED - kept for reference only)
+  Widget _buildClarificationCard_OLD(QuerySession session, AnswerContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceVariant.withOpacity(0.5),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: AppColors.accent.withOpacity(0.3),
+              width: 1,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.help_outline,
+                size: 32,
+                color: AppColors.accent,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                "Answer", // ✅ Changed from context.intentHeader to "Answer"
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              StreamingTextWidget(
+                targetText: session.summary ?? "",
+                enableAnimation: false,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: AppColors.textPrimary.withOpacity(0.9),
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  // ✅ FIX 3: Get evidence header based on UiMode (userGoal ONLY)
+  String _getEvidenceHeader(String userGoal) {
+    final uiMode = resolveUiMode(userGoal);
+    
+    switch (uiMode) {
+      case UiMode.decide:
+        return "Supporting examples"; // ✅ FIX 3: Decide-specific language (evidence, not shopping)
+      case UiMode.browse:
+        return "Top picks"; // ✅ FIX 3: Browse-specific language
+      case UiMode.compare:
+        return "Why this answer?"; // Compare uses default
+      case UiMode.learn:
+        return "Why this answer?"; // Learn uses default
+      case UiMode.locate:
+        return "Why this answer?"; // Locate uses default
+      case UiMode.clarify:
+        return "Why this answer?"; // Clarify uses default
+    }
+  }
+  
+  // ✅ ANSWER-FIRST: Build evidence section for cards
+  // ✅ FIX 2: Accept userGoal parameter to use non-shopping language for decide queries
+  Widget _buildEvidenceSection(BuildContext context, QuerySession session, WidgetRef ref, {String? userGoal}) {
+    // ✅ COMPARE: Get answer context to check if this is a compare query
+    final answerContext = AnswerContext.fromSession(session, null);
+    final isCompare = answerContext.userGoal == "compare";
+    final isDecideGoal = answerContext.userGoal == 'decide'; // ✅ FIX 6: Empty / Failed Card Safety
+    
+    // ✅ FAILURE/TIMEOUT: If cards fail to load, show "Fetching evidence..." but keep answer visible
+    final hasCards = session.cards.isNotEmpty || session.results.isNotEmpty;
+    final isLoadingCards = session.isStreaming || session.isParsing;
+    
+    // ✅ FIX 6: Empty / Failed Card Safety for decide queries
+    // If userGoal === "decide" AND cards.length === 0:
+    // - Do NOT show error cards
+    // - Do NOT show shopping placeholders
+    // - Answer-only UI must render cleanly
+    if (isDecideGoal && !hasCards && !isLoadingCards) {
+      return const SizedBox.shrink(); // Clean answer-only UI
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 24),
+        // ✅ FIX 3: Use UiMode (userGoal ONLY) to determine card framing language
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            _getEvidenceHeader(userGoal ?? answerContext.userGoal),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        // ✅ FAILURE/TIMEOUT: Show loading state if cards are being fetched
+        if (isLoadingCards && !hasCards)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  "Fetching evidence...",
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        // ✅ REMOVED: Old card-based rendering - all queries now use ResultShellRouter
+        // Cards are no longer used, sections are rendered via PerplexityAnswerWidget
+      ],
+    );
+  }
+  
+  // ✅ COMPARE: Build evidence content in compare layout (2-column grid or grouped)
+  Widget _buildCompareEvidenceContent(BuildContext context, QuerySession session, WidgetRef ref) {
+    final cards = session.cards;
+    
+    // If exactly 2 cards, render in 2-column grid
+    if (cards.length == 2) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Option A
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ✅ COMPARE: Option label
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      _extractEntityName(cards[0]) ?? "Option A",
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                  // Card content
+                  _buildCompareCard(cards[0], session, ref),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            // Option B
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ✅ COMPARE: Option label
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      _extractEntityName(cards[1]) ?? "Option B",
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                  // Card content
+                  _buildCompareCard(cards[1], session, ref),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    // More than 2 cards - render in grouped sections
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: cards.asMap().entries.map((entry) {
+        final index = entry.key;
+        final card = entry.value;
+        final optionLabel = _extractEntityName(card) ?? "Option ${String.fromCharCode(65 + index)}";
+        
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ✅ COMPARE: Option label
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  optionLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Card content (use existing card rendering but ensure equal weight)
+              _buildCompareCard(card, session, ref),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+  
+  // ✅ COMPARE: Extract entity name from card (title, name, or brand)
+  String? _extractEntityName(Map<String, dynamic> card) {
+    return card['title']?.toString() ?? 
+           card['name']?.toString() ?? 
+           card['brand']?.toString() ??
+           card['product_name']?.toString();
+  }
+  
+  // ✅ COMPARE: Build card with equal visual weight (same size, same prominence)
+  Widget _buildCompareCard(Map<String, dynamic> card, QuerySession session, WidgetRef ref) {
+    // Use existing card rendering but ensure equal weight
+    final intent = session.resultType;
+    
+    // ✅ COMPARE: For 2-column layout, wrap in container to ensure equal width
+    Widget cardWidget;
+    
+    if (intent == 'shopping') {
+      // Convert card to Product for product card rendering
+      try {
+        final product = Product.fromJson(card);
+        cardWidget = _buildProductCard(product);
+      } catch (e) {
+        cardWidget = _buildGenericCompareCard(card);
+      }
+    } else if (intent == 'hotel' || intent == 'hotels') {
+      cardWidget = _buildHotelCard(card);
+    } else if (intent == 'places' || intent == 'location') {
+      cardWidget = _buildPlaceCard(card);
+    } else {
+      cardWidget = _buildGenericCompareCard(card);
+    }
+    
+    // ✅ COMPARE: Ensure equal visual weight by constraining height if needed
+    // For 2-column layout, cards are already constrained by Expanded
+    // For grouped layout, ensure consistent styling
+    return cardWidget;
+  }
+  
+  // ✅ COMPARE: Generic card for unknown types (ensures equal weight)
+  Widget _buildGenericCompareCard(Map<String, dynamic> card) {
+    final title = card['title']?.toString() ?? card['name']?.toString() ?? 'Unknown';
+    final description = card['description']?.toString() ?? card['snippet']?.toString() ?? '';
+    final image = card['image']?.toString() ?? card['thumbnail']?.toString();
+    
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.border,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (image != null && image.isNotEmpty)
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+              child: CachedNetworkImage(
+                imageUrl: image,
+                width: double.infinity,
+                height: 150,
+                fit: BoxFit.cover,
+                placeholder: (context, url) => Container(
+                  height: 150,
+                  color: AppColors.surfaceVariant,
+                  child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                ),
+                errorWidget: (context, url, error) => Container(
+                  height: 150,
+                  color: AppColors.surfaceVariant,
+                  child: const Icon(Icons.image, size: 48, color: AppColors.textSecondary),
+                ),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    description,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textSecondary,
+                      height: 1.5,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildFollowUps(QuerySession session, WidgetRef ref, {bool isCompare = false, bool isDecide = false}) {
     final followUpsAsync = ref.watch(followUpEngineProvider(session));
     
     return followUpsAsync.when(
       data: (followUps) {
         if (followUps.isEmpty) return const SizedBox.shrink();
         final limited = followUps.take(3).toList();
+        
+        // ✅ FOLLOW-UP HIERARCHY: Determine header based on goal
+        String header;
+        if (isCompare) {
+          header = "Want to compare further?";
+        } else if (isDecide) {
+          header = "Explore more";
+        } else {
+          header = "Want to go deeper?";
+        }
+        
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 32),
-            ...limited.asMap().entries.map((entry) {
-              return _buildFollowUpItem(entry.value, entry.key, session);
-            }),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                header,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            // ✅ FOLLOW-UP HIERARCHY: First follow-up is primary, rest are secondary
+            if (limited.isNotEmpty)
+              _buildPrimaryFollowUp(limited[0], session, isDecide: isDecide),
+            if (limited.length > 1)
+              ...limited.skip(1).map((followUp) => _buildSecondaryFollowUp(followUp, session)),
           ],
         );
       },
       loading: () => const SizedBox.shrink(),
       error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+  
+  // ✅ FOLLOW-UP HIERARCHY: Primary follow-up (larger, accent color/outline)
+  Widget _buildPrimaryFollowUp(String suggestion, QuerySession session, {bool isDecide = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => model.onFollowUpTap(suggestion, session),
+          borderRadius: BorderRadius.circular(14),
+          splashColor: AppColors.accent.withOpacity(0.2),
+          highlightColor: AppColors.accent.withOpacity(0.1),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: AppColors.accent,
+                width: 1.5,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isDecide ? Icons.compare_arrows : Icons.arrow_forward,
+                  size: 18,
+                  color: AppColors.accent,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    suggestion,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  
+  // ✅ FOLLOW-UP HIERARCHY: Secondary follow-ups (muted styling)
+  Widget _buildSecondaryFollowUp(String suggestion, QuerySession session) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => model.onFollowUpTap(suggestion, session),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    suggestion,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+                Icon(
+                  Icons.arrow_forward_ios,
+                  size: 12,
+                  color: AppColors.textSecondary.withOpacity(0.5),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
   

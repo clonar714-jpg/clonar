@@ -72,16 +72,25 @@ class ApiClient {
       if (token != null) 'Authorization': 'Bearer $token',
     };
 
+    final url = _url(endpoint);
+    print("🔥🔥🔥 API_CLIENT: Sending POST (stream) → $url");
+    print("🔥🔥🔥 API_CLIENT: Body keys: ${body.keys.join(', ')}");
+    print("🔥🔥🔥 API_CLIENT: Query: ${body['query']}");
+    
     if (kDebugMode) {
-      debugPrint('🌐 Sending POST (stream) → ${_url(endpoint)}');
+      debugPrint('🌐 Sending POST (stream) → $url');
       debugPrint('📦 Body: $body');
     }
 
-    final request = http.Request('POST', _url(endpoint));
+    final request = http.Request('POST', url);
     request.headers.addAll(headers);
     request.body = jsonEncode(body);
     
-    return request.send();
+    print("🔥🔥🔥 API_CLIENT: Request created, sending...");
+    final response = await request.send();
+    print("🔥🔥🔥 API_CLIENT: Response received - status: ${response.statusCode}");
+    
+    return response;
   }
 
   /// PUT request

@@ -378,7 +378,7 @@ class AgentService {
   /// [imageUrl] - Optional image URL for image-based search
   static Future<Map<String, dynamic>> askAgent(
     String query, {
-    bool stream = false,
+    bool stream = true, // ✅ OPTIMIZED: Streaming enabled by default for better UX
     required List<Map<String, dynamic>> conversationHistory, // ✅ REQUIRED: Always send conversation history
     Map<String, dynamic>? previousContext,
     String? lastFollowUp,
@@ -513,27 +513,28 @@ class AgentService {
         debugPrint('📤 Request headers: ${request.headers}');
       }
       
-      // ✅ FIX 1: Increased timeout to 30 seconds (dev-safe) - backend needs ~12 seconds
-      // For production, use 60-120 seconds. For dev, 30s is safe.
+      // ✅ FIX: Increased timeout to 60 seconds - backend can take 30-40 seconds for complex queries
+      // Backend does: web search → document summarization → reranking → LLM generation (can be slow)
       if (kDebugMode) {
         debugPrint('🚀 Sending POST request to: $url');
         debugPrint('📡 Network check: Platform=${Platform.operatingSystem}, BaseURL=$baseUrl');
-        debugPrint('⏱️ Request timeout: 30 seconds - waiting for backend response...');
+        debugPrint('⏱️ Request timeout: 60 seconds - waiting for backend response...');
       }
       
       final response = await request.send().timeout(
-        const Duration(seconds: 30), // ✅ FIX 1: 30 seconds (dev-safe, backend needs ~12s)
+        const Duration(seconds: 60), // ✅ FIX: 60 seconds (backend can take 30-40s for complex queries)
         onTimeout: () {
           if (kDebugMode) {
-            debugPrint('⏱️ Request timeout after 30 seconds');
+            debugPrint('⏱️ Request timeout after 60 seconds');
             debugPrint('🔍 URL attempted: $url');
             debugPrint('💡 Troubleshooting:');
             debugPrint('   1. Test: Open http://10.0.0.127:4000/api/test in phone browser');
             debugPrint('   2. Verify: Device and computer on SAME WiFi network');
             debugPrint('   3. Check: Backend is running (see backend terminal)');
             debugPrint('   4. Backend might be taking longer - check backend logs');
+            debugPrint('   5. Backend processing: web search → summarization → reranking → LLM (can take 30-40s)');
           }
-          throw TimeoutException('Request timeout after 30 seconds');
+          throw TimeoutException('Request timeout after 60 seconds');
         },
       );
 
@@ -547,10 +548,31 @@ class AgentService {
         } else {
           // Handle regular JSON response
           final responseBody = await response.stream.bytesToString();
-          final responseData = jsonDecode(responseBody) as Map<String, dynamic>;
           
-          // ✅ FIX 2: Log the FULL response (force visibility) - use print, not debugPrint
+          // ✅ CRITICAL: Log raw response before parsing
+          print("🔥 RAW RESPONSE BODY (first 1000 chars): ${responseBody.length > 1000 ? responseBody.substring(0, 1000) + '...' : responseBody}");
+          
+          Map<String, dynamic> responseData;
+          try {
+            responseData = jsonDecode(responseBody) as Map<String, dynamic>;
+          } catch (parseError) {
+            print("❌ JSON PARSE ERROR: $parseError");
+            print("❌ Full response body: $responseBody");
+            throw Exception("Failed to parse JSON response: $parseError");
+          }
+          
+          // ✅ FIX: Ensure success is true if response is valid (backend should return success: true)
+          if (!responseData.containsKey('success')) {
+            responseData['success'] = true; // Backend returns success: true, but ensure it's set
+          }
+          
+          // ✅ CRITICAL: Log the FULL response (force visibility) - use print, not debugPrint
           print("🔥 FULL AGENT RESPONSE: ${jsonEncode(responseData)}");
+          print("🔥 Response success: ${responseData['success']}");
+          print("🔥 Response keys: ${responseData.keys.join(', ')}");
+          print("🔥 Response sections count: ${(responseData['sections'] as List?)?.length ?? 0}");
+          print("🔥 Response sources count: ${(responseData['sources'] as List?)?.length ?? 0}");
+          print("🔥 Response followUpSuggestions count: ${(responseData['followUpSuggestions'] as List?)?.length ?? 0}");
           if (kDebugMode) {
             debugPrint('✅ Agent API success - response received');
             debugPrint('  - Response keys: ${responseData.keys.join(", ")}');
@@ -558,7 +580,8 @@ class AgentService {
             debugPrint('  - Has cards: ${responseData.containsKey('cards')} (count: ${(responseData['cards'] as List?)?.length ?? 0})');
             debugPrint('  - Has sections: ${responseData.containsKey('sections')} (count: ${(responseData['sections'] as List?)?.length ?? 0})');
             debugPrint('  - Has results: ${responseData.containsKey('results')} (count: ${(responseData['results'] as List?)?.length ?? 0})');
-            debugPrint('  - Has map: ${responseData.containsKey('map')} (count: ${(responseData['map'] as List?)?.length ?? 0})');
+            debugPrint('  - Has sources: ${responseData.containsKey('sources')} (count: ${(responseData['sources'] as List?)?.length ?? 0})');
+            debugPrint('  - Has followUpSuggestions: ${responseData.containsKey('followUpSuggestions')} (count: ${(responseData['followUpSuggestions'] as List?)?.length ?? 0})');
           }
           
           // ✅ PHASE 7: Enhanced caching with contextHash and freshness logic
@@ -635,19 +658,35 @@ class AgentService {
         'sources': [],
       };
     } catch (e) {
+      // ✅ CRITICAL: Log full error details to understand what's failing
+      print("❌ CRITICAL ERROR in AgentService.askAgent:");
+      print("  - Error: $e");
+      print("  - Error type: ${e.runtimeType}");
+      print("  - URL: $url");
+      print("  - Stack trace: ${StackTrace.current}");
+      
       if (kDebugMode) {
         debugPrint('⚠️ Unknown error calling Agent API: $e');
         debugPrint('🔍 Attempted URL: $url');
         debugPrint('🔍 Error type: ${e.runtimeType}');
       }
+      
+      // ✅ FIX: If error is an Exception with a message, try to extract it
+      String errorMessage = 'Request failed';
+      if (e is Exception) {
+        errorMessage = e.toString();
+      }
+      
       // Return a safe fallback response instead of crashing
       return {
         'success': false,
-        'error': 'Request failed',
+        'error': errorMessage,
         'summary': 'An error occurred while processing your request. Please try again.',
         'intent': 'answer',
         'results': [],
         'sources': [],
+        'sections': [], // ✅ FIX: Include sections even in error response
+        'followUpSuggestions': [], // ✅ FIX: Include follow-ups even in error response
       };
   }
   }
@@ -671,11 +710,15 @@ class AgentService {
           if (data['type'] == 'message' && data['data'] != null) {
             fullAnswer += data['data'];
           } else if (data['type'] == 'end') {
-            // Stream complete
+            // ✅ FIX: Extract sections, sources, follow-ups from stream
             return {
               'intent': data['intent'] ?? 'answer',
               'summary': data['summary'] ?? fullAnswer,
-              'answer': data['summary'] ?? fullAnswer,
+              'answer': data['answer'] ?? data['summary'] ?? fullAnswer,
+              'sections': data['sections'] ?? [],
+              'sources': data['sources'] ?? [],
+              'followUpSuggestions': data['followUpSuggestions'] ?? [],
+              'uiRequirements': data['uiRequirements'] ?? {},
               'results': [],
               'products': []
             };
@@ -694,7 +737,10 @@ class AgentService {
       'intent': 'answer',
       'summary': fullAnswer.isNotEmpty ? fullAnswer : 'No answer received',
       'answer': fullAnswer.isNotEmpty ? fullAnswer : 'No answer received',
+      'sections': [],
       'sources': [],
+      'followUpSuggestions': [],
+      'uiRequirements': {},
       'results': [],
       'products': []
     };

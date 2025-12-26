@@ -175,11 +175,14 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
       
       print('❌ Hotel details cache MISS for: $hotelName (fetching from API)');
       
-      final url = Uri.parse('${AgentService.baseUrl}/api/hotel-details');
+      final url = Uri.parse('${AgentService.baseUrl}/api/product-details'); // ✅ NEW: Use unified endpoint
       
       // Build comprehensive hotel data object - auto-adapts to any fields present
       // This works with minimal SerpAPI data and automatically uses richer data when available
       final Map<String, dynamic> hotelData = {
+        'domain': 'hotel', // ✅ NEW: Specify domain
+        'id': widget.hotel['id']?.toString() ?? '',
+        'title': widget.hotel['name'] ?? '',
         'name': widget.hotel['name'] ?? '',
         'location': widget.hotel['location'],
         'address': widget.hotel['address'],
@@ -208,6 +211,7 @@ class _HotelDetailScreenState extends State<HotelDetailScreen> {
         if (widget.hotel['gps_coordinates'] != null) 'gps_coordinates': widget.hotel['gps_coordinates'],
         if (widget.hotel['latitude'] != null) 'latitude': widget.hotel['latitude'],
         if (widget.hotel['longitude'] != null) 'longitude': widget.hotel['longitude'],
+        if (widget.hotel['link'] != null) 'link': widget.hotel['link'],
       };
       
       // Remove null/empty values to keep payload clean

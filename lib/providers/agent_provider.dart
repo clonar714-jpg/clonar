@@ -54,8 +54,10 @@ class AgentController extends StateNotifier<void> {
     return history;
   }
 
-  Future<void> submitQuery(String query, {String? imageUrl, bool useStreaming = false}) async {
-    // ✅ FIX: Prevent duplicate query submissions
+  Future<void> submitQuery(String query, {String? imageUrl, bool useStreaming = true}) async {
+    print("🔥🔥🔥🔥🔥 submitQuery CALLED - Query: '$query', useStreaming: $useStreaming, imageUrl: $imageUrl");
+    
+    // ✅ FIX: Prevent duplicate query submissions (but allow follow-ups even if same query)
     final existingSessions = ref.read(sessionHistoryProvider);
     final trimmedQuery = query.trim();
     final queryAlreadyExists = existingSessions.any((s) => 
@@ -65,11 +67,19 @@ class AgentController extends StateNotifier<void> {
     );
     
     if (queryAlreadyExists) {
+      print("🔥🔥🔥❌❌❌ SKIPPING DUPLICATE: Query '$trimmedQuery' is already processing");
+      print("🔥🔥🔥❌❌❌ Existing sessions:");
+      for (var s in existingSessions) {
+        print("🔥🔥🔥❌❌❌   - Query: '${s.query}', isStreaming: ${s.isStreaming}, isParsing: ${s.isParsing}");
+      }
       if (kDebugMode) {
         debugPrint('⏭️ Skipping duplicate query submission: "$trimmedQuery" (already processing)');
       }
       return; // Don't submit duplicate query
     }
+    
+    print("🔥🔥🔥✅✅✅ NOT A DUPLICATE - Proceeding with query submission");
+    print("🔥🔥🔥✅✅✅ Existing sessions count: ${existingSessions.length}");
     
     // ✅ PHASE 4: Reset streaming text on new query
     ref.read(streamingTextProvider.notifier).reset();
@@ -104,10 +114,26 @@ class AgentController extends StateNotifier<void> {
       }
     }
 
+    print("🔥🔥🔥✅✅✅ submitQuery ENTRY - Query: '$query', useStreaming: $useStreaming");
+    print("🔥🔥🔥✅✅✅ Conversation history length: ${conversationHistory.length}");
+    
     try {
       // ✅ TASK 4: Support streaming responses (opt-in via useStreaming flag)
+      print("🔥🔥🔥✅✅✅ submitQuery: useStreaming=$useStreaming");
       if (useStreaming) {
-        await _handleStreamingResponse(query, imageUrl, initialSession, conversationHistory);
+        print("🔥🔥🔥✅✅✅ CALLING _handleStreamingResponse...");
+        print("🔥🔥🔥✅✅✅ Query: '$query'");
+        print("🔥🔥🔥✅✅✅ ImageUrl: $imageUrl");
+        print("🔥🔥🔥✅✅✅ Initial session query: '${initialSession.query}'");
+        try {
+          await _handleStreamingResponse(query, imageUrl, initialSession, conversationHistory);
+          print("🔥🔥🔥✅✅✅ _handleStreamingResponse RETURNED SUCCESSFULLY");
+        } catch (streamError, streamStackTrace) {
+          print("🔥🔥🔥❌❌❌ _handleStreamingResponse THREW EXCEPTION: $streamError");
+          print("🔥🔥🔥❌❌❌ ERROR TYPE: ${streamError.runtimeType}");
+          print("🔥🔥🔥❌❌❌ STACK: $streamStackTrace");
+          rethrow;
+        }
         return;
       }
       
@@ -115,7 +141,7 @@ class AgentController extends StateNotifier<void> {
       print("🔥 ABOUT TO CALL AgentService.askAgent for query: '$query'");
       final responseData = await AgentService.askAgent(
         query,
-        stream: false,
+        stream: false, // Explicitly false when useStreaming is false
         conversationHistory: conversationHistory,
         imageUrl: imageUrl,
       );
@@ -140,10 +166,41 @@ class AgentController extends StateNotifier<void> {
       final intent = responseData['intent']?.toString();
       final cardType = responseData['cardType']?.toString();
       
-      // ✅ FIX: Extract cards with proper type checking
-      List<Map<String, dynamic>> cards = [];
+      // ✅ PERPLEXITY-STYLE: Extract structured cards by domain
+      Map<String, dynamic>? cardsByDomain;
+      List<Map<String, dynamic>> cards = []; // ✅ DEPRECATED: Keep for backward compatibility
+      
       if (responseData['cards'] != null) {
-        if (responseData['cards'] is List) {
+        if (responseData['cards'] is Map) {
+          // ✅ NEW: Structured cards object { products: [], hotels: [], places: [], movies: [] }
+          final cardsMap = responseData['cards'] as Map;
+          cardsByDomain = Map<String, dynamic>.from(cardsMap);
+          
+          // ✅ Flatten for backward compatibility (deprecated)
+          final allCards = <Map<String, dynamic>>[];
+          if (cardsMap['products'] is List) {
+            allCards.addAll((cardsMap['products'] as List)
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e)));
+          }
+          if (cardsMap['hotels'] is List) {
+            allCards.addAll((cardsMap['hotels'] as List)
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e)));
+          }
+          if (cardsMap['places'] is List) {
+            allCards.addAll((cardsMap['places'] as List)
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e)));
+          }
+          if (cardsMap['movies'] is List) {
+            allCards.addAll((cardsMap['movies'] as List)
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e)));
+          }
+          cards = allCards;
+        } else if (responseData['cards'] is List) {
+          // ✅ OLD: Flat list (backward compatibility)
           cards = (responseData['cards'] as List).map((e) {
             if (e is Map) {
               return Map<String, dynamic>.from(e);
@@ -151,6 +208,12 @@ class AgentController extends StateNotifier<void> {
             return <String, dynamic>{};
           }).toList();
         }
+      }
+      
+      // ✅ PERPLEXITY-STYLE: Extract UI requirements
+      Map<String, dynamic>? uiRequirements;
+      if (responseData['uiRequirements'] != null && responseData['uiRequirements'] is Map) {
+        uiRequirements = Map<String, dynamic>.from(responseData['uiRequirements']);
       }
       
       final results = responseData['results'] ?? [];
@@ -186,6 +249,19 @@ class AgentController extends StateNotifier<void> {
       if (responseData['destination_images'] != null) {
         if (responseData['destination_images'] is List) {
           destinationImages = (responseData['destination_images'] as List).map((e) => e.toString()).toList();
+        }
+      }
+      
+      // ✅ NEW: Extract videos with proper type checking
+      List<Map<String, dynamic>> videos = [];
+      if (responseData['videos'] != null) {
+        if (responseData['videos'] is List) {
+          videos = (responseData['videos'] as List).map((e) {
+            if (e is Map) {
+              return Map<String, dynamic>.from(e);
+            }
+            return <String, dynamic>{};
+          }).toList();
         }
       }
       
@@ -231,12 +307,23 @@ class AgentController extends StateNotifier<void> {
       print("🔥 EXTRACTED FROM RESPONSE:");
       print("  - Summary: ${summary != null && summary.isNotEmpty ? 'YES (${summary.length} chars)' : 'NO'}");
       print("  - Intent: $intent");
-      print("  - CardType: $cardType");
-      print("  - Cards: ${cards.length} items (type: ${responseData['cards'].runtimeType})");
-      print("  - Results: ${results is List ? results.length : 'N/A'} items");
-      print("  - Sections: ${sections.length} items");
-      print("  - LocationCards: ${locationCards.length} items");
-      print("  - DestinationImages: ${destinationImages.length} items");
+      print("  - Sections: ${sections.length} items (CRITICAL - should be 3+)");
+      print("  - Sources: ${sources.length} items (CRITICAL - should be 9+)");
+      print("  - FollowUpSuggestions: ${followUpSuggestions.length} items");
+      if (cardsByDomain != null) {
+        print("  - CardsByDomain: ${cardsByDomain.keys.join(', ')}");
+        if (cardsByDomain['products'] is List) print("    - Products: ${(cardsByDomain['products'] as List).length}");
+        if (cardsByDomain['hotels'] is List) print("    - Hotels: ${(cardsByDomain['hotels'] as List).length}");
+        if (cardsByDomain['places'] is List) print("    - Places: ${(cardsByDomain['places'] as List).length}");
+        if (cardsByDomain['movies'] is List) print("    - Movies: ${(cardsByDomain['movies'] as List).length}");
+      }
+      if (uiRequirements != null) {
+        print("  - UIRequirements: ${uiRequirements.toString()}");
+      }
+      if (sections.isNotEmpty) {
+        print("  - First section title: ${sections[0]['title']}");
+        print("  - First section content length: ${(sections[0]['content']?.toString() ?? '').length}");
+      }
       
       if (kDebugMode) {
         debugPrint('📦 Agent Response Data:');
@@ -284,11 +371,14 @@ class AgentController extends StateNotifier<void> {
         summary: summary,
         intent: intent,
         cardType: cardType,
-        cards: cards,
+        cards: cards, // ✅ DEPRECATED: Keep for backward compatibility
+        cardsByDomain: cardsByDomain, // ✅ NEW: Structured cards by domain
+        uiRequirements: uiRequirements, // ✅ NEW: UI requirements from backend
         results: results,
         sections: sections, // ✅ FIX: Extract sections for hotels
         mapPoints: mapPoints, // ✅ FIX: Extract map points for hotels
         destinationImages: destinationImages,
+        videos: videos.isNotEmpty ? videos : null, // ✅ NEW: Videos from search results
         locationCards: locationCards,
         sources: sources, // ✅ FIX: Extract sources
         followUpSuggestions: followUpSuggestions, // ✅ FIX: Extract follow-up suggestions
@@ -308,19 +398,14 @@ class AgentController extends StateNotifier<void> {
       print("  - LocationCards: ${updatedSession.locationCards.length}");
       print("  - Results: ${updatedSession.results.length}");
       print("  - Sections: ${updatedSession.sections?.length ?? 0}");
-
-      // ✅ DEBUG: Log hotel sections extraction
-      if (kDebugMode && (intent == 'hotel' || intent == 'hotels')) {
-        debugPrint('🏨 Hotel Response Debug:');
-        debugPrint('  - Sections count: ${sections.length}');
-        debugPrint('  - Map points count: ${mapPoints.length}');
-        debugPrint('  - Updated session sections: ${updatedSession.sections?.length ?? 0}');
-        debugPrint('  - Updated session hotelSections getter: ${updatedSession.hotelSections?.length ?? 0}');
-        if (sections.isNotEmpty) {
-          debugPrint('  - First section title: ${sections.first['title']}');
-          debugPrint('  - First section items count: ${(sections.first['items'] as List?)?.length ?? 0}');
-        }
+      print("  - Sources: ${updatedSession.sources.length}");
+      if (updatedSession.sources.isNotEmpty) {
+        print("  - First source title: ${updatedSession.sources[0]['title'] ?? 'N/A'}");
+        print("  - First source link: ${updatedSession.sources[0]['link'] ?? updatedSession.sources[0]['url'] ?? 'N/A'}");
       }
+
+      // ✅ REMOVED: Old hotel-specific logging - no longer needed
+      // All queries now use sections directly, no hotel/learn distinction
 
       // ✅ FIX 3: Force UI state update - explicitly replace session to trigger rebuild
       print("🔥 ABOUT TO UPDATE SESSION IN PROVIDER");
@@ -346,19 +431,18 @@ class AgentController extends StateNotifier<void> {
         print("  - isParsing: ${lastSession.isParsing} (CRITICAL: must be false)");
         print("  - Has summary: ${lastSession.summary != null && lastSession.summary!.isNotEmpty}");
         print("  - Sections count: ${lastSession.sections?.length ?? 0}");
-        print("  - HotelSections count: ${lastSession.hotelSections?.length ?? 0}");
-        print("  - HotelResults count: ${lastSession.hotelResults.length}");
-        print("  - Cards count: ${lastSession.cards.length}");
-        print("  - LocationCards count: ${lastSession.locationCards.length}");
-        print("  - Results count: ${lastSession.results.length}");
+        // ✅ REMOVED: Misleading "HotelSections count" log - sections are generic, not hotel-specific
+        print("  - Sources count: ${lastSession.sources.length}");
+        print("  - FollowUpSuggestions count: ${lastSession.followUpSuggestions.length}");
+        if (lastSession.sections != null && lastSession.sections!.isNotEmpty) {
+          print("  - First section title: ${lastSession.sections![0]['title']}");
+          print("  - First section has content: ${lastSession.sections![0]['content'] != null && (lastSession.sections![0]['content']?.toString() ?? '').isNotEmpty}");
+          print("  - All section titles: ${lastSession.sections!.map((s) => s['title']).join(', ')}");
+        }
         
-        // ✅ CRITICAL CHECK: Verify session actually has data
+        // ✅ SIMPLIFIED: Only check for summary and sections
         final hasAnyData = (lastSession.summary != null && lastSession.summary!.isNotEmpty) ||
-                           lastSession.cards.isNotEmpty ||
-                           lastSession.locationCards.isNotEmpty ||
-                           lastSession.rawResults.isNotEmpty ||
-                           (lastSession.hotelSections != null && lastSession.hotelSections!.isNotEmpty) ||
-                           lastSession.hotelResults.isNotEmpty;
+                           (lastSession.sections != null && lastSession.sections!.isNotEmpty);
         print("  - HAS ANY DATA: $hasAnyData");
         print("  - SHOULD SHOW CONTENT: ${!lastSession.isStreaming && !lastSession.isParsing && hasAnyData}");
       }
@@ -406,6 +490,10 @@ class AgentController extends StateNotifier<void> {
 
   // ✅ TASK 4: Handle streaming SSE response with partial updates
   Future<void> _handleStreamingResponse(String query, String? imageUrl, QuerySession initialSession, List<Map<String, dynamic>> conversationHistory) async {
+    print("🔥🔥🔥 _handleStreamingResponse CALLED");
+    print("🔥🔥🔥 Query: $query");
+    print("🔥🔥🔥 Conversation history length: ${conversationHistory.length}");
+    
     try {
       // ✅ Build request body with conversationHistory
       final requestBody = <String, dynamic>{
@@ -416,17 +504,43 @@ class AgentController extends StateNotifier<void> {
         requestBody["imageUrl"] = imageUrl;
       }
       
-      final streamedResponse = await ApiClient.postStream("/agent?stream=true", requestBody);
-
+      print("🔥🔥🔥 SENDING STREAMING REQUEST...");
+      print("🔥🔥🔥 Request body: $requestBody");
+      print("🔥🔥🔥 Endpoint: /agent?stream=true");
+      
+      final streamedResponse;
+      try {
+        print("🔥🔥🔥 ABOUT TO CALL ApiClient.postStream...");
+        streamedResponse = await ApiClient.postStream("/agent?stream=true", requestBody);
+        print("🔥🔥🔥 STREAMING RESPONSE RECEIVED: status=${streamedResponse.statusCode}");
+        print("🔥🔥🔥 Response headers: ${streamedResponse.headers}");
+        print("🔥🔥🔥 Response content-type: ${streamedResponse.headers['content-type']}");
+      } catch (e, stackTrace) {
+        print("🔥🔥🔥❌❌❌ ERROR GETTING STREAMING RESPONSE: $e");
+        print("🔥🔥🔥❌❌❌ ERROR TYPE: ${e.runtimeType}");
+        print("🔥🔥🔥❌❌❌ STACK: $stackTrace");
+        rethrow;
+      }
+      
       if (streamedResponse.statusCode != 200) {
+        print("🔥🔥🔥 STREAMING REQUEST FAILED: ${streamedResponse.statusCode}");
+        final errorBody = await streamedResponse.stream.bytesToString();
+        print("🔥🔥🔥 ERROR BODY: $errorBody");
         throw Exception("Streaming request failed: ${streamedResponse.statusCode}");
       }
 
+      print("🔥🔥🔥 CREATING STREAM DECODER...");
       final stream = streamedResponse.stream.transform(utf8.decoder);
+      print("🔥🔥🔥 STREAM DECODER CREATED");
       String buffer = '';
-      Map<String, dynamic>? summaryData;
 
+      String accumulatedText = ''; // ✅ FIX: Accumulate streaming text in real-time
+      
+      print("🔥🔥🔥 STREAMING STARTED - Waiting for events...");
+      
       await for (var chunk in stream) {
+        print("🔥🔥🔥 STREAM CHUNK RECEIVED (${chunk.length} chars)");
+        print("🔥🔥🔥 CHUNK PREVIEW: ${chunk.substring(0, chunk.length > 200 ? 200 : chunk.length)}");
         buffer += chunk;
         final lines = buffer.split('\n');
         
@@ -439,24 +553,105 @@ class AgentController extends StateNotifier<void> {
 
         for (var line in lines) {
           line = line.trim();
-          if (line.isEmpty || !line.startsWith('data: ')) continue;
+          if (line.isEmpty) continue;
+          
+          // ✅ FIX: Handle JSON response (non-SSE) - backend might return JSON instead of SSE
+          if (!line.startsWith('data: ')) {
+            print("🔥🔥🔥 NON-SSE LINE DETECTED (JSON response?): ${line.substring(0, 200)}");
+            // Try to parse as complete JSON response
+            try {
+              final jsonData = jsonDecode(line) as Map<String, dynamic>;
+              print("🔥🔥🔥 PARSED AS JSON - Processing as complete response");
+              
+              // Process as if it's an end event with all data
+              final finalSummary = jsonData['summary']?.toString() ?? accumulatedText;
+              final sections = jsonData['sections'] as List<dynamic>? ?? [];
+              final sources = jsonData['sources'] as List<dynamic>? ?? [];
+              final followUpSuggestions = jsonData['followUpSuggestions'] as List<dynamic>? ?? [];
+              final cardsByDomain = jsonData['cards'] as Map<String, dynamic>?;
+              final destinationImages = (jsonData['destination_images'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
+              
+              // Update session with final data
+              final completeSession = initialSession.copyWith(
+                summary: finalSummary,
+                sections: sections.map((s) => Map<String, dynamic>.from(s as Map)).toList(),
+                sources: sources.map((s) => Map<String, dynamic>.from(s as Map)).toList(),
+                followUpSuggestions: followUpSuggestions.map((f) => f.toString()).toList(),
+                cardsByDomain: cardsByDomain != null ? Map<String, dynamic>.from(cardsByDomain) : null,
+                destinationImages: destinationImages,
+                isStreaming: false,
+                isParsing: false,
+              );
+              
+              ref.read(sessionHistoryProvider.notifier).replaceLastSession(completeSession);
+              ref.read(agentStateProvider.notifier).state = AgentState.completed;
+              
+              print("🔥🔥🔥 JSON RESPONSE PROCESSED - Session updated");
+              return; // Exit early since we got complete response
+            } catch (e) {
+              print("🔥🔥🔥 FAILED TO PARSE AS JSON: $e");
+              continue; // Skip this line
+            }
+          }
 
           try {
             final jsonStr = line.substring(6); // Remove "data: " prefix
-            if (jsonStr.trim() == '[DONE]') continue;
+            if (jsonStr.trim() == '[DONE]') {
+              print("🔥🔥🔥 RECEIVED [DONE] marker");
+              continue;
+            }
             
+            print("🔥🔥🔥 PARSING SSE EVENT: $jsonStr");
             final data = jsonDecode(jsonStr) as Map<String, dynamic>;
             final type = data['type'] as String?;
+            print("🔥🔥🔥 EVENT TYPE: $type");
 
-            if (type == 'summary') {
-              // ✅ TASK 4: Render summary immediately (partial UI update)
-              summaryData = data;
+            // ✅ FIX: Handle real-time streaming events from backend
+            if (type == 'verdict') {
+              // First sentence - display immediately
+              final firstSentence = data['data']?.toString() ?? '';
+              if (firstSentence.isNotEmpty) {
+                accumulatedText = firstSentence;
+                ref.read(streamingTextProvider.notifier).start(accumulatedText);
+                
+                // Update session with streaming text
+                final partialSession = initialSession.copyWith(
+                  summary: accumulatedText,
+                  isStreaming: true,
+                );
+                ref.read(sessionHistoryProvider.notifier).replaceLastSession(partialSession);
+                
+                if (kDebugMode) {
+                  debugPrint('📝 Received verdict (first sentence): $firstSentence');
+                }
+              }
+            } else if (type == 'message') {
+              // Streaming chunks - append to accumulated text
+              final chunk = data['data']?.toString() ?? '';
+              if (chunk.isNotEmpty) {
+                accumulatedText += chunk;
+                ref.read(streamingTextProvider.notifier).start(accumulatedText);
+                
+                // Update session with accumulated text
+                final partialSession = initialSession.copyWith(
+                  summary: accumulatedText,
+                  isStreaming: true,
+                );
+                ref.read(sessionHistoryProvider.notifier).replaceLastSession(partialSession);
+                
+                if (kDebugMode) {
+                  debugPrint('📝 Received message chunk (${chunk.length} chars), total: ${accumulatedText.length}');
+                }
+              }
+            } else if (type == 'summary') {
+              // ✅ LEGACY: Handle summary event (if backend sends it)
               final summary = data['summary']?.toString();
               final intent = data['intent']?.toString();
               final cardType = data['cardType']?.toString();
               
               if (summary != null && summary.isNotEmpty) {
-                ref.read(streamingTextProvider.notifier).start(summary);
+                accumulatedText = summary; // Update accumulated text
+                ref.read(streamingTextProvider.notifier).start(accumulatedText);
               }
 
               // Update session with summary (partial update)
@@ -471,66 +666,78 @@ class AgentController extends StateNotifier<void> {
               if (kDebugMode) {
                 debugPrint('📝 Received summary (partial update)');
               }
-            } else if (type == 'cards') {
-              // ✅ TASK 4: Append cards after summary (incremental update)
-              final cards = data['cards'] as List<dynamic>? ?? [];
-              final results = data['results'] ?? [];
-              final destinationImages = data['destination_images'] as List<dynamic>? ?? [];
-              final locationCards = data['locationCards'] as List<dynamic>? ?? [];
+            } else if (type == 'end') {
+              // ✅ FIX: Process final data from end event (includes sections, sources, cards, images, videos, maps)
+              final endData = data;
+              final finalSummary = endData['summary']?.toString() ?? accumulatedText;
+              final finalAnswer = endData['answer']?.toString() ?? finalSummary;
+              final sections = endData['sections'] as List<dynamic>? ?? [];
+              final sources = endData['sources'] as List<dynamic>? ?? [];
+              final followUpSuggestions = endData['followUpSuggestions'] as List<dynamic>? ?? [];
               
-              // Parse and aggregate in isolate
-              final parsedCards = cards.cast<Map<String, dynamic>>();
-              final parsedLocationCards = locationCards.cast<Map<String, dynamic>>();
-              final parsedDestinationImages = (destinationImages.map((e) => e.toString()).toList()).cast<String>();
+              // ✅ Extract cards from end event (now included in end event)
+              final cardsByDomain = endData['cards'] as Map<String, dynamic>?;
+              final destinationImages = (endData['destination_images'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
+              final videos = endData['videos'] as List<dynamic>? ?? [];
+              final mapPoints = endData['mapPoints'] as List<dynamic>? ?? [];
               
-              // Parse text with locations in isolate
-              List<Map<String, dynamic>>? parsedSegments;
-              if (summaryData?['summary'] != null && parsedLocationCards.isNotEmpty) {
-                try {
-                  parsedSegments = await compute(_parseTextWithLocationsWrapper, {
-                    'text': summaryData!['summary'] as String,
-                    'locationCards': parsedLocationCards,
-                  });
-                } catch (e) {
-                  if (kDebugMode) {
-                    debugPrint('⚠️ Error parsing text with locations: $e');
-                  }
+              // ✅ Parse cards from cardsByDomain
+              List<Map<String, dynamic>> allCards = [];
+              if (cardsByDomain != null) {
+                // Flatten all cards from all domains
+                if (cardsByDomain['products'] is List) {
+                  allCards.addAll((cardsByDomain['products'] as List).cast<Map<String, dynamic>>());
+                }
+                if (cardsByDomain['hotels'] is List) {
+                  allCards.addAll((cardsByDomain['hotels'] as List).cast<Map<String, dynamic>>());
+                }
+                if (cardsByDomain['places'] is List) {
+                  allCards.addAll((cardsByDomain['places'] as List).cast<Map<String, dynamic>>());
+                }
+                if (cardsByDomain['movies'] is List) {
+                  allCards.addAll((cardsByDomain['movies'] as List).cast<Map<String, dynamic>>());
                 }
               }
-
-              // Aggregate images in isolate
+              
+              // ✅ Aggregate images in isolate
               final allImages = await compute(_aggregateImagesWrapper, {
-                'destinationImages': parsedDestinationImages,
-                'cards': parsedCards,
-                'results': results,
+                'destinationImages': destinationImages,
+                'cards': allCards,
+                'results': [],
               });
-
-              // Update session with complete data
+              
+              // Update session with final data
               final completeSession = initialSession.copyWith(
-                summary: summaryData?['summary']?.toString(),
-                intent: summaryData?['intent']?.toString(),
-                cardType: summaryData?['cardType']?.toString(),
-                cards: parsedCards,
-                results: results,
-                destinationImages: parsedDestinationImages,
-                locationCards: parsedLocationCards,
-                isStreaming: false,
-                isParsing: false,
-                parsedSegments: parsedSegments,
+                summary: finalSummary,
+                sections: sections.map((s) => Map<String, dynamic>.from(s as Map)).toList(),
+                sources: sources.map((s) => Map<String, dynamic>.from(s as Map)).toList(),
+                followUpSuggestions: followUpSuggestions.map((f) => f.toString()).toList(),
+                cardsByDomain: cardsByDomain != null ? Map<String, dynamic>.from(cardsByDomain) : null,
+                cards: allCards, // ✅ DEPRECATED: Keep for backward compatibility
+                destinationImages: destinationImages,
+                videos: videos.isNotEmpty ? videos.map((v) => Map<String, dynamic>.from(v as Map)).toList() : null,
+                mapPoints: mapPoints.isNotEmpty ? mapPoints.map((m) => Map<String, dynamic>.from(m as Map)).toList() : null,
                 allImages: allImages,
+                isStreaming: false, // ✅ CRITICAL: Must be false to clear loading
+                isParsing: false, // ✅ CRITICAL: Must be false to clear loading
               );
               
               ref.read(sessionHistoryProvider.notifier).replaceLastSession(completeSession);
               ref.read(agentStateProvider.notifier).state = AgentState.completed;
-              // ✅ FIX: Removed auto-scroll to bottom - user should see query at top and swipe up to see results
+              
+              print("🔥 END EVENT RECEIVED - Session updated:");
+              print("  - Summary: ${finalSummary.isNotEmpty ? 'YES (${finalSummary.length} chars)' : 'NO'}");
+              print("  - Sections: ${sections.length}");
+              print("  - Sources: ${sources.length}");
+              print("  - Cards: ${allCards.length}");
+              print("  - isStreaming: ${completeSession.isStreaming} (MUST be false)");
+              print("  - isParsing: ${completeSession.isParsing} (MUST be false)");
               
               if (kDebugMode) {
-                debugPrint('✅ Received cards (complete update)');
-              }
-            } else if (type == 'end') {
-              // Stream complete
-              if (kDebugMode) {
-                debugPrint('🏁 Stream ended');
+                debugPrint('🏁 Stream ended - Final answer length: ${finalAnswer.length}');
+                debugPrint('  - Sections: ${sections.length}');
+                debugPrint('  - Sources: ${sources.length}');
+                debugPrint('  - Cards: ${allCards.length}');
               }
               break;
             } else if (type == 'error') {
@@ -544,8 +751,11 @@ class AgentController extends StateNotifier<void> {
           }
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       // Fallback to error state
+      print("🔥🔥🔥 CRITICAL STREAMING ERROR: $e");
+      print("🔥🔥🔥 STACK TRACE: $stackTrace");
+      
       final errorSession = initialSession.copyWith(
         isStreaming: false,
         isParsing: false,

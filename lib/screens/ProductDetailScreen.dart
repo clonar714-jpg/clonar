@@ -75,6 +75,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
+          'domain': 'product', // ✅ NEW: Specify domain
+          'id': widget.product.id.toString(),
           'title': widget.product.title,
           'description': widget.product.description,
           'price': widget.product.price,
