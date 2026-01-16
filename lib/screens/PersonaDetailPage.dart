@@ -10,7 +10,7 @@ import '../utils/ImageHelper.dart';
 import '../core/api_client.dart';
 import 'CollageEditorPage.dart';
 import 'SimilarImagesSearchPage.dart';
-import 'ShoppingResultsScreen.dart';
+import 'PerplexityAnswerScreen.dart';
 import '../widgets/DualActionButtons.dart';
 
 class PersonaDetailPage extends StatefulWidget {
@@ -595,7 +595,7 @@ class _PersonaDetailPageState extends State<PersonaDetailPage> {
             topRight: Radius.circular(20),
           ),
         ),
-        child: ShoppingResultsScreen(
+        child: PerplexityAnswerScreen(
           query: 'fashion clothing',
           imageUrl: imageUrl,
         ),

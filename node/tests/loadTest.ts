@@ -35,7 +35,7 @@ async function simulateQuery(query: string, isFollowUp: boolean = false): Promis
   const startTime = Date.now();
   try {
     const response = await axios.post(
-      `${BASE_URL}/agent`,
+      `${BASE_URL}/chat`,
       {
         query,
         conversationHistory: isFollowUp ? [{ query: 'test', summary: 'test' }] : [],

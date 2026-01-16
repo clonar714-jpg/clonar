@@ -6,27 +6,23 @@ import { getValidUserId } from "../utils/userIdHelper";
 const router = express.Router();
 
 /**
- * ✅ GET /api/chats
+ * GET /api/chats
  * Get all conversations for the current user
- * Production-grade: Handles UUID validation, graceful error handling
  */
 router.get("/", async (req: Request, res: Response) => {
   try {
-    // ✅ Production-grade: Get valid UUID for user
     const rawUserId = req.headers["user-id"] as string || "dev-user-id";
     const userId = getValidUserId(rawUserId);
     
-    // ✅ Select only columns that definitely exist (avoid schema cache issues)
     const { data, error } = await db.conversations()
       .select("id, title, created_at, updated_at")
       .eq("user_id", userId)
       .is("deleted_at", null)
       .order("updated_at", { ascending: false })
-      .limit(50); // Limit to 50 most recent
+      .limit(50);
     
     if (error) {
       console.error("❌ Error fetching conversations:", error);
-      // ✅ Production-grade: Don't expose internal errors
       return res.status(500).json({ 
         error: "Failed to fetch conversations",
         code: error.code || "UNKNOWN_ERROR"
@@ -41,9 +37,8 @@ router.get("/", async (req: Request, res: Response) => {
 });
 
 /**
- * ✅ GET /api/chats/:id
+ * GET /api/chats/:id
  * Get a single conversation with all messages
- * Production-grade: Validates ID, handles missing conversations gracefully
  */
 router.get("/:id", async (req: Request, res: Response) => {
   try {
@@ -51,12 +46,10 @@ router.get("/:id", async (req: Request, res: Response) => {
     const rawUserId = req.headers["user-id"] as string || "dev-user-id";
     const userId = getValidUserId(rawUserId);
     
-    // ✅ Validate conversation ID format
     if (!conversationId || conversationId.trim().length === 0) {
       return res.status(400).json({ error: "Invalid conversation ID" });
     }
     
-    // Get conversation (select only safe columns)
     const { data: conversation, error: convError } = await db.conversations()
       .select("id, title, created_at, updated_at")
       .eq("id", conversationId)
@@ -68,7 +61,6 @@ router.get("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Conversation not found" });
     }
     
-    // Get all messages for this conversation
     const { data: messages, error: msgError } = await db.conversationMessages()
       .select("*")
       .eq("conversation_id", conversationId)
@@ -90,133 +82,190 @@ router.get("/:id", async (req: Request, res: Response) => {
 });
 
 /**
- * ✅ POST /api/chats
+ * POST /api/chats
  * Create a new conversation
- * Production-grade: Handles schema mismatches, validates input, graceful fallbacks
+ * Database generates UUID for id
  */
 router.post("/", async (req: Request, res: Response) => {
+  console.log("🔥🔥🔥 POST /api/chats entered");
+  
+  // ✅ CRITICAL: Ensure response is ALWAYS sent, even on timeout
+  let responseSent = false;
+  const sendResponse = (status: number, data: any) => {
+    if (responseSent) {
+      console.warn("⚠️ Attempted to send response twice, ignoring second call");
+      return;
+    }
+    responseSent = true;
+    try {
+      if (!res.headersSent) {
+        res.status(status).json(data);
+        console.log(`✅ Response sent: ${status}`);
+      } else {
+        console.warn("⚠️ Headers already sent, cannot send response");
+      }
+    } catch (err) {
+      console.error("❌ Error sending response:", err);
+    }
+  };
+
+  // ✅ CRITICAL: Set timeout guard (3 seconds max for fast response)
+  const timeoutId = setTimeout(() => {
+    if (!responseSent) {
+      console.error("❌❌❌ POST /api/chats TIMEOUT - No response sent after 3 seconds");
+      sendResponse(500, { error: "Request timeout", message: "Database operation took too long" });
+    }
+  }, 3000);
+
   try {
+    console.log("🔥🔥🔥 Extracting user ID from headers...");
     const rawUserId = req.headers["user-id"] as string || "dev-user-id";
+    console.log(`🔥🔥🔥 Raw user ID: ${rawUserId}`);
+    
+    console.log("🔥🔥🔥 Resolving valid user ID...");
     const userId = getValidUserId(rawUserId);
-    const { title, query, imageUrl } = req.body;
+    console.log(`🔥🔥🔥 User resolved: ${userId}`);
+    
+    console.log("🔥🔥🔥 Extracting title from body...");
+    const { title } = req.body;
+    console.log(`🔥🔥🔥 Title received: "${title}" (type: ${typeof title})`);
     
     if (!title || typeof title !== 'string' || title.trim().length === 0) {
-      return res.status(400).json({ error: "Title is required and must be non-empty" });
+      console.log("❌ Validation failed: Title is required and must be non-empty");
+      clearTimeout(timeoutId);
+      sendResponse(400, { error: "Title is required and must be non-empty" });
+      return;
     }
     
-    // ✅ Production-grade: Build insert object with only columns that exist
-    // The conversations table has: id, user_id, title, created_at, updated_at, deleted_at
-    // Optional columns (may not exist): query, image_url
-    // ✅ FIX 5: Generate conversation_id if schema requires it (some schemas have conversation_id as separate column)
-    const insertData: any = {
-      user_id: userId,
-      title: title.trim().substring(0, 255), // Limit title length, trim whitespace
-    };
+    console.log("🔥🔥🔥 Creating chat in DB...");
+    console.log(`🔥🔥🔥 Insert data: { user_id: "${userId}", title: "${title.trim().substring(0, 255)}" }`);
     
-    // ✅ FIX 5: If schema has conversation_id column, generate it (use same as id or generate UUID)
-    // Some database schemas have both 'id' and 'conversation_id' columns
-    // If conversation_id is required, we'll generate it here
-    // Note: If your schema only has 'id', this will be ignored by Supabase
-    
-    // ✅ Try to include optional columns, but handle gracefully if they don't exist
-    // We'll catch the error and retry without them if needed
-    try {
-      if (query && typeof query === 'string') {
-        insertData.query = query.substring(0, 1000); // Limit query length
-      }
-      
-      if (imageUrl && typeof imageUrl === 'string') {
-        insertData.image_url = imageUrl.substring(0, 500); // Limit URL length
-    }
-    
-    const { data, error } = await db.conversations()
-      .insert(insertData)
-        .select("id, title, created_at, updated_at")
+    // ✅ CRITICAL: Create DB call promise
+    const dbCall = db.conversations()
+      .insert({
+        user_id: userId,
+        title: title.trim().substring(0, 255),
+      })
+      .select("id, title, created_at, updated_at")
       .single();
     
-    if (error) {
-        // ✅ If error is about missing column, retry without optional columns
-        if (error.code === 'PGRST204' || error.message?.includes('column') || error.message?.includes('schema cache')) {
-          console.warn("⚠️ Optional columns not available, creating conversation without them");
-          
-          // Retry with only required columns
-          const { data: retryData, error: retryError } = await db.conversations()
-            .insert({
-              user_id: userId,
-              title: title.trim().substring(0, 255),
-            })
-            .select("id, title, created_at, updated_at")
-            .single();
-          
-          if (retryError) {
-            // ✅ FIX 5: Check if error is about conversation_id column
-            if (retryError.code === '23502' && retryError.message?.includes('conversation_id')) {
-              console.warn("⚠️ Schema requires conversation_id column, but it's not in our insert");
-              console.warn("   This is a schema mismatch - conversations table may have conversation_id as required column");
-              console.warn("   The agent response will still work, but conversation won't be saved");
-              // Don't fail the request - agent response is independent of conversation saving
-              // Return success but log the issue
-              return res.status(201).json({ 
-                conversation: { 
-                  id: `temp-${Date.now()}`, 
-                  title: title.trim().substring(0, 255),
-                  created_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                },
-                warning: "Conversation saved locally only (schema mismatch)"
-              });
-            }
-            
-            console.error("❌ Error creating conversation (retry):", retryError);
-            return res.status(500).json({ 
-              error: "Failed to create conversation",
-              code: retryError.code || "UNKNOWN_ERROR"
-            });
+    // ✅ CRITICAL: Create timeout promise that resolves (not rejects) with timeout error structure
+    const timeoutPromise = new Promise<{ data: null; error: { message: string; code: string } }>((resolve) => {
+      setTimeout(() => {
+        console.error("❌❌❌ Database operation TIMEOUT after 2 seconds");
+        resolve({
+          data: null,
+          error: {
+            message: "Database operation timeout after 2 seconds",
+            code: "TIMEOUT"
           }
-          
-          return res.status(201).json({ conversation: retryData });
-        }
-        
-      console.error("❌ Error creating conversation:", error);
-        return res.status(500).json({ 
-          error: "Failed to create conversation",
-          code: error.code || "UNKNOWN_ERROR"
         });
+      }, 2000);
+    });
+    
+    // ✅ CRITICAL: Race between DB call and timeout - both resolve, never reject
+    let dbResult: { data: any; error: any };
+    try {
+      // Wrap Supabase call in Promise.resolve to ensure it's a full Promise
+      const dbPromise = Promise.resolve(dbCall).then((result: any) => {
+        console.log("🔥🔥🔥 Database promise resolved");
+        return { data: result.data, error: result.error };
+      }).catch((err: any) => {
+        console.error("🔥🔥🔥 Database promise rejected:", err);
+        return { data: null, error: { message: err?.message || "Database error", code: err?.code || "UNKNOWN" } };
+      });
+      
+      dbResult = await Promise.race([dbPromise, timeoutPromise]);
+      console.log("🔥🔥🔥 Promise.race completed");
+    } catch (raceError: any) {
+      console.error("❌❌❌ Promise.race threw error:", raceError);
+      clearTimeout(timeoutId);
+      sendResponse(500, { 
+        error: "Database error",
+        message: raceError?.message || "An unexpected error occurred during database operation"
+      });
+      return;
     }
     
-    res.status(201).json({ conversation: data });
-    } catch (insertErr: any) {
-      // ✅ Fallback: Try with only required columns
-      console.warn("⚠️ Insert failed, retrying with required columns only:", insertErr.message);
-      
-      const { data: fallbackData, error: fallbackError } = await db.conversations()
-        .insert({
-          user_id: userId,
-          title: title.trim().substring(0, 255),
-        })
-        .select("id, title, created_at, updated_at")
-        .single();
-      
-      if (fallbackError) {
-        console.error("❌ Error creating conversation (fallback):", fallbackError);
-        return res.status(500).json({ 
-          error: "Failed to create conversation",
-          code: fallbackError.code || "UNKNOWN_ERROR"
-        });
-      }
-      
-      res.status(201).json({ conversation: fallbackData });
+    clearTimeout(timeoutId);
+    
+    // ✅ CRITICAL: Check for timeout error first
+    if (dbResult.error && dbResult.error.code === "TIMEOUT") {
+      console.error("❌❌❌ Database operation timed out");
+      sendResponse(500, { 
+        error: "Database timeout",
+        message: "Database operation took too long. Please try again."
+      });
+      return;
     }
+    
+    // ✅ CRITICAL: Extract data and error from Supabase result
+    const { data, error } = dbResult;
+    
+    if (error) {
+      console.error("❌ Error creating conversation:", error);
+      console.error("❌ Error details:", JSON.stringify(error, null, 2));
+      sendResponse(500, { 
+        error: "Failed to create conversation",
+        code: error.code || "UNKNOWN_ERROR",
+        message: error.message || "Database error"
+      });
+      return;
+    }
+    
+    if (!data) {
+      console.error("❌ Database returned no data (but no error)");
+      sendResponse(500, { 
+        error: "Failed to create conversation",
+        message: "Database returned no data"
+      });
+      return;
+    }
+    
+    console.log("🔥🔥🔥 Chat created successfully");
+    console.log(`🔥🔥🔥 Created conversation ID: ${data.id}`);
+    console.log("🔥🔥🔥 Sending response...");
+    
+    sendResponse(201, { conversation: data });
+    console.log("✅✅✅ POST /api/chats completed successfully");
   } catch (err: any) {
-    console.error("❌ Unexpected error creating conversation:", err);
-    res.status(500).json({ error: "Internal server error" });
+    clearTimeout(timeoutId);
+    console.error("❌❌❌ Unexpected error creating conversation:", err);
+    console.error("❌❌❌ Error type:", err?.constructor?.name);
+    console.error("❌❌❌ Error message:", err?.message);
+    console.error("❌❌❌ Error stack:", err?.stack);
+    
+    if (!responseSent) {
+      sendResponse(500, { 
+        error: "Internal server error",
+        message: err?.message || "An unexpected error occurred"
+      });
+    } else {
+      console.warn("⚠️ Response already sent, but error occurred after");
+    }
+  } finally {
+    // ✅ CRITICAL: Final safety check - ensure response is ALWAYS sent
+    if (!responseSent) {
+      console.error("❌❌❌ CRITICAL: No response sent in any code path!");
+      try {
+        if (!res.headersSent) {
+          res.status(500).json({ 
+            error: "Internal server error",
+            message: "Request handler did not send a response"
+          });
+          console.log("✅ Emergency response sent");
+        }
+      } catch (finalErr) {
+        console.error("❌❌❌ Failed to send emergency response:", finalErr);
+      }
+    }
   }
 });
 
 /**
- * ✅ POST /api/chats/:id/messages
+ * POST /api/chats/:id/messages
  * Add a message to a conversation
- * Production-grade: Auto-creates conversation if missing (Perplexity-style), handles schema gracefully
+ * Auto-creates conversation if missing
  */
 router.post("/:id/messages", async (req: Request, res: Response) => {
   try {
@@ -224,15 +273,14 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
     const rawUserId = req.headers["user-id"] as string || "dev-user-id";
     const userId = getValidUserId(rawUserId);
     
-    // ✅ Validate conversation ID format
     if (!conversationId || conversationId.trim().length === 0) {
       return res.status(400).json({ error: "Invalid conversation ID" });
     }
     
-    // ✅ Production-grade: Verify conversation exists and belongs to user
-    // If conversation doesn't exist, create it automatically (Perplexity-style)
-    let conversation = null;
-    let actualConversationId = conversationId;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(conversationId)) {
+      return res.status(400).json({ error: "Conversation ID must be a valid UUID" });
+    }
     
     let { data: existingConv, error: convError } = await db.conversations()
       .select("id")
@@ -242,75 +290,27 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       .single();
     
     if (convError || !existingConv) {
-      // ✅ Auto-create conversation if it doesn't exist (idempotent)
-      // This handles cases where frontend creates local chat but backend doesn't have it yet
-      const { query, summary } = req.body;
+      const { query } = req.body;
       const title = (query as string)?.substring(0, 100) || "New Conversation";
       
-      try {
-        // ✅ Handle both UUID and numeric IDs
-        // If conversationId is numeric (timestamp), let DB generate a UUID
-        const isNumericId = /^\d+$/.test(conversationId);
-        const insertData: any = {
+      const { data: newConv, error: createError } = await db.conversations()
+        .insert({
+          id: conversationId,
           user_id: userId,
           title: title,
-        };
-        
-        // Only set ID if it's a valid UUID format (not numeric)
-        if (!isNumericId) {
-          // Validate it's a proper UUID format
-          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-          if (uuidRegex.test(conversationId)) {
-            insertData.id = conversationId;
-          }
-        }
-        // If numeric, let DB generate UUID (will need to update frontend to use returned ID)
-        
-        const { data: newConv, error: createError } = await db.conversations()
-          .insert(insertData)
+        })
           .select("id")
           .single();
         
         if (createError) {
-          // If insert fails, try to find by user_id and title (fallback)
-          console.warn(`⚠️ Could not auto-create conversation ${conversationId}:`, createError.message);
-          
-          // Try to find existing conversation with same title
-          const { data: existingByTitle } = await db.conversations()
-            .select("id")
-            .eq("user_id", userId)
-            .eq("title", title)
-            .is("deleted_at", null)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .single();
-          
-          if (existingByTitle) {
-            conversation = existingByTitle;
-            actualConversationId = existingByTitle.id;
-            if (process.env.NODE_ENV === 'development') {
-              console.log(`✅ Found existing conversation by title: ${existingByTitle.id}`);
-            }
-          } else {
-            return res.status(404).json({ 
-              error: "Conversation not found",
-              hint: "Conversation may need to be created first via POST /api/chats"
-            });
-          }
-        } else {
-          conversation = newConv;
-          actualConversationId = newConv.id;
-          if (process.env.NODE_ENV === 'development') {
-            console.log(`✅ Auto-created conversation: ${newConv.id} (requested: ${conversationId})`);
-          }
-        }
-      } catch (createErr: any) {
-        console.error("❌ Error auto-creating conversation:", createErr);
-      return res.status(404).json({ error: "Conversation not found" });
+        console.error(`❌ Error auto-creating conversation ${conversationId}:`, createError);
+        return res.status(500).json({ 
+          error: "Failed to create conversation",
+          code: createError.code || "UNKNOWN_ERROR"
+        });
       }
-    } else {
-      conversation = existingConv;
-      actualConversationId = existingConv.id;
+      
+      existingConv = newConv;
     }
     
     const {
@@ -323,17 +323,18 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       sections,
       answer,
       imageUrl,
+      destinationImages, // ✅ NEW: Array of images for media tab
+      sources, // ✅ CRITICAL: Sources must be saved for old chats to display
+      followUpSuggestions, // ✅ CRITICAL: Follow-ups must be saved for old chats to display
     } = req.body;
     
-    // ✅ Production-grade: Validate required fields
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
       return res.status(400).json({ error: "Query is required and must be non-empty" });
     }
     
-    // ✅ Build message data with proper validation and limits
     const messageData: any = {
-      conversation_id: actualConversationId, // Use actual DB ID
-      query: query.trim().substring(0, 1000), // Limit query length
+      conversation_id: existingConv.id,
+      query: query.trim().substring(0, 1000),
       summary: summary && typeof summary === 'string' ? summary.substring(0, 5000) : null,
       intent: intent && typeof intent === 'string' ? intent.substring(0, 50) : null,
       card_type: cardType && typeof cardType === 'string' ? cardType.substring(0, 50) : null,
@@ -343,47 +344,47 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       answer: answer ? (typeof answer === 'string' ? answer : JSON.stringify(answer)).substring(0, 100000) : null,
     };
     
-    // ✅ Include image_url if provided (handle gracefully if column doesn't exist)
+    // ✅ CRITICAL: Add sources and follow_up_suggestions only if columns exist
+    // This prevents errors if migration hasn't been run yet
+    if (sources) {
+      messageData.sources = typeof sources === 'string' ? sources : JSON.stringify(sources);
+      if (messageData.sources.length > 100000) messageData.sources = messageData.sources.substring(0, 100000);
+    }
+    if (followUpSuggestions) {
+      messageData.follow_up_suggestions = typeof followUpSuggestions === 'string' ? followUpSuggestions : JSON.stringify(followUpSuggestions);
+      if (messageData.follow_up_suggestions.length > 100000) messageData.follow_up_suggestions = messageData.follow_up_suggestions.substring(0, 100000);
+    }
+    
     if (imageUrl && typeof imageUrl === 'string') {
       messageData.image_url = imageUrl.substring(0, 500);
     }
     
-    // ✅ Insert message with error handling
+    // ✅ NEW: Save destination_images (array of image URLs for media tab)
+    if (destinationImages && Array.isArray(destinationImages) && destinationImages.length > 0) {
+      // Store as JSONB array (can be stored in cards JSONB or add separate column)
+      // For now, store in results JSONB with a key
+      if (!messageData.results) {
+        messageData.results = JSON.stringify({ destination_images: destinationImages });
+      } else {
+        try {
+          const existingResults = typeof messageData.results === 'string' 
+            ? JSON.parse(messageData.results) 
+            : messageData.results;
+          existingResults.destination_images = destinationImages;
+          messageData.results = JSON.stringify(existingResults);
+        } catch {
+          // If parsing fails, create new object
+          messageData.results = JSON.stringify({ destination_images: destinationImages });
+        }
+      }
+    }
+    
     const { data, error } = await db.conversationMessages()
       .insert(messageData)
       .select()
       .single();
     
     if (error) {
-      // ✅ If image_url column doesn't exist, retry without it
-      if (error.code === 'PGRST204' || error.message?.includes('image_url')) {
-        console.warn("⚠️ image_url column not available, saving message without it");
-        delete messageData.image_url;
-        
-        const { data: retryData, error: retryError } = await db.conversationMessages()
-          .insert(messageData)
-          .select()
-          .single();
-        
-        if (retryError) {
-          console.error("❌ Error creating message (retry):", retryError);
-          return res.status(500).json({ 
-            error: "Failed to create message",
-            code: retryError.code || "UNKNOWN_ERROR"
-          });
-        }
-        
-        // Update conversation timestamp
-        await db.conversations()
-          .update({ updated_at: new Date().toISOString() })
-          .eq("id", actualConversationId);
-        
-        return res.status(201).json({ 
-          message: retryData,
-          conversationId: actualConversationId // Return actual ID in case it was auto-generated
-        });
-      }
-      
       console.error("❌ Error creating message:", error);
       return res.status(500).json({ 
         error: "Failed to create message",
@@ -391,21 +392,18 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       });
     }
     
-    // ✅ Update conversation's updated_at timestamp (non-blocking)
+    Promise.resolve(
     db.conversations()
       .update({ updated_at: new Date().toISOString() })
-      .eq("id", actualConversationId)
-      .then(() => {
-        // Silent success
-      })
-      .catch((err) => {
-        // Log but don't fail the request
-        console.warn("⚠️ Failed to update conversation timestamp:", err.message);
+        .eq("id", existingConv.id)
+    ).catch((err: unknown) => {
+      const error = err as { message?: string };
+      console.warn("⚠️ Failed to update conversation timestamp:", error.message || err);
       });
     
     res.status(201).json({ 
       message: data,
-      conversationId: actualConversationId // Return actual ID in case it was auto-generated
+      conversationId: existingConv.id
     });
   } catch (err: any) {
     console.error("❌ Unexpected error creating message:", err);
@@ -414,9 +412,8 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
 });
 
 /**
- * ✅ PUT /api/chats/:id
+ * PUT /api/chats/:id
  * Update conversation (e.g., rename)
- * Production-grade: Validates input, handles errors gracefully
  */
 router.put("/:id", async (req: Request, res: Response) => {
   try {
@@ -463,9 +460,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 });
 
 /**
- * ✅ DELETE /api/chats/:id
+ * DELETE /api/chats/:id
  * Soft delete a conversation
- * Production-grade: Validates ownership, handles errors gracefully
  */
 router.delete("/:id", async (req: Request, res: Response) => {
   try {

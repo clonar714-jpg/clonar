@@ -28,7 +28,7 @@ class LearnResultShell extends ResultShell {
     // ✅ PERPLEXITY-STYLE: Use simple PerplexityAnswerWidget
     // No header needed - sections speak for themselves (like Perplexity)
     return PerplexityAnswerWidget(
-      session: session,
+      sessionId: session.sessionId, // ✅ PERPLEXITY-STYLE: Only store sessionId
     );
   }
 

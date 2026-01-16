@@ -15,9 +15,10 @@ import '../theme/Typography.dart';
 import '../core/api_client.dart';
 import '../services/ChatHistoryServiceCloud.dart';
 import '../providers/query_state_provider.dart';
-import '../providers/agent_provider.dart';
 import '../providers/session_history_provider.dart';
-import 'ShoppingResultsScreen.dart';
+import '../providers/conversation_loader_provider.dart';
+import '../models/query_session_model.dart';
+import 'PerplexityAnswerScreen.dart';
 import 'TravelScreen.dart';
 
 // Chat history model
@@ -94,6 +95,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
   String? _uploadedImageUrl;
   
   bool _isProgrammaticUpdate = false;
+  bool _isSubmitting = false; // ✅ CRITICAL: Prevent duplicate submissions
   
   List<ChatHistoryItem> _chatHistory = [];
   Timer? _chatSearchDebounceTimer;
@@ -686,41 +688,136 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
   }
 
   void _onSearchSubmitted() async {
-    // ✅ PRODUCTION: Capture values before navigation to prevent state conflicts
-    final query = _searchController.text.trim();
-    final imageUrl = _uploadedImageUrl ?? widget.imageUrl;
+    print('🔥🔥🔥 _onSearchSubmitted() CALLED');
     
-    // ✅ PRODUCTION: Clear UI state before navigation
-    _searchFocusNode.unfocus();
-    FocusScope.of(context).unfocus();
+    // ✅ CRITICAL: Prevent duplicate submissions
+    if (_isSubmitting) {
+      print('❌❌❌ Submission already in progress - ignoring duplicate call');
+      return;
+    }
     
-    // ✅ PRODUCTION: Update providers without triggering rebuilds
-    ref.read(queryProvider.notifier).state = query;
+    _isSubmitting = true;
+    
+    try {
+      // ✅ PRODUCTION: Capture values before navigation to prevent state conflicts
+      final query = _searchController.text.trim();
+      final imageUrl = _uploadedImageUrl ?? widget.imageUrl;
+      
+      print('🔥🔥🔥 Query: "$query" (isEmpty: ${query.isEmpty})');
+      print('🔥🔥🔥 ImageUrl: $imageUrl (isNull: ${imageUrl == null})');
+      
+      // ✅ PRODUCTION: Clear UI state before navigation
+      _searchFocusNode.unfocus();
+      FocusScope.of(context).unfocus();
+      
+      // ✅ PRODUCTION: Update providers without triggering rebuilds
+      ref.read(queryProvider.notifier).state = query;
     
     if (kDebugMode) {
       debugPrint('ShopScreen submitting query: "$query"');
     }
     
-    // ✅ FIX: Don't submit query here - let ShoppingResultsScreen handle it
+    // ✅ FIX: Don't submit query here - let PerplexityAnswerScreen handle it
     // This prevents duplicate session creation and duplicate query display
     // await ref.read(agentControllerProvider.notifier).submitQuery(query);
     
+    // ✅ CRITICAL: Check if conversation creation should proceed
+    final shouldCreateConversation = query.isNotEmpty || imageUrl != null;
+    print('🔥🔥🔥 Should create conversation: $shouldCreateConversation (query.isNotEmpty: ${query.isNotEmpty}, imageUrl != null: ${imageUrl != null})');
+    
+    if (!shouldCreateConversation) {
+      print('❌❌❌ Conversation creation BLOCKED: Both query is empty AND imageUrl is null');
+      print('❌❌❌ Query: "$query"');
+      print('❌❌❌ ImageUrl: $imageUrl');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please enter a query or select an image'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      _isSubmitting = false;
+      return; // ✅ EARLY RETURN - this is why no request is sent!
+    }
+    
     if (query.isNotEmpty || imageUrl != null) {
-      // ✅ PRODUCTION: Capture chat data before navigation
-      final chatId = DateTime.now().millisecondsSinceEpoch.toString();
+      print('🔥🔥🔥 Entering conversation creation block');
+      // ✅ FIX: Create conversation in backend FIRST to get UUID (ChatGPT/Perplexity-style)
       final title = (query.isNotEmpty ? query : 'Find similar items').length > 50 
           ? (query.isNotEmpty ? query : 'Find similar items').substring(0, 50) + '...' 
           : (query.isNotEmpty ? query : 'Find similar items');
+      
+      try {
+        // ✅ Create conversation via POST /api/chats - backend generates UUID
+        print('🔥🔥🔥 About to create conversation...');
+        print('🔥🔥🔥 Title: "$title"');
+        print('🔥🔥🔥 Calling ApiClient.post("/chats", {...})');
+        
+        if (kDebugMode) {
+          debugPrint('📤 Creating conversation with title: "$title"');
+        }
+        
+        // ✅ CRITICAL: Test connectivity first (quick check)
+        print('🔥🔥🔥 Testing backend connectivity...');
+        final isConnected = await ApiClient.testConnectivity();
+        if (!isConnected) {
+          print('❌❌❌ Backend connectivity test FAILED');
+          throw Exception('Cannot connect to backend server. Please check:\n1. Backend is running on port 4000\n2. Device and computer are on same network\n3. For physical device, use computer IP (not 10.0.2.2)');
+        }
+        print('✅✅✅ Backend connectivity test PASSED');
+        
+        // ✅ CRITICAL: Use ApiClient.post (timeout handled internally)
+        final createResponse = await ApiClient.post('/chats', {
+          'title': title.isEmpty ? 'New chat' : title,
+        });
+        
+        print('🔥🔥🔥 ApiClient.post() returned - Status: ${createResponse.statusCode}');
+        
+        if (kDebugMode) {
+          debugPrint('📥 Conversation creation response: ${createResponse.statusCode}');
+          debugPrint('📥 Response body: ${createResponse.body}');
+        }
+        
+        if (createResponse.statusCode != 201 && createResponse.statusCode != 200) {
+          final errorBody = createResponse.body;
+          print('❌ Failed to create conversation: ${createResponse.statusCode}');
+          print('❌ Error response: $errorBody');
+          throw Exception('Failed to create conversation: ${createResponse.statusCode} - $errorBody');
+        }
+        
+        final responseBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+        
+        // ✅ FIX: Handle different response formats
+        Map<String, dynamic> conversation;
+        if (responseBody.containsKey('conversation')) {
+          conversation = responseBody['conversation'] as Map<String, dynamic>;
+        } else if (responseBody.containsKey('id')) {
+          // Backend might return conversation directly
+          conversation = responseBody;
+        } else {
+          print('❌ Unexpected response format: $responseBody');
+          throw Exception('Backend returned unexpected response format');
+        }
+        
+        final chatId = conversation['id'] as String?; // ✅ UUID from backend
+        
+        if (chatId == null || chatId.isEmpty) {
+          print('❌ Backend did not return conversation ID in response: $conversation');
+          throw Exception('Backend did not return conversation ID');
+        }
+        
+        // ✅ Create ChatHistoryItem with backend-generated UUID
       final chatItem = ChatHistoryItem(
-        id: chatId,
+          id: chatId, // ✅ UUID from backend, NOT numeric
         title: title.isEmpty ? 'New chat' : title,
         query: query.isNotEmpty ? query : 'Find similar items',
-        timestamp: DateTime.now(),
+          timestamp: conversation['created_at'] != null
+              ? DateTime.parse(conversation['created_at'] as String)
+              : DateTime.now(),
         imageUrl: imageUrl,
         conversationHistory: null,
       );
       
-      // ✅ PRODUCTION: Update chat history before navigation
+        // ✅ Update chat history before navigation
       final updatedHistory = [chatItem, ..._chatHistory];
       if (updatedHistory.length > 50) {
         updatedHistory.removeRange(50, updatedHistory.length);
@@ -729,14 +826,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         _chatHistory = updatedHistory;
       });
       
-      // ✅ PRODUCTION: Save to storage asynchronously (non-blocking)
+        // ✅ Save to storage asynchronously (non-blocking)
       ChatHistoryServiceCloud.saveChat(chatItem).catchError((e) {
         if (kDebugMode) {
           debugPrint('❌ Error saving chat to storage: $e');
         }
       });
       
-      // ✅ PRODUCTION: Clear UI state before navigation
+        // ✅ Clear UI state before navigation
       final finalQuery = query.isNotEmpty ? query : 'Find similar items';
       _searchController.clear();
       setState(() {
@@ -744,7 +841,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         _hasText = false;
       });
       
-      // ✅ FIX: Clear session history for new chat (each query should start fresh)
+        // ✅ Clear session history for new chat (each query should start fresh)
       ref.read(sessionHistoryProvider.notifier).clear();
       if (kDebugMode) {
         debugPrint('🧹 Cleared session history for new chat');
@@ -753,18 +850,40 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => ShoppingResultsScreen(
+          builder: (context) => PerplexityAnswerScreen(
             query: finalQuery,
             imageUrl: imageUrl,
+            conversationId: chatId, // ✅ CRITICAL FIX: Pass conversationId so follow-up queries are saved to this conversation
           ),
         ),
-      ).then((returnedHistory) {
+        ).then((returnedValue) {
+          // ✅ Handle return value: can be List (history) or Map (history + conversationId)
+          List<Map<String, dynamic>>? returnedHistory;
+          String? returnedConversationId;
+          
+          if (returnedValue is Map && returnedValue.containsKey('history')) {
+            // ✅ Replay mode: Returned both history and conversation ID
+            returnedHistory = (returnedValue['history'] as List?)?.cast<Map<String, dynamic>>();
+            returnedConversationId = returnedValue['conversationId'] as String?;
+            if (kDebugMode) {
+              debugPrint('📥 Received history + conversationId from replay mode');
+              debugPrint('   Conversation ID: $returnedConversationId');
+              debugPrint('   History length: ${returnedHistory?.length ?? 0}');
+            }
+          } else if (returnedValue is List) {
+            // ✅ New chat mode: Returned just history
+            returnedHistory = returnedValue.cast<Map<String, dynamic>>();
+          }
+          
         // ✅ Update chat history with conversation history if returned
-        if (returnedHistory != null && returnedHistory is List && returnedHistory.isNotEmpty) {
-          final chatIndex = _chatHistory.indexWhere((item) => item.id == chatId);
+          if (returnedHistory != null && returnedHistory.isNotEmpty) {
+            // ✅ Use returned conversation ID if available (replay mode), otherwise use chatId
+            final targetChatId = returnedConversationId ?? chatId;
+            final chatIndex = _chatHistory.indexWhere((item) => item.id == targetChatId);
+            
           if (chatIndex != -1) {
             final updatedChat = ChatHistoryItem(
-              id: _chatHistory[chatIndex].id,
+                id: targetChatId, // ✅ Use returned conversation ID if available
               title: _chatHistory[chatIndex].title,
               query: _chatHistory[chatIndex].query,
               timestamp: _chatHistory[chatIndex].timestamp,
@@ -782,9 +901,75 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                 debugPrint('❌ Error saving updated chat to storage: $e');
               }
             });
+            } else if (returnedConversationId != null) {
+              // ✅ Replay mode: Chat might not be in local history yet, but we have conversation ID
+              // Find by conversation ID or create new entry
+              final existingIndex = _chatHistory.indexWhere((item) => item.id == returnedConversationId);
+              if (existingIndex == -1) {
+                // Create new chat entry for this conversation
+                final newChat = ChatHistoryItem(
+                  id: returnedConversationId,
+                  title: returnedHistory.first['query']?.toString().substring(0, 50) ?? 'New Chat',
+                  query: returnedHistory.first['query']?.toString() ?? '',
+                  timestamp: DateTime.now(),
+                  imageUrl: returnedHistory.first['imageUrl']?.toString(),
+                  conversationHistory: List<Map<String, dynamic>>.from(returnedHistory),
+                );
+                
+                setState(() {
+                  _chatHistory.insert(0, newChat);
+                });
+                
+                // Save to storage
+                ChatHistoryServiceCloud.saveChat(newChat).catchError((e) {
+                  if (kDebugMode) {
+                    debugPrint('❌ Error saving new chat to storage: $e');
+                  }
+                });
+              }
           }
         }
       });
+      } catch (e) {
+        // ✅ Handle error - show user-friendly message with details
+        print('❌❌❌ Error creating conversation: $e');
+        print('❌❌❌ Error type: ${e.runtimeType}');
+        
+        String errorMessage = 'Failed to create conversation. Please try again.';
+        
+        // ✅ Provide more specific error messages
+        if (e.toString().contains('TimeoutException') || e.toString().contains('timeout')) {
+          errorMessage = 'Connection timeout. Please check:\n1. Backend server is running\n2. Check backend terminal for "POST /api/chats entered"\n3. Network connection';
+        } else if (e.toString().contains('SocketException') || 
+                   e.toString().contains('Connection refused') ||
+                   e.toString().contains('Failed host lookup')) {
+          errorMessage = 'Cannot connect to server. Please check:\n1. Backend is running on port 4000\n2. Device and computer are on same network\n3. Check backend terminal for incoming requests';
+        } else if (e.toString().contains('400')) {
+          errorMessage = 'Invalid request. Please check your input.';
+        } else if (e.toString().contains('500')) {
+          errorMessage = 'Server error. Please try again later.';
+        }
+        
+        if (kDebugMode) {
+          debugPrint('❌ Error creating conversation: $e');
+        }
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            duration: const Duration(seconds: 5),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+    }
+    } catch (e) {
+      // ✅ Handle any outer errors
+      print('❌❌❌ Outer error in _onSearchSubmitted: $e');
+    } finally {
+      // ✅ CRITICAL: Always reset submission flag
+      _isSubmitting = false;
+      print('✅✅✅ Submission flag reset');
     }
   }
 
@@ -1357,58 +1542,194 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
   }
   
   // Load a chat from history
-  void _loadChat(ChatHistoryItem chat) {
+  void _loadChat(ChatHistoryItem chat) async {
     if (kDebugMode) {
-      debugPrint('📱 Loading chat: ${chat.title}, has history: ${chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty}');
+      debugPrint('📱 Loading chat: ${chat.id} - ${chat.title}');
+      debugPrint('   Has local history: ${chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty}');
     }
     
-    // ✅ CRITICAL FIX: Clear session history before loading previous chat
-    // This ensures only the selected chat's sessions are shown, not all subsequent chats
+    // ✅ HISTORY_MODE: Clear session history first to ensure clean state
+    // This ensures replaceAllSessions() does a simple replace (state is empty)
     ref.read(sessionHistoryProvider.notifier).clear();
+    
+    // ✅ HISTORY_MODE: Load conversation messages from backend
     if (kDebugMode) {
-      debugPrint('🧹 Cleared session history before loading previous chat: ${chat.title}');
+      debugPrint('📥 HISTORY_MODE: Fetching messages for conversation: ${chat.id}');
     }
     
-    // ✅ Navigate to ShoppingResultsScreen with conversation history
+    try {
+      final sessionsAsync = ref.read(conversationLoaderProvider(chat.id).future);
+      final sessions = await sessionsAsync;
+      
+      if (kDebugMode) {
+        debugPrint('✅ HISTORY_MODE: Loaded ${sessions.length} sessions from backend');
+        for (int i = 0; i < sessions.length; i++) {
+          final s = sessions[i];
+          debugPrint('   Session $i: "${s.query.substring(0, s.query.length > 40 ? 40 : s.query.length)}..." (summary: ${s.summary?.length ?? 0} chars)');
+        }
+      }
+      
+      // ✅ HISTORY_MODE: Replace session history with loaded sessions
+      // Since state is empty (cleared above), replaceAllSessions() will do a simple replace
+      // DB-hydrated sessions may not have sections/sources (DB doesn't store them)
+      // This is expected - old chats show what was stored, not streaming answer content
+      if (sessions.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint('🔄 HISTORY_MODE: Setting ${sessions.length} sessions in provider');
+          debugPrint('   - State before replace: ${ref.read(sessionHistoryProvider).length} sessions');
+        }
+        
+        ref.read(sessionHistoryProvider.notifier).replaceAllSessions(sessions);
+        
+        if (kDebugMode) {
+          final verifySessions = ref.read(sessionHistoryProvider);
+          debugPrint('✅ HISTORY_MODE: Sessions set in provider');
+          debugPrint('   - State after replace: ${verifySessions.length} sessions');
+          debugPrint('   - Ready for navigation and rendering');
+    }
+      } else {
+        // If no messages found, check if we have local history as fallback
+        if (chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty) {
+          if (kDebugMode) {
+            debugPrint('📦 Using local conversation history as fallback');
+          }
+          // Convert local history to sessions
+          final localSessions = chat.conversationHistory!.map((sessionData) {
+            return QuerySession(
+              sessionId: sessionData['sessionId'] as String?, // ✅ Preserve sessionId if available
+              query: sessionData['query'] as String? ?? '',
+              summary: sessionData['summary'] as String?,
+              answer: sessionData['answer'] as String?, // ✅ CRITICAL: Include full answer text
+              intent: sessionData['intent'] as String?,
+              cardType: sessionData['cardType'] as String?,
+              sections: (sessionData['sections'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
+              sources: (sessionData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+              followUpSuggestions: (sessionData['followUpSuggestions'] as List?)?.map((e) => e.toString()).toList() ?? [],
+              isStreaming: false,
+              isParsing: false,
+              imageUrl: sessionData['imageUrl'] as String?,
+            );
+          }).toList();
+          ref.read(sessionHistoryProvider.notifier).replaceAllSessions(localSessions);
+        }
+      }
+      
+      // ✅ Navigate to PerplexityAnswerScreen (read-only replay mode)
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ShoppingResultsScreen(
+        builder: (context) => PerplexityAnswerScreen(
           query: chat.query,
           imageUrl: chat.imageUrl,
-          initialConversationHistory: chat.conversationHistory, // ✅ Pass conversation history (can be null for new chats)
+            isReplayMode: true, // ✅ Mark as replay mode to prevent streaming
+            initialConversationHistory: null, // ✅ Already loaded into session history
+            conversationId: chat.id, // ✅ CRITICAL: Pass conversation ID so new queries can be saved to this conversation
         ),
       ),
-    ).then((returnedHistory) {
-      // ✅ Update chat history if conversation history was returned
-      if (returnedHistory != null && returnedHistory is List) {
-        if (kDebugMode) {
-          debugPrint('💾 Saving conversation history for chat: ${chat.title}');
+      ).then((returnedValue) {
+        // ✅ CRITICAL FIX: Save new queries made in old chats
+        // Handle return value: can be List (history) or Map (history + conversationId)
+        List<Map<String, dynamic>>? returnedHistory;
+        String? returnedConversationId;
+        
+        if (returnedValue is Map && returnedValue.containsKey('history')) {
+          // Returned both history and conversation ID
+          returnedHistory = (returnedValue['history'] as List?)?.cast<Map<String, dynamic>>();
+          returnedConversationId = returnedValue['conversationId'] as String?;
+          if (kDebugMode) {
+            debugPrint('📥 Received history + conversationId from old chat');
+            debugPrint('   Conversation ID: $returnedConversationId');
+            debugPrint('   History length: ${returnedHistory?.length ?? 0}');
+          }
+        } else if (returnedValue is List) {
+          // Returned just history (legacy)
+          returnedHistory = returnedValue.cast<Map<String, dynamic>>();
         }
-        final index = _chatHistory.indexWhere((item) => item.id == chat.id);
-        if (index != -1) {
-          final updatedChat = ChatHistoryItem(
-            id: chat.id,
-            title: chat.title,
-            query: chat.query,
-            timestamp: chat.timestamp,
-            imageUrl: chat.imageUrl,
-            conversationHistory: List<Map<String, dynamic>>.from(returnedHistory),
-          );
+        
+        // ✅ Update chat history with new queries if returned
+        if (returnedHistory != null && returnedHistory.isNotEmpty) {
+          // Use returned conversation ID (should match chat.id for old chats)
+          final targetChatId = returnedConversationId ?? chat.id;
+          final chatIndex = _chatHistory.indexWhere((item) => item.id == targetChatId);
           
-          setState(() {
-            _chatHistory[index] = updatedChat;
-          });
-          
-          // ✅ Save to persistent storage (async, non-blocking) - Local cache + Cloud sync
-          ChatHistoryServiceCloud.saveChat(updatedChat).catchError((e) {
+          if (chatIndex != -1) {
+            final updatedChat = ChatHistoryItem(
+              id: targetChatId,
+              title: _chatHistory[chatIndex].title,
+              query: _chatHistory[chatIndex].query,
+              timestamp: _chatHistory[chatIndex].timestamp,
+              imageUrl: _chatHistory[chatIndex].imageUrl,
+              conversationHistory: List<Map<String, dynamic>>.from(returnedHistory),
+            );
+            
+            setState(() {
+              _chatHistory[chatIndex] = updatedChat;
+            });
+            
+            // ✅ Save to persistent storage (async, non-blocking) - Local cache + Cloud sync
+            ChatHistoryServiceCloud.saveChat(updatedChat).catchError((e) {
+              if (kDebugMode) {
+                debugPrint('❌ Error saving updated old chat to storage: $e');
+              }
+            });
+            
             if (kDebugMode) {
-              debugPrint('❌ Error saving conversation history to storage: $e');
+              debugPrint('💾 Saved ${returnedHistory.length} sessions to old chat: $targetChatId');
             }
-          });
+          } else if (kDebugMode) {
+            debugPrint('⚠️ Chat not found in history: $targetChatId');
+          }
+        }
+      });
+    } catch (e, stackTrace) {
+        if (kDebugMode) {
+        debugPrint('❌ Error loading chat: $e');
+        debugPrint('   Stack: $stackTrace');
+      }
+      
+      // Fallback: try with local history if available
+      if (chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint('📦 Fallback: Using local conversation history');
+        }
+        final localSessions = chat.conversationHistory!.map((sessionData) {
+          return QuerySession(
+            sessionId: sessionData['sessionId'] as String?, // ✅ Preserve sessionId if available
+            query: sessionData['query'] as String? ?? '',
+            summary: sessionData['summary'] as String?,
+            intent: sessionData['intent'] as String?,
+            cardType: sessionData['cardType'] as String?,
+            sections: (sessionData['sections'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
+            sources: (sessionData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+            followUpSuggestions: (sessionData['followUpSuggestions'] as List?)?.map((e) => e.toString()).toList() ?? [],
+            isStreaming: false,
+            isParsing: false,
+            imageUrl: sessionData['imageUrl'] as String?,
+          );
+        }).toList();
+        ref.read(sessionHistoryProvider.notifier).replaceAllSessions(localSessions);
+        
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PerplexityAnswerScreen(
+            query: chat.query,
+            imageUrl: chat.imageUrl,
+              isReplayMode: true,
+              initialConversationHistory: null,
+            ),
+          ),
+          );
+      } else {
+        // Show error to user
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load conversation. Please try again.'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
         }
       }
-    });
   }
   
   // Delete a chat

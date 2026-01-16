@@ -1,13 +1,4 @@
-/**
- * ✅ LANGCHAIN-STYLE PERPLEXITY ANSWER SERVICE
- * 
- * Simple, clean flow like LangChain MetaSearchAgent:
- * 1. Search web
- * 2. Summarize each document
- * 3. Rerank by relevance (embeddings)
- * 4. Generate Perplexity-style answer
- * 5. Parse sections and return
- */
+
 
 import OpenAI from "openai";
 import axios from "axios";
@@ -35,8 +26,8 @@ interface Document {
   url: string;
   content: string;
   summary?: string;
-  // ✅ PERPLEXITY-STYLE: Include visual elements from search results automatically
-  images?: string[]; // Images from search results (like Perplexica's img_src)
+  // Include visual elements from search results automatically
+  images?: string[]; // Images from search results 
   thumbnail?: string; // Primary image
   video?: { url: string; thumbnail?: string; title?: string }; // Video from search results
   mapData?: { latitude: number; longitude: number; title: string }; // Map coordinates from search results
@@ -106,12 +97,9 @@ interface MovieCard {
   genre?: string[];
 }
 
-// ✅ DELETED: All extract* functions - search is the only source of truth
 
-/**
- * ✅ PERPLEXITY-STYLE: Pure adapter functions - map structured search results to cards
- * NO domain inference, NO query analysis, NO fallback logic
- */
+
+
 
 function mapShoppingResultsToProductCards(shoppingResults: any[]): ProductCard[] {
   if (!Array.isArray(shoppingResults) || shoppingResults.length === 0) {
@@ -703,7 +691,7 @@ async function generateAnswer(
   context: string,
   conversationHistory: any[]
 ): Promise<string> {
-  const system = `You are an AI assistant that provides detailed, well-structured answers from web search results.
+  const system = `You are an AI assistant skilled in web search and crafting detailed, engaging, and well-structured answers. You excel at summarizing web pages and extracting relevant information to create professional, blog-style responses.
 
 Answer Requirements:
 - Address the query thoroughly using the provided context
@@ -856,7 +844,7 @@ async function generateAnswerStream(
   const sse = new SSE(res);
   sse.init();
 
-  const system = `You are an AI assistant that provides detailed, well-structured answers from web search results.
+  const system = `You are an AI assistant skilled in web search and crafting detailed, engaging, and well-structured answers. You excel at summarizing web pages and extracting relevant information to create professional, blog-style responses.
 
 Answer Requirements:
 - Address the query thoroughly using the provided context
@@ -978,6 +966,137 @@ Current date & time in ISO format (UTC timezone) is: ${new Date().toISOString()}
 /**
  * Main function: LangChain-style Perplexity answer generation
  */
+/**
+ * ✅ PERPLEXITY-STYLE: Semantic Understanding (BEFORE search)
+ * Understands query intent, entities, context, and optimizes search parameters
+ */
+interface SemanticUnderstanding {
+  intent: string; // Primary intent (hotel, product, place, movie, restaurant, flight, general)
+  entities: {
+    location?: string; // Normalized location (e.g., "Bangkok", "New York")
+    brand?: string; // Brand name if mentioned
+    category?: string; // Product/service category
+    price?: string; // Price range or modifier (e.g., "cheap", "luxury", "under $100")
+    amenities?: string[]; // Features/amenities (e.g., ["pool", "gym", "wifi"])
+  };
+  queryRefinement: string; // Optimized search query
+  needsFreshness: boolean; // Does query need recent information?
+  needsMultipleSources: boolean; // Does query benefit from diverse sources?
+  isRefinement: boolean; // Is this a follow-up/refinement query?
+  detectedDomains: Domain[]; // Detected domains for API calls
+}
+
+async function understandQuerySemantically(
+  query: string,
+  conversationHistory: any[] = []
+): Promise<SemanticUnderstanding> {
+  try {
+    const client = getClient();
+    
+    // Format conversation history
+    const historyText = conversationHistory.length > 0
+      ? conversationHistory
+          .slice(-5) // Last 5 messages
+          .map((msg: any) => `Q: ${msg.query || ""}\nA: ${msg.summary || msg.answer || ""}`)
+          .join("\n\n")
+      : "";
+
+    const prompt = `You are a semantic understanding system for a search assistant (like Perplexity).
+
+Analyze the user's query and extract ALL relevant information.
+
+User Query: "${query}"
+${historyText ? `\n\nConversation History:\n${historyText}` : ""}
+
+Extract and return ONLY a JSON object with this exact structure:
+{
+  "intent": "primary intent (hotel, product, place, movie, restaurant, flight, or general)",
+  "entities": {
+    "location": "normalized location name or null (e.g., 'Bangkok', 'New York', 'Salt Lake City')",
+    "brand": "brand name or null (e.g., 'Nike', 'Apple')",
+    "category": "product/service category or null (e.g., 'shoes', 'hotels', 'restaurants')",
+    "price": "price modifier or null (e.g., 'cheap', 'luxury', 'under $100', '5-star')",
+    "amenities": ["array of features/amenities or empty array (e.g., ['pool', 'gym', 'wifi'])"]
+  },
+  "queryRefinement": "optimized search query (2-8 words, natural and searchable)",
+  "needsFreshness": true/false,
+  "needsMultipleSources": true/false,
+  "isRefinement": true/false,
+  "detectedDomains": ["array of domains: 'movie', 'place', 'hotel', 'product', 'restaurant', 'flight' or empty"]
+}
+
+CRITICAL RULES:
+1. Intent: Determine primary intent. If ambiguous, choose the most likely based on keywords and context.
+2. Location: Normalize to standard format (e.g., "bangkok" → "Bangkok", "NYC" → "New York")
+3. Query Refinement: Create a natural, searchable query that captures the essence. If query is vague, infer from conversation history.
+4. needsFreshness: true if query mentions time-sensitive terms (now, current, latest, recent, today, 2024, 2025, news, update, best, top, recommend)
+5. needsMultipleSources: true if query is comparison/decision (vs, versus, compare, comparison, should i, worth it, which is better, pick, choose)
+6. isRefinement: true if query is vague/follow-up (e.g., "cheaper ones", "luxury ones", "what about X") AND has conversation history
+7. detectedDomains: Include all relevant domains (can be multiple, e.g., ["hotel", "restaurant"] for "hotels and restaurants in Paris")
+8. If query is a follow-up without explicit location, infer location from conversation history
+9. If query explicitly mentions a different location than previous, use the new location (don't merge)
+
+Examples:
+- Query: "hotels in bangkok" → { intent: "hotel", entities: { location: "Bangkok" }, queryRefinement: "hotels in Bangkok", detectedDomains: ["hotel"] }
+- Query: "cheaper ones" (previous: "hotels in Miami") → { intent: "hotel", entities: { location: "Miami", price: "cheap" }, queryRefinement: "cheap hotels in Miami", isRefinement: true, detectedDomains: ["hotel"] }
+- Query: "best restaurants and hotels in Paris" → { intent: "general", entities: { location: "Paris" }, queryRefinement: "best restaurants and hotels in Paris", detectedDomains: ["restaurant", "hotel"] }
+- Query: "movies about space" → { intent: "movie", entities: { category: "space" }, queryRefinement: "movies about space", detectedDomains: ["movie"] }
+
+Return ONLY the JSON object, no other text.`;
+
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 500,
+    });
+
+    const content = response.choices[0]?.message?.content?.trim() || "{}";
+    
+    // Extract JSON from response (handle markdown code blocks)
+    let jsonStr = content;
+    const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1];
+    }
+
+    const understanding = JSON.parse(jsonStr) as SemanticUnderstanding;
+
+    // Validate and set defaults
+    return {
+      intent: understanding.intent || "general",
+      entities: {
+        location: understanding.entities?.location || undefined,
+        brand: understanding.entities?.brand || undefined,
+        category: understanding.entities?.category || undefined,
+        price: understanding.entities?.price || undefined,
+        amenities: understanding.entities?.amenities || [],
+      },
+      queryRefinement: understanding.queryRefinement || query,
+      needsFreshness: understanding.needsFreshness ?? false,
+      needsMultipleSources: understanding.needsMultipleSources ?? false,
+      isRefinement: understanding.isRefinement ?? false,
+      detectedDomains: understanding.detectedDomains || [],
+    };
+  } catch (error: any) {
+    console.warn("⚠️ Semantic understanding failed, using fallback:", error.message);
+    
+    // Fallback to regex-based detection
+    const detectedDomains = detectDomains(query);
+    const queryWords = query.split(/\s+/).length;
+    
+    return {
+      intent: detectedDomains[0] || "general",
+      entities: {},
+      queryRefinement: query,
+      needsFreshness: /\b(now|current|latest|recent|today|2024|2025|best|top|recommend)\b/i.test(query),
+      needsMultipleSources: /\b(vs|versus|compare|which|should i|pick|choose)\b/i.test(query) || queryWords > 8,
+      isRefinement: false,
+      detectedDomains,
+    };
+  }
+}
+
 export async function generatePerplexityAnswer(
   query: string,
   conversationHistory: any[] = [],
@@ -1000,32 +1119,22 @@ export async function generatePerplexityAnswer(
   };
 }> {
   try {
-    // ✅ SIMPLIFIED: Inline retrieval parameters (no answer planner needed)
-    // These are simple regex checks that Perplexity does inline
-    const queryLower = query.toLowerCase().trim();
-    const queryWords = query.split(/\s+/).length;
-    
-    // Freshness: Does query need recent/current information?
-    const needsFreshness = (
-      /\b(now|current|latest|recent|today|this week|this month|2024|2025)\b/i.test(query) ||
-      /\b(news|update|breaking|announcement)\b/i.test(query) ||
-      /\b(best|top|recommend|suggest|worth it)\b/i.test(query)
-    );
-    
-    // Multiple sources: Does query benefit from diverse sources?
-    const needsMultipleSources = (
-      /\b(vs|versus|compare|comparison|difference between)\b/i.test(query) ||
-      /\b(should i|worth it|is.*good|recommend|which is better)\b/i.test(query) ||
-      /\b(which|what should i|pick|choose|select)\b/i.test(query) ||
-      queryWords > 8
-    );
-    
-    console.log(`🔍 Retrieval params: needsMultipleSources=${needsMultipleSources}, needsFreshness=${needsFreshness}`);
+    // ✅ PERPLEXITY-STYLE: Step 0 - Semantic Understanding (BEFORE search)
+    console.log(`🧠 Understanding query semantically: "${query}"`);
+    const understanding = await understandQuerySemantically(query, conversationHistory);
+    console.log(`✅ Semantic understanding:`, {
+      intent: understanding.intent,
+      location: understanding.entities.location,
+      queryRefinement: understanding.queryRefinement,
+      needsFreshness: understanding.needsFreshness,
+      needsMultipleSources: understanding.needsMultipleSources,
+      detectedDomains: understanding.detectedDomains,
+    });
 
-    // Step 1: Search web (with inline retrieval parameters)
-    const { documents, rawResponse } = await searchWeb(query, conversationHistory, {
-      needsMultipleSources,
-      needsFreshness,
+    // Step 1: Search web (using semantic understanding)
+    const { documents, rawResponse } = await searchWeb(understanding.queryRefinement, conversationHistory, {
+      needsMultipleSources: understanding.needsMultipleSources,
+      needsFreshness: understanding.needsFreshness,
     });
 
     if (documents.length === 0) {
@@ -1072,8 +1181,10 @@ export async function generatePerplexityAnswer(
       ? mapPlaceResultsToPlaceCards(rawResponse.places_results || rawResponse.local_results)
       : [];
     
-    // ✅ DOMAIN-DRIVEN: Conditionally call APIs based on detected domains
-    const detectedDomains = detectDomains(query);
+    // ✅ PERPLEXITY-STYLE: Use domains from semantic understanding
+    const detectedDomains = understanding.detectedDomains.length > 0 
+      ? understanding.detectedDomains 
+      : detectDomains(query); // Fallback to regex if semantic understanding didn't detect domains
     console.log(`🎯 Detected domains: ${detectedDomains.join(', ') || 'none (web search only)'}`);
     
     // ✅ MOVIE API: Only call TMDB if movie domain detected

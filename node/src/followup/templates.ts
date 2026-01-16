@@ -1,0 +1,76 @@
+/**
+ * ✅ Domain-specific follow-up templates (Perplexity-style)
+ */
+
+export const TEMPLATES: Record<string, string[]> = {
+  shopping: [
+    'Compare popular models?',
+    'Any alternatives under {price}?',
+    'Which one is best for {purpose}?',
+    'What about different colors?',
+    'Is there a better budget option?',
+    'Any premium upgrade?',
+    'Which has better durability?',
+    'Best value for the price?',
+    'What sizes are available?',
+    'Any lightweight options?',
+    'Compare {brand} models?',
+    'Best {category} under {price}?',
+  ],
+  hotels: [
+    'Which areas are best to stay in {city}?',
+    'Best budget-friendly options?',
+    'Compare luxury stays?',
+    'Hotels near major attractions?',
+    'Which ones are family friendly?',
+    'Best rated for cleanliness?',
+    'Any with free breakfast?',
+    'Safest neighborhoods?',
+  ],
+  restaurants: [
+    'Top dishes to try?',
+    'Cheapest good-rated places?',
+    'Where do locals prefer?',
+    'Any vegetarian options?',
+    "What's best for groups?",
+    'Best {city} restaurants?',
+    'Price range per person?',
+    'Is reservation needed?',
+  ],
+  flights: [
+    'Any cheaper dates?',
+    'Compare airlines?',
+    'Best time to book?',
+    'Any non-stop options?',
+    'Compare flight durations?',
+    'Does this include baggage?',
+    "What's the cancellation policy?",
+  ],
+  places: [
+    'Best waterfalls?',
+    'Top temples?',
+    'Best islands?',
+    'Hidden gems nearby?',
+    'Nature & adventure spots?',
+    'Cultural sites?',
+    'Best beaches?',
+    'What else to see?',
+    'Other places to visit?',
+    'Best {city} attractions?',
+  ],
+  location: [
+    'Best things to do?',
+    'Where to stay?',
+    'Best time to visit?',
+    'Top attractions?',
+    'Local food recommendations?',
+    'Transportation options?',
+    'Safety tips?',
+  ],
+  general: [
+    'Want more details?',
+    'Need examples?',
+    'Should I break this down further?',
+  ],
+};
+

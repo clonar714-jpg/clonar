@@ -20,7 +20,8 @@ import personaRoutes from '@/routes/personas';
 import collageRoutes from '@/routes/collages';
 import userRoutes from '@/routes/users';
 import uploadRoutes from '@/routes/upload';
-import agentRoutes from '@/routes/agent';
+import chatRoutes from '@/routes/chat';
+import reconnectRoutes from '@/routes/reconnect';
 import generateSuggestionsRoutes from '@/routes/generateSuggestions';
 import productDetailsRoutes from '@/routes/productDetails';
 import hotelDetailsRoutes from '@/routes/hotelDetails';
@@ -29,6 +30,11 @@ import moviesRoutes from '@/routes/movies';
 import geocodeRoutes from '@/routes/geocode';
 import hotelRoomsRoutes from '@/routes/hotelRooms';
 import chatsRoutes from '@/routes/chats';
+import searchRoutes from '@/routes/search';
+import imagesRoutes from '@/routes/images';
+import videosRoutes from '@/routes/videos';
+import providersRoutes from '@/routes/providers';
+import filesRoutes from '@/routes/files';
 import { connectDatabase } from '@/services/database';
 import { startBackgroundJob } from '@/services/personalization/backgroundAggregator';
 // ✅ PHASE 10: Stability & Concurrency imports
@@ -43,14 +49,45 @@ console.log("DEBUG: TMDB_API_KEY =", process.env.TMDB_API_KEY ? "Loaded ✅" : "
 const app = express();
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
+// ✅ CRITICAL: Log ALL incoming requests FIRST (before any middleware)
+// This helps diagnose if requests are reaching the server at all
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`\n🌐 [${timestamp}] ========== INCOMING REQUEST ==========`);
+  console.log(`   Method: ${req.method}`);
+  console.log(`   URL: ${req.url}`);
+  console.log(`   Path: ${req.path}`);
+  console.log(`   IP: ${req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown'}`);
+  console.log(`   User-Agent: ${req.headers['user-agent'] || 'unknown'}`);
+  console.log(`   Content-Type: ${req.headers['content-type'] || 'none'}`);
+  console.log(`   Origin: ${req.headers.origin || 'none'}`);
+  console.log(`   Referer: ${req.headers.referer || 'none'}`);
+  next();
+});
+
 // Security middleware
 app.use(helmet());
 
-// CORS configuration
-app.use(cors({
-  origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000'],
+// CORS configuration - ✅ FIX: Allow all origins in dev mode for Flutter app
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'development' 
+    ? '*' // Allow all origins in dev mode (Flutter app can come from any IP)
+    : (process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000']),
   credentials: true,
-}));
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+};
+app.use(cors(corsOptions));
+console.log(`🌐 CORS configured: ${process.env.NODE_ENV === 'development' ? 'ALLOWING ALL ORIGINS (dev mode)' : `Restricted to: ${corsOptions.origin}`}`);
+
+// ✅ FIX: Explicit OPTIONS handler for CORS preflight (Flutter might send preflight)
+app.options('*', (req, res) => {
+  console.log(`🔄 OPTIONS preflight request for: ${req.url}`);
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  res.sendStatus(200);
+});
 
 // ✅ PHASE 10: Enhanced rate limiting - disabled in dev mode
 if (process.env.NODE_ENV !== "development") {
@@ -151,8 +188,17 @@ app.use('/api/personas', personaRoutes);
 app.use('/api/collages', collageRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/upload', uploadRoutes);
-app.use('/api/agent', agentRoutes);
-app.use('/api/agent/generate-suggestions', generateSuggestionsRoutes);
+
+// New APISearchAgent-based chat route
+app.use('/api/chat', chatRoutes);
+console.log('✅ Chat route registered at /api/chat');
+
+// Reconnect route for session recovery
+app.use('/api/reconnect', reconnectRoutes);
+console.log('✅ Reconnect route registered at /api/reconnect');
+
+app.use('/api/chat/generate-suggestions', generateSuggestionsRoutes);
+console.log('✅ Chat suggestions route registered at /api/chat/generate-suggestions');
 app.use('/api/product-details', productDetailsRoutes);
 app.use('/api/hotel-details', hotelDetailsRoutes);
 app.use('/api/autocomplete', autocompleteRoutes);
@@ -161,6 +207,16 @@ app.use('/api/geocode', geocodeRoutes);
 console.log('✅ Geocode route registered at /api/geocode');
 app.use('/api/chats', chatsRoutes);
 console.log('✅ Chats route registered at /api/chats');
+app.use('/api/search', searchRoutes);
+console.log('✅ Search route registered at /api/search');
+app.use('/api/images', imagesRoutes);
+console.log('✅ Images route registered at /api/images');
+app.use('/api/videos', videosRoutes);
+console.log('✅ Videos route registered at /api/videos');
+app.use('/api/providers', providersRoutes);
+console.log('✅ Providers route registered at /api/providers');
+app.use('/api/files', filesRoutes);
+console.log('✅ Files route registered at /api/files');
 
 // Error handling middleware
 app.use(notFoundHandler);

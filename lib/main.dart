@@ -15,6 +15,7 @@ import 'theme/AppColors.dart';
 import 'theme/Typography.dart';
 import 'services/ApiService.dart';
 import 'services/CacheService.dart';
+import 'services/agent_stream_service.dart'; // ✅ NEW: Global SSE service
 import 'core/provider_observer.dart';
 import 'core/emulator_detector.dart';
 
@@ -40,6 +41,13 @@ Future<void> main() async {
   
   // ✅ STARTUP FIX: Schedule ALL heavy work AFTER first frame is rendered
   WidgetsBinding.instance.addPostFrameCallback((_) {
+    // ✅ CRITICAL: Initialize global SSE service ONCE at app startup
+    // This creates the SINGLE HttpClient that will be reused for all SSE requests
+    AgentStreamService().initialize('http://127.0.0.1:4000/api');
+    if (kDebugMode) {
+      debugPrint('✅ AgentStreamService initialized at app startup');
+    }
+    
     // ✅ WINDOW FIX: Defer emulator detection to prevent window tracking initialization
     if (kDebugMode) {
       Future(() => EmulatorDetector.isEmulator()).catchError((_) {

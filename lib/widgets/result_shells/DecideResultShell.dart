@@ -23,7 +23,7 @@ class DecideResultShell extends ResultShell {
     // ✅ SIMPLIFIED: Use PerplexityAnswerWidget for all queries
     // No header needed - sections speak for themselves (like Perplexity)
     return PerplexityAnswerWidget(
-      session: session,
+      sessionId: session.sessionId, // ✅ PERPLEXITY-STYLE: Only store sessionId
     );
   }
 

@@ -40,6 +40,8 @@ export const db = {
   conversationMessages: () => supabaseAdmin().from("conversation_messages"),
   userPreferences: () => supabaseAdmin().from("user_preferences"),
   preferenceSignals: () => supabaseAdmin().from("preference_signals"),
+  userFiles: () => supabaseAdmin().from("user_files"),
+  userFileChunks: () => supabaseAdmin().from("user_file_chunks"),
   storage: () => supabaseAdmin().storage,
 };
 

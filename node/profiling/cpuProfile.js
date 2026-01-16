@@ -16,7 +16,7 @@ console.log('🎯 Profiling agent.ts flow...');
 
 session.post('Profiler.enable', () => {
   session.post('Profiler.start', () => {
-    console.log('✅ Profiler started. Make requests to /api/agent...');
+    console.log('✅ Profiler started. Make requests to /api/chat...');
     
     setTimeout(() => {
       session.post('Profiler.stop', (err, { profile }) => {

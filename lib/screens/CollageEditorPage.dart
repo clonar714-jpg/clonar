@@ -18,7 +18,7 @@ import '../services/collage_service.dart';
 import 'CollagePublishPage.dart';
 import 'AccountScreen.dart';
 import 'SimilarImagesSearchPage.dart';
-import 'ShoppingResultsScreen.dart';
+import 'PerplexityAnswerScreen.dart';
 import '../widgets/DualActionButtons.dart';
 
 class CollageEditorPage extends StatefulWidget {
@@ -134,7 +134,7 @@ class _CollageEditorPageState extends State<CollageEditorPage> {
             topRight: Radius.circular(20),
           ),
         ),
-        child: ShoppingResultsScreen(
+        child: PerplexityAnswerScreen(
           query: 'hoodie sweatshirt',
           imageUrl: imageUrl,
         ),

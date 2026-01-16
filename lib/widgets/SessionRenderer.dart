@@ -19,9 +19,12 @@ import '../screens/MovieDetailScreen.dart';
 import '../services/AgentService.dart';
 import 'result_shells/ResultShellRouter.dart';
 import 'PerplexityAnswerWidget.dart';
+import '../providers/session_phase_provider.dart';
+import '../providers/session_history_provider.dart';
+import '../widgets/ResearchActivityWidget.dart';
 
 class SessionRenderModel {
-  final QuerySession session;
+  final String sessionId; // ✅ PERPLEXITY-STYLE: Only store sessionId, read session lazily
   final int index;
   final BuildContext context;
   final Function(String, QuerySession) onFollowUpTap;
@@ -32,7 +35,7 @@ class SessionRenderModel {
   final String? query;
   
   SessionRenderModel({
-    required this.session,
+    required this.sessionId, // ✅ PERPLEXITY-STYLE: Changed from session to sessionId
     required this.index,
     required this.context,
     required this.onFollowUpTap,
@@ -62,7 +65,12 @@ class _SessionContentRenderer extends ConsumerWidget {
   
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final session = model.session;
+    // ✅ PERPLEXITY-STYLE: Watch phase only (prevents rebuilds on text changes)
+    final phase = ref.watch(sessionPhaseProvider(model.sessionId));
+    
+    // ✅ PERPLEXITY-STYLE: Read session lazily for query text only
+    final session = ref.read(sessionByIdProvider(model.sessionId));
+    final query = session?.query ?? '';
     
     return Padding(
       key: ValueKey('session-${model.index}'),
@@ -75,7 +83,7 @@ class _SessionContentRenderer extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: Text(
-              session.query,
+              query,
               style: const TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w700,
@@ -84,85 +92,47 @@ class _SessionContentRenderer extends ConsumerWidget {
             ),
           ),
           
-          // ✅ CRITICAL: Direct call - NO Builder wrapper
-          // If you see "✅ NOT LOADING" in logs, app is running OLD CODE - do: flutter clean && flutter run --profile
-          _buildContentDirectly(session),
+          // ✅ PERPLEXITY-STYLE: Phase-based content rendering
+          _buildContentDirectly(model.sessionId, phase, ref),
         ],
       ),
     );
   }
   
-  // ✅ CRITICAL: Direct content builder - NO Builder wrapper, NO routing
-  Widget _buildContentDirectly(QuerySession session) {
-    // ✅ CRITICAL: Log IMMEDIATELY when method is called
-    print('🔥🔥🔥 _buildContentDirectly() CALLED for query: "${session.query}"');
-    print('🔥🔥🔥   - Session summary: ${session.summary != null && session.summary!.isNotEmpty}');
-    print('🔥🔥🔥   - Session sections: ${session.sections?.length ?? 0}');
+  // ✅ PERPLEXITY-STYLE: Phase-based content rendering (NO data checks)
+  Widget _buildContentDirectly(String sessionId, QueryPhase phase, WidgetRef ref) {
+    debugPrint('🧱 SessionRenderer BUILD - phase: $phase');
     
-    // ✅ SIMPLIFIED: Only check for summary and sections (no more hotel/learn logic)
-    final hasSummary = session.summary != null && session.summary!.isNotEmpty;
-    final hasSections = session.sections != null && session.sections!.isNotEmpty;
+    // ✅ PERPLEXITY-STYLE: Get query lazily for ResearchActivityWidget
+    final query = model.query ?? ref.read(sessionByIdProvider(sessionId))?.query ?? '';
     
-    final hasNoData = !hasSummary && !hasSections;
-    
-    // ✅ ROOT CAUSE FIX: Loading depends ONLY on data presence, not flags
-    final isLoading = hasNoData;
-    
-    // ✅ FIX: Log loading state for debugging
-    if (isLoading) {
-      print("⏳ LOADING STATE - Query: '${session.query}'");
-      print("  - hasSummary: $hasSummary");
-      print("  - hasSections: $hasSections (${session.sections?.length ?? 0})");
-      print("  - hasNoData: $hasNoData");
-      print("  - isLoading: $isLoading (based on data only, not flags)");
-      
-      return Container(
-        padding: const EdgeInsets.symmetric(vertical: 60),
-        child: Column(
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text(
-              'Searching...',
-              style: TextStyle(
-                fontSize: 14,
-                color: AppColors.textSecondary,
+    // ✅ PERPLEXITY-STYLE: AnimatedSwitcher for smooth cross-fade transition
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      transitionBuilder: (child, animation) {
+        return FadeTransition(
+          opacity: animation,
+          child: child,
+        );
+      },
+      child: phase == QueryPhase.searching
+          ? Padding(
+              key: const ValueKey('search'),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+              child: Builder(
+                builder: (context) {
+                  debugPrint('🔍 Rendering ResearchActivityWidget - query: $query');
+                  return ResearchActivityWidget(
+                    query: query,
+                  );
+                },
               ),
+            )
+          : PerplexityAnswerWidget(
+              key: ValueKey('perplexity-$sessionId'),
+              sessionId: sessionId,
             ),
-          ],
-        ),
-      );
-    }
-    
-    // ✅ CRITICAL: This MUST execute - log immediately to verify
-    print('🔥🔥🔥 SessionRenderer: About to build PerplexityAnswerWidget for "${session.query}"');
-    print('🔥🔥🔥   - isLoading: $isLoading (MUST be false)');
-    print('🔥🔥🔥   - hasSummary: $hasSummary');
-    print('🔥🔥🔥   - hasSections: $hasSections (${session.sections?.length ?? 0})');
-    print('🔥🔥🔥   - Session sections: ${session.sections}');
-    print('🔥🔥🔥   - Session sources: ${session.sources.length}');
-    
-    // ✅ SIMPLIFIED: Directly use PerplexityAnswerWidget for ALL queries
-    // No more goal-aware routing - LLM-driven means one widget for everything
-    // ✅ CRITICAL: This is the ONLY code path that should execute
-    final widget = Column(
-      key: ValueKey('answer-${session.query}-${session.sections?.length ?? 0}'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // ✅ SIMPLIFIED: Use PerplexityAnswerWidget directly (shows "Answer" header, not "Explanation")
-        // Just answer content - sections have their own titles
-        PerplexityAnswerWidget(
-          key: ValueKey('perplexity-${session.query}'),
-          session: session,
-        ),
-        
-        const SizedBox(height: 40),
-      ],
     );
-    
-    print('🔥🔥🔥 SessionRenderer: Built PerplexityAnswerWidget widget, returning now');
-    return widget;
   }
   
   // ✅ GOAL-AWARE: Build content using goal-specific shells (delegates to existing methods for now)
@@ -233,7 +203,9 @@ class _SessionContentRenderer extends ConsumerWidget {
   }
   
   // ✅ LEARN: Build answer section with reading-friendly typography
-  Widget _buildLearnAnswerSection(String summary, AnswerContext context) {
+  // ✅ DEPRECATED: This method is no longer used (uses PerplexityAnswerWidget instead)
+  // ✅ CRITICAL FIX: Parameter renamed to answerText to reflect that it should receive full answer
+  Widget _buildLearnAnswerSection(String answerText, AnswerContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: Column(
@@ -249,7 +221,8 @@ class _SessionContentRenderer extends ConsumerWidget {
           ),
           const SizedBox(height: 12),
           StreamingTextWidget(
-            targetText: summary,
+            // ✅ CRITICAL FIX: Use full answer text, not just summary
+            targetText: answerText,
             enableAnimation: false,
             style: const TextStyle(
               fontSize: 15,
@@ -436,22 +409,24 @@ class _SessionContentRenderer extends ConsumerWidget {
   Widget _buildCompareContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
     print('⚠️ WARNING: _buildCompareContent called - should use PerplexityAnswerWidget instead');
     // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
-    return PerplexityAnswerWidget(session: session);
+    return PerplexityAnswerWidget(sessionId: session.sessionId);
   }
   
   // ✅ OLD METHOD (DEPRECATED - kept for reference only)
   Widget _buildCompareContent_OLD(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
-    final summary = session.summary ?? "";
+    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+    // session.answer contains the complete answer text, session.summary is just the first paragraph
+    final answerText = session.answer ?? session.summary ?? "";
     
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // ✅ COMPARE: Comparison summary block (short framing paragraph)
-        if (summary.isNotEmpty)
-          _buildComparisonSummaryBlock(summary, answerContext),
+        if (answerText.isNotEmpty)
+          _buildComparisonSummaryBlock(answerText, answerContext),
         
         // ✅ COMPARE: Comparison split block (MUST exist - two labeled sides)
-        _buildComparisonSplitBlock(summary),
+        _buildComparisonSplitBlock(answerText),
         
         // ✅ COMPARE: Evidence cards (max 2, after reasoning)
         if (answerContext.shouldShowEvidenceSection && session.cards.length <= 2)
@@ -467,7 +442,7 @@ class _SessionContentRenderer extends ConsumerWidget {
   }
   
   // ✅ COMPARE: Build comparison summary block
-  Widget _buildComparisonSummaryBlock(String summary, AnswerContext context) {
+  Widget _buildComparisonSummaryBlock(String answerText, AnswerContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: Column(
@@ -491,9 +466,9 @@ class _SessionContentRenderer extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 12),
-          // Extract first paragraph as framing
+          // ✅ CRITICAL FIX: Extract first paragraph from full answer text, not just summary
           StreamingTextWidget(
-            targetText: _extractFramingParagraph(summary),
+            targetText: _extractFramingParagraph(answerText),
             enableAnimation: false,
             style: const TextStyle(
               fontSize: 15,
@@ -519,9 +494,10 @@ class _SessionContentRenderer extends ConsumerWidget {
   }
   
   // ✅ COMPARE: Build comparison split block (two labeled sides)
-  Widget _buildComparisonSplitBlock(String summary) {
-    // Extract comparison sides from summary using heuristics
-    final sides = _extractComparisonSides(summary);
+  // ✅ CRITICAL FIX: Parameter renamed to answerText to reflect that it should receive full answer
+  Widget _buildComparisonSplitBlock(String answerText) {
+    // ✅ CRITICAL FIX: Extract comparison sides from full answer text, not just summary
+    final sides = _extractComparisonSides(answerText);
     
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
@@ -565,13 +541,14 @@ class _SessionContentRenderer extends ConsumerWidget {
     );
   }
   
-  // ✅ COMPARE: Extract comparison sides from summary
-  Map<String, String?> _extractComparisonSides(String summary) {
+  // ✅ COMPARE: Extract comparison sides from answer text
+  // ✅ CRITICAL FIX: Parameter renamed to answerText to reflect that it should receive full answer
+  Map<String, String?> _extractComparisonSides(String answerText) {
     final result = <String, String?>{};
     
     // Heuristic 1: Look for "X excels at" or "X is better when"
     final excelsPattern = RegExp(r'([A-Z][a-zA-Z\s]+?)\s+(?:excels at|is better when|is stronger for|shines in)\s+([^.!?]+)', caseSensitive: false);
-    final excelsMatch = excelsPattern.firstMatch(summary);
+    final excelsMatch = excelsPattern.firstMatch(answerText);
     if (excelsMatch != null) {
       result['sideAHeading'] = "Better for ${excelsMatch.group(2)?.trim()}";
       result['sideA'] = "${excelsMatch.group(1)?.trim()} excels at ${excelsMatch.group(2)?.trim()}.";
@@ -579,7 +556,7 @@ class _SessionContentRenderer extends ConsumerWidget {
     
     // Heuristic 2: Look for "Y is better" or "Y offers"
     final betterPattern = RegExp(r'([A-Z][a-zA-Z\s]+?)\s+(?:is better|offers|provides|has)\s+([^.!?]+)', caseSensitive: false);
-    final betterMatch = betterPattern.firstMatch(summary);
+    final betterMatch = betterPattern.firstMatch(answerText);
     if (betterMatch != null && betterMatch.group(1) != excelsMatch?.group(1)) {
       result['sideBHeading'] = "Better for ${betterMatch.group(2)?.trim()}";
       result['sideB'] = "${betterMatch.group(1)?.trim()} is better for ${betterMatch.group(2)?.trim()}.";
@@ -588,7 +565,7 @@ class _SessionContentRenderer extends ConsumerWidget {
     // Heuristic 3: Split by "vs" or "versus" and extract from each side
     if (result.isEmpty) {
       final vsPattern = RegExp(r'([^v]+?)\s+vs\.?\s+([^.!?]+)', caseSensitive: false);
-      final vsMatch = vsPattern.firstMatch(summary);
+      final vsMatch = vsPattern.firstMatch(answerText);
       if (vsMatch != null) {
         result['sideA'] = vsMatch.group(1)?.trim() ?? "";
         result['sideB'] = vsMatch.group(2)?.trim() ?? "";
@@ -597,9 +574,9 @@ class _SessionContentRenderer extends ConsumerWidget {
       }
     }
     
-    // Fallback: Split summary into two parts
+    // Fallback: Split answer text into two parts
     if (result.isEmpty) {
-      final sentences = summary.split(RegExp(r'[.!?]+\s+'));
+      final sentences = answerText.split(RegExp(r'[.!?]+\s+'));
       if (sentences.length >= 2) {
         result['sideA'] = sentences[0].trim();
         result['sideB'] = sentences[1].trim();
@@ -607,9 +584,9 @@ class _SessionContentRenderer extends ConsumerWidget {
         result['sideBHeading'] = "Second option";
       } else if (sentences.isNotEmpty) {
         // Single sentence - split in half
-        final mid = summary.length ~/ 2;
-        result['sideA'] = summary.substring(0, mid).trim();
-        result['sideB'] = summary.substring(mid).trim();
+        final mid = answerText.length ~/ 2;
+        result['sideA'] = answerText.substring(0, mid).trim();
+        result['sideB'] = answerText.substring(mid).trim();
         result['sideAHeading'] = "First option";
         result['sideBHeading'] = "Second option";
       }
@@ -653,7 +630,7 @@ class _SessionContentRenderer extends ConsumerWidget {
   Widget _buildDecideContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
     print('⚠️ WARNING: _buildDecideContent called - should use PerplexityAnswerWidget instead');
     // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
-    return PerplexityAnswerWidget(session: session);
+    return PerplexityAnswerWidget(sessionId: session.sessionId);
   }
   
   // ✅ OLD METHOD (DEPRECATED - kept for reference only)
@@ -892,13 +869,13 @@ class _SessionContentRenderer extends ConsumerWidget {
   Widget _buildBrowseContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
     print('⚠️ WARNING: _buildBrowseContent called - should use PerplexityAnswerWidget instead');
     // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
-    return PerplexityAnswerWidget(session: session);
+    return PerplexityAnswerWidget(sessionId: session.sessionId);
   }
   
   Widget _buildLocateContent(BuildContext context, QuerySession session, AnswerContext answerContext, WidgetRef ref) {
     print('⚠️ WARNING: _buildLocateContent called - should use PerplexityAnswerWidget instead');
     // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
-    return PerplexityAnswerWidget(session: session);
+    return PerplexityAnswerWidget(sessionId: session.sessionId);
   }
   
   // ✅ COMPARE: Footer for comparison
@@ -2010,21 +1987,30 @@ class _SessionContentRenderer extends ConsumerWidget {
   Widget _buildViewAllProductsButton(List<Product> products) {
     return Align(
       alignment: Alignment.centerLeft,
-      child: TextButton.icon(
-        style: TextButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          foregroundColor: AppColors.primary,
-        ),
-        onPressed: () => model.onViewAllProducts(model.session.query),
-        icon: const Icon(Icons.shopping_bag, size: 16, color: AppColors.primary),
-        label: Text(
-          'View all ${products.length} products',
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: AppColors.primary,
-          ),
-        ),
+      child: Consumer(
+        builder: (context, ref, child) {
+          return TextButton.icon(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              foregroundColor: AppColors.primary,
+            ),
+            onPressed: () {
+              final session = ref.read(sessionByIdProvider(model.sessionId));
+              if (session != null) {
+                model.onViewAllProducts(session.query);
+              }
+            },
+            icon: const Icon(Icons.shopping_bag, size: 16, color: AppColors.primary),
+            label: Text(
+              'View all ${products.length} products',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primary,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -2034,12 +2020,14 @@ class _SessionContentRenderer extends ConsumerWidget {
   Widget _buildAnswerSection(QuerySession session, AnswerContext context) {
     print('⚠️ WARNING: _buildAnswerSection called - should use PerplexityAnswerWidget instead');
     // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
-    return PerplexityAnswerWidget(session: session);
+    return PerplexityAnswerWidget(sessionId: session.sessionId);
   }
   
   // ✅ OLD METHOD (DEPRECATED - kept for reference only)
   Widget _buildAnswerSection_OLD(QuerySession session, AnswerContext context) {
-    final summary = session.summary ?? "";
+    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+    // session.answer contains the complete answer text, session.summary is just the first paragraph
+    final answerText = session.answer ?? session.summary ?? "";
     
     // ✅ COMPARE: For compare goal, always use neutral tone (ignore confidence)
     final isCompare = context.userGoal == "compare";
@@ -2095,9 +2083,10 @@ class _SessionContentRenderer extends ConsumerWidget {
           const SizedBox(height: 12),
           // ✅ COMPARE: For compare, structure answer with paragraphs and dividers
           // ✅ CONFIDENCE-AWARE: Answer text with confidence-based styling (or neutral for compare)
+          // ✅ CRITICAL FIX: Use full answer text, not just summary
           isCompare 
-            ? _buildCompareAnswerText(summary, answerStyle)
-            : _buildConfidenceAwareText(summary, answerStyle),
+            ? _buildCompareAnswerText(answerText, answerStyle)
+            : _buildConfidenceAwareText(answerText, answerStyle),
         ],
       ),
     );
@@ -2182,7 +2171,7 @@ class _SessionContentRenderer extends ConsumerWidget {
   Widget _buildClarificationCard(QuerySession session, AnswerContext context) {
     print('⚠️ WARNING: _buildClarificationCard called - should use PerplexityAnswerWidget instead');
     // ✅ FIXED: Use PerplexityAnswerWidget instead of old methods
-    return PerplexityAnswerWidget(session: session);
+    return PerplexityAnswerWidget(sessionId: session.sessionId);
   }
   
   // ✅ OLD METHOD (DEPRECATED - kept for reference only)
@@ -2219,7 +2208,9 @@ class _SessionContentRenderer extends ConsumerWidget {
               ),
               const SizedBox(height: 8),
               StreamingTextWidget(
-                targetText: session.summary ?? "",
+                // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+                // session.answer contains the complete answer text, session.summary is just the first paragraph
+                targetText: session.answer ?? session.summary ?? "",
                 enableAnimation: false,
                 style: TextStyle(
                   fontSize: 14,

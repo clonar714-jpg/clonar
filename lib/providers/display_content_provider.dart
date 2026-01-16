@@ -66,12 +66,14 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
     // ✅ FIX A & B: Collect all raw data first, then batch normalize in ONE isolate call
     
     // Step 1: Extract raw summary text (before normalization)
-    String rawSummary = session.summary ?? '';
+    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+    // session.answer contains the complete answer text, session.summary is just the first paragraph
+    String rawSummary = session.answer ?? session.summary ?? '';
     if (parsedContent != null && parsedContent.briefingText.isNotEmpty) {
       rawSummary = parsedContent.briefingText;
     } else if (rawSummary.isEmpty && agentResponse != null) {
-      rawSummary = agentResponse['summary']?.toString() ?? 
-                   agentResponse['answer']?.toString() ?? '';
+      rawSummary = agentResponse['answer']?.toString() ?? 
+                   agentResponse['summary']?.toString() ?? '';
     }
     
     // Step 2: Collect location cards from all sources
@@ -269,8 +271,10 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
     }
     
     // Return fallback content with at least summary
+    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+    final fallbackText = session.answer ?? session.summary ?? 'Content is being processed...';
     return DisplayContent(
-      summaryText: session.summary ?? 'Content is being processed...',
+      summaryText: fallbackText,
       locations: [],
       destinationImages: session.destinationImages,
       products: session.products,
@@ -279,7 +283,7 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       restaurants: [],
       sections: session.hotelSections ?? [],
       sources: session.sources,
-      answerMarkdown: session.summary ?? '',
+      answerMarkdown: fallbackText,
       resultType: session.resultType,
     );
   }

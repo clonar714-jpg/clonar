@@ -31,9 +31,14 @@ class AgentService {
 
   // 🔧 Automatically detects correct base URL for your setup
   static String get baseUrl {
-    // ⚠️ NOTE: 127.0.0.1 only works for emulator/simulator/web
-    // For REAL Android device, use your computer's IP (e.g., 10.0.0.127)
-      return "http://127.0.0.1:4000";
+    // ✅ FIX: Use localhost for adb reverse (physical Android device)
+    // adb reverse tcp:4000 tcp:4000 maps device localhost:4000 → host localhost:4000
+    const url = "http://127.0.0.1:4000";
+    // ✅ DEBUG: Log base URL for network troubleshooting
+    if (kDebugMode) {
+      debugPrint('🌐 AgentService.baseUrl: $url');
+    }
+    return url;
   }
 
   /// Calls the /api/autocomplete endpoint for search suggestions
@@ -369,13 +374,15 @@ class AgentService {
     }
   }
 
-  /// Calls the /api/agent endpoint on your Node backend
+  /// Calls the /api/chat endpoint on your Node backend (Perplexica-style)
   /// Returns regular JSON response for non-streaming queries
   /// 
   /// [previousContext] - Optional context from previous session (intent, cardType, slots, sessionId)
   /// [lastFollowUp] - The last follow-up question that was clicked (for deduplication)
   /// [parentQuery] - The original query that generated the follow-ups
   /// [imageUrl] - Optional image URL for image-based search
+  /// [chatId] - Optional chat ID (conversation ID) for the message
+  /// [messageId] - Optional message ID (auto-generated if not provided)
   static Future<Map<String, dynamic>> askAgent(
     String query, {
     bool stream = true, // ✅ OPTIMIZED: Streaming enabled by default for better UX
@@ -384,6 +391,8 @@ class AgentService {
     String? lastFollowUp,
     String? parentQuery,
     String? imageUrl, // ✅ NEW: Image URL for image search
+    String? chatId, // ✅ NEW: Chat ID (conversation ID)
+    String? messageId, // ✅ NEW: Message ID (auto-generated if not provided)
     bool useCache = true, // ✅ Allow bypassing cache if needed
   }) async {
     // ✅ Runtime check in debug mode
@@ -441,8 +450,8 @@ class AgentService {
     }
     
     final url = stream 
-        ? Uri.parse('$baseUrl/api/agent?stream=true')
-        : Uri.parse('$baseUrl/api/agent');
+        ? Uri.parse('$baseUrl/api/chat?stream=true')
+        : Uri.parse('$baseUrl/api/chat');
     
     if (kDebugMode) {
       debugPrint('🔍 Calling Agent API at $url with query: "$query" (stream: $stream)', wrapWidth: 1024);
@@ -460,14 +469,41 @@ class AgentService {
         request.headers['Accept'] = 'text/event-stream';
       }
       
-      // ✅ Build request body with context support
-      // conversationHistory is now required, so it's never null
+      // ✅ NEW FORMAT: Convert to backend's expected format
+      // Use chatId from previousContext if available, otherwise generate
+      final finalChatId = previousContext?['conversationId'] as String? ?? chatId ?? _generateChatId();
+      final finalMessageId = messageId ?? _generateMessageId();
+      
+      // ✅ Convert conversationHistory to history format (tuples)
+      final history = _convertConversationHistoryToHistory(conversationHistory);
+      
+      // ✅ Build request body in new format
       final body = <String, dynamic>{
-        "query": query,
-        "conversationHistory": conversationHistory, // ✅ Always present (required parameter)
+        "message": {
+          "messageId": finalMessageId,
+          "chatId": finalChatId,
+          "content": query,
+        },
+        "chatId": finalChatId,
+        "chatModel": {
+          "providerId": "openai", // ✅ TODO: Get from user preferences/config
+          "key": "gpt-4o-mini", // ✅ TODO: Get from user preferences/config
+        },
+        "embeddingModel": {
+          "providerId": "openai", // ✅ TODO: Get from user preferences/config
+          "key": "text-embedding-3-small", // ✅ TODO: Get from user preferences/config
+        },
+        "history": history, // ✅ Converted format: [["human", "..."], ["assistant", "..."]]
+        "sources": ["web"], // ✅ Default to web search
+        "optimizationMode": "balanced", // ✅ TODO: Get from user preferences
+        "systemInstructions": "", // ✅ TODO: Get from user preferences
       };
       
-      // ✅ NEW: Add imageUrl for image search
+      // ✅ Legacy support: Also include old format fields for reference
+      body["content"] = query; // Legacy field
+      body["conversationHistory"] = conversationHistory; // Keep for reference
+      
+      // ✅ NEW: Add imageUrl for image search (if provided)
       if (imageUrl != null && imageUrl.isNotEmpty) {
         body['imageUrl'] = imageUrl;
         if (kDebugMode) {
@@ -475,7 +511,7 @@ class AgentService {
         }
       }
       
-      // ✅ FOLLOW-UP PATCH: Add lastFollowUp and parentQuery
+      // ✅ FOLLOW-UP PATCH: Add lastFollowUp and parentQuery (for reference)
       if (lastFollowUp != null && lastFollowUp.isNotEmpty) {
         body['lastFollowUp'] = lastFollowUp;
       }
@@ -483,13 +519,10 @@ class AgentService {
         body['parentQuery'] = parentQuery;
       }
       
-      // ✅ STEP 9: Add context fields if provided
+      // ✅ STEP 9: Add context fields if provided (for reference)
       if (previousContext != null) {
         if (previousContext['sessionId'] != null) {
           body['sessionId'] = previousContext['sessionId'];
-        }
-        if (previousContext['conversationId'] != null) {
-          body['conversationId'] = previousContext['conversationId'];
         }
         if (previousContext['userId'] != null) {
           body['userId'] = previousContext['userId'];
@@ -748,7 +781,7 @@ class AgentService {
 
   /// Stream agent response for real-time UI updates
   static Stream<String> streamAgentResponse(String query) async* {
-    final url = Uri.parse('$baseUrl/api/agent?stream=true');
+      final url = Uri.parse('$baseUrl/api/chat?stream=true');
     if (kDebugMode) {
       debugPrint('🌊 Starting streaming request to $url', wrapWidth: 1024);
     }
@@ -828,5 +861,39 @@ class AgentService {
     } catch (e) {
       throw Exception('Streaming error: $e');
 }
+  }
+
+  /// ✅ NEW: Generate a unique message ID
+  static String _generateMessageId() {
+    return 'msg_${DateTime.now().millisecondsSinceEpoch}_${(1000 + (9999 - 1000) * (DateTime.now().microsecond / 1000000)).round()}';
+  }
+
+  /// ✅ NEW: Generate a unique chat ID
+  static String _generateChatId() {
+    return 'chat_${DateTime.now().millisecondsSinceEpoch}_${(1000 + (9999 - 1000) * (DateTime.now().microsecond / 1000000)).round()}';
+  }
+
+  /// ✅ NEW: Convert conversationHistory format to history format
+  /// Old format: [{query: "...", summary: "..."}]
+  /// New format: [["human", "..."], ["assistant", "..."]]
+  static List<List<String>> _convertConversationHistoryToHistory(
+    List<Map<String, dynamic>> conversationHistory,
+  ) {
+    final history = <List<String>>[];
+    
+    for (final item in conversationHistory) {
+      // Add user query
+      if (item['query'] != null && item['query'].toString().isNotEmpty) {
+        history.add(['human', item['query'].toString()]);
+      }
+      
+      // Add assistant response (summary or answer)
+      final summary = item['summary']?.toString() ?? item['answer']?.toString();
+      if (summary != null && summary.isNotEmpty) {
+        history.add(['assistant', summary]);
+      }
+    }
+    
+    return history;
   }
 }

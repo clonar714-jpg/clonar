@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint, compute;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,6 +21,17 @@ List<ChatHistoryItem> _parseChatHistoryJson(String historyJson) {
   }
 }
 
+/// ✅ FIX #3: Cached messages entry with timestamp
+class _CachedMessages {
+  final Set<String> queries;
+  final DateTime timestamp;
+  static const Duration _cacheTTL = Duration(seconds: 5);
+  
+  _CachedMessages(this.queries, this.timestamp);
+  
+  bool get isExpired => DateTime.now().difference(timestamp) > _cacheTTL;
+}
+
 /// ✅ Cloud-based chat history service with local cache
 /// Hybrid approach: Local cache for instant loading + Cloud database for persistence
 /// Similar to ChatGPT's architecture
@@ -27,6 +39,14 @@ class ChatHistoryServiceCloud {
   static const String _localCacheKey = 'chat_history_local_cache_v1';
   static const String _lastSyncKey = 'chat_history_last_sync';
   static const int _maxChats = 50;
+  
+  // ✅ FIX #3: Cache for existing messages to prevent multiple GET requests
+  static final Map<String, _CachedMessages> _messagesCache = {};
+  
+  // ✅ FIX #4: Debouncing for saveChat calls to prevent multiple saves
+  static final Map<String, Timer> _pendingSaves = {};
+  static final Map<String, ChatHistoryItem> _pendingChats = {};
+  static const Duration _saveDebounceDelay = Duration(seconds: 2);
   
   /// ✅ Load chats: Local cache first (instant), then sync with cloud
   static Future<List<ChatHistoryItem>> loadChatHistory() async {
@@ -87,8 +107,17 @@ class ChatHistoryServiceCloud {
         
         // Convert cloud format to local format
         final chats = conversations.map((conv) {
+          final id = conv['id'] as String?;
+          // ✅ FIX: UUID is required - skip if missing (don't generate numeric ID)
+          if (id == null || id.isEmpty) {
+            if (kDebugMode) {
+              debugPrint('⚠️ Skipping conversation without UUID: ${conv['title']}');
+            }
+            return null;
+          }
+          
           return ChatHistoryItem(
-            id: conv['id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString(),
+            id: id, // ✅ UUID from backend
             title: conv['title'] as String? ?? 'Untitled',
             query: conv['query'] as String? ?? '',
             timestamp: conv['created_at'] != null
@@ -97,7 +126,7 @@ class ChatHistoryServiceCloud {
             imageUrl: conv['image_url'] as String?,
             conversationHistory: null, // Will be loaded on demand
           );
-        }).toList();
+        }).whereType<ChatHistoryItem>().toList(); // ✅ Filter out null entries
         
         // Update local cache
         await _saveToLocalCache(chats);
@@ -118,18 +147,44 @@ class ChatHistoryServiceCloud {
     }
   }
   
-  /// ✅ Save chat to both local cache and cloud
+  /// ✅ FIX #4: Save chat to both local cache and cloud with debouncing
+  /// Production-grade: Local cache saved immediately, cloud sync debounced to prevent multiple saves
   static Future<void> saveChat(ChatHistoryItem chat) async {
     try {
-      // 1. Save to local cache first (instant)
+      // 1. Save to local cache immediately (instant, 0ms latency)
       await _saveToLocalCache([chat]);
       
-      // 2. Save to cloud in background (non-blocking)
-      _saveToCloud(chat).catchError((e) {
-        if (kDebugMode) {
-          debugPrint('⚠️ Cloud save failed (local saved): $e');
+      // ✅ FIX #4: Debounce cloud saves - cancel previous pending save for this chat
+      final chatId = chat.id;
+      _pendingChats[chatId] = chat; // Store latest chat data
+      
+      // Cancel previous timer if exists
+      _pendingSaves[chatId]?.cancel();
+      
+      // Schedule new save (will execute after debounce delay)
+      _pendingSaves[chatId] = Timer(_saveDebounceDelay, () {
+        final chatToSave = _pendingChats[chatId];
+        if (chatToSave != null) {
+          // Remove from pending maps
+          _pendingSaves.remove(chatId);
+          _pendingChats.remove(chatId);
+          
+          // Sync with cloud (non-blocking)
+          _saveToCloud(chatToSave).catchError((e) {
+            if (kDebugMode) {
+              debugPrint('⚠️ Cloud save failed (using local cache): $e');
+            }
+          });
+          
+          if (kDebugMode) {
+            debugPrint('💾 Executing debounced save for chat: $chatId');
+          }
         }
       });
+      
+      if (kDebugMode) {
+        debugPrint('⏳ Scheduled debounced save for chat: $chatId (delay: ${_saveDebounceDelay.inSeconds}s)');
+      }
     } catch (e) {
       if (kDebugMode) {
         debugPrint('❌ Error saving chat: $e');
@@ -191,35 +246,95 @@ class ChatHistoryServiceCloud {
         try {
           final createResponse = await ApiClient.post('/chats', {
             'title': chat.title,
-            'query': chat.query,
-            'imageUrl': chat.imageUrl,
           }).timeout(const Duration(seconds: 5));
           
-          if (createResponse.statusCode != 201 && createResponse.statusCode != 200) {
+          if (createResponse.statusCode == 201 || createResponse.statusCode == 200) {
+            final responseBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+            final conversation = responseBody['conversation'] as Map<String, dynamic>?;
+            final backendId = conversation?['id'] as String?;
+            
+            if (backendId != null && backendId.isNotEmpty && chat.id != backendId) {
+              if (kDebugMode) {
+                debugPrint('🔄 Updated conversation ID: ${chat.id} → $backendId');
+              }
+            }
+          } else {
             if (kDebugMode) {
               debugPrint('⚠️ Failed to create conversation: ${createResponse.statusCode}');
             }
-            // Don't throw - will try to save messages anyway (backend will auto-create)
           }
         } catch (e) {
-          // Creation failed, but backend will auto-create when saving messages
           if (kDebugMode) {
-            debugPrint('⚠️ Failed to create conversation, will rely on auto-create: $e');
+            debugPrint('⚠️ Failed to create conversation: $e');
           }
         }
       }
       
-      // ✅ Step 2: Save conversation history (messages)
-      // Backend will auto-create conversation if it doesn't exist (idempotent)
-      // Backend may return a different conversation ID if numeric ID was converted to UUID
+      // Step 2: Save conversation history (messages)
       String actualConversationId = chat.id;
       
       if (chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty) {
+        // ✅ FIX #3: Use cached messages if available, otherwise fetch and cache
+        Set<String> existingQueries = {};
+        
+        // Check cache first
+        final cached = _messagesCache[actualConversationId];
+        if (cached != null && !cached.isExpired) {
+          existingQueries = cached.queries;
+          if (kDebugMode) {
+            debugPrint('📋 Using cached messages (${existingQueries.length} queries) for conversation: $actualConversationId');
+          }
+        } else {
+          // Cache miss or expired - fetch from backend
+          try {
+            final existingMessagesResponse = await ApiClient.get('/chats/$actualConversationId')
+                .timeout(const Duration(seconds: 5));
+            if (existingMessagesResponse.statusCode == 200) {
+              final existingData = jsonDecode(existingMessagesResponse.body) as Map<String, dynamic>;
+              final existingMessages = existingData['messages'] as List? ?? [];
+              // Extract query texts from existing messages to identify duplicates
+              existingQueries = existingMessages
+                  .map((msg) => (msg['query'] as String? ?? '').trim().toLowerCase())
+                  .where((q) => q.isNotEmpty)
+                  .toSet();
+              
+              // ✅ FIX #3: Cache the result
+              _messagesCache[actualConversationId] = _CachedMessages(existingQueries, DateTime.now());
+              
+              if (kDebugMode) {
+                debugPrint('📋 Fetched and cached ${existingQueries.length} existing messages for conversation: $actualConversationId');
+              }
+            }
+          } catch (e) {
+            // If fetching existing messages fails, continue anyway (will try to save all)
+            // This is safe because backend will handle duplicates
+            if (kDebugMode) {
+              debugPrint('⚠️ Could not fetch existing messages, will save all: $e');
+            }
+          }
+        }
+        
         int successCount = 0;
         int failCount = 0;
+        int skippedCount = 0;
         
         for (final session in chat.conversationHistory!) {
           try {
+            final sessionQuery = (session['query'] as String? ?? '').trim();
+            final sessionQueryLower = sessionQuery.toLowerCase();
+            
+            // ✅ CRITICAL FIX: Skip messages that already exist in database
+            // This prevents duplicate inserts and ensures only NEW messages are saved
+            if (sessionQuery.isNotEmpty && existingQueries.contains(sessionQueryLower)) {
+              skippedCount++;
+              if (kDebugMode) {
+                debugPrint('⏭️ Skipping duplicate message: "${sessionQuery.substring(0, 50)}..."');
+              }
+              continue; // Skip this message - it already exists
+            }
+            
+            // ✅ CRITICAL: Include sources and followUpSuggestions when saving messages
+            // These are required for old chats to display correctly
             final messageResponse = await ApiClient.post('/chats/$actualConversationId/messages', {
               'query': session['query'] as String? ?? '',
               'summary': session['summary'] as String?,
@@ -229,13 +344,16 @@ class ChatHistoryServiceCloud {
               'results': session['results'],
               'sections': session['sections'],
               'answer': session['answer'],
+              'sources': session['sources'], // ✅ CRITICAL: Save sources for old chats
+              'followUpSuggestions': session['followUpSuggestions'], // ✅ CRITICAL: Save follow-ups for old chats
               'imageUrl': session['imageUrl'] as String?,
+              'destinationImages': session['destinationImages'], // ✅ NEW: Save images array for media tab
             }).timeout(const Duration(seconds: 5));
             
             if (messageResponse.statusCode == 201 || messageResponse.statusCode == 200) {
               successCount++;
               
-              // ✅ Update conversation ID if backend returned a different one
+              // Update conversation ID if backend returned a different one
               try {
                 final responseBody = jsonDecode(messageResponse.body);
                 if (responseBody is Map && responseBody.containsKey('conversationId')) {
@@ -267,6 +385,9 @@ class ChatHistoryServiceCloud {
         
         if (kDebugMode) {
           debugPrint('💾 Saved ${successCount}/${chat.conversationHistory!.length} messages to cloud');
+          if (skippedCount > 0) {
+            debugPrint('⏭️ Skipped $skippedCount duplicate messages');
+          }
           if (failCount > 0) {
             debugPrint('⚠️ Failed to save $failCount messages');
           }

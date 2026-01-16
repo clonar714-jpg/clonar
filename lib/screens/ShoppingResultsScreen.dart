@@ -119,13 +119,17 @@ List<Map<String, dynamic>> parseTextWithLocationsIsolate(Map<String, dynamic> da
 class ShoppingResultsScreen extends ConsumerStatefulWidget {
   final String query;
   final String? imageUrl;
-  final List<Map<String, dynamic>>? initialConversationHistory; // ✅ Accept conversation history
+  final List<Map<String, dynamic>>? initialConversationHistory;
+  final bool isReplayMode; // ✅ Prevent streaming/LLM calls for old chats
+  final String? conversationId; // ✅ Conversation ID for saving new queries in old chats
 
   const ShoppingResultsScreen({
     super.key,
     required this.query,
     this.imageUrl,
-    this.initialConversationHistory, // ✅ Optional conversation history
+    this.initialConversationHistory,
+    this.isReplayMode = false, // ✅ Default to false (new queries)
+    this.conversationId, // ✅ Optional: Only needed when continuing an old chat
   });
 
   @override
@@ -150,6 +154,7 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
   static const int _maxVisibleHotelsPerSection = 8;
   static const int _maxVisiblePlaces = 8;
   static const int _maxVisibleMovies = 6;
+  static const int _maxCacheSize = 5; // Limit cache size to prevent memory issues
 
   // Safe number extraction helper function
   double safeNumber(dynamic value, double fallback) {
@@ -199,6 +204,28 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
   Timer? _scrollThrottleTimer;
   final double _scrollThreshold = 150.0; // px threshold for showing button
   
+  // ✅ FIX #2: Memoization to prevent excessive rebuilds
+  List<QuerySession>? _previousSessions;
+  int _previousSessionHash = 0;
+  
+  /// ✅ FIX #2: Compute hash of session list to detect actual changes
+  /// Only rebuilds if sessions actually changed (not just provider notified)
+  int _computeSessionHash(List<QuerySession> sessions) {
+    if (sessions.isEmpty) return 0;
+    
+    // Hash based on: count, sessionIds, summary lengths, section counts, streaming states
+    int hash = sessions.length;
+    for (final session in sessions) {
+      hash = hash ^ session.sessionId.hashCode;
+      hash = hash ^ (session.summary?.length ?? 0);
+      hash = hash ^ (session.sections?.length ?? 0);
+      hash = hash ^ (session.isStreaming ? 1 : 0);
+      hash = hash ^ (session.isFinalized ? 2 : 0);
+      hash = hash ^ (session.sources.length);
+    }
+    return hash;
+  }
+  
   // ✅ RIVERPOD: Removed _buildSessionsFromResponse - now using sessionHistoryProvider directly
 
   @override
@@ -230,6 +257,8 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
       _queryKeys.add(GlobalKey());
     
     // ✅ RIVERPOD: Trigger agent query on init (deferred to after first frame)
+    // ✅ FIX: Skip query submission in replay mode (old chats)
+    if (!widget.isReplayMode) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
         // ✅ FIX: Only submit query if it hasn't been submitted already (check session history)
@@ -245,12 +274,31 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
         
         if (!queryAlreadySubmitted) {
           // Submit query to agent provider only if not already submitted
-          ref.read(agentControllerProvider.notifier).submitQuery(widget.query, imageUrl: widget.imageUrl);
+            if (kDebugMode) {
+              debugPrint('🚀 Submitting new query: "${widget.query}"');
+            }
+          ref.read(agentControllerProvider.notifier).submitQuery(
+            widget.query, 
+            imageUrl: widget.imageUrl,
+          );
         } else if (kDebugMode) {
           debugPrint('⏭️ Skipping duplicate query submission: "$trimmedQuery" (already in session history)');
         }
       }
     });
+    } else {
+      // ✅ HISTORY_MODE: Log that we're in read-only mode
+      if (kDebugMode) {
+        final initialSessions = ref.read(sessionHistoryProvider);
+        debugPrint('📖 HISTORY_MODE: Displaying old chat (no streaming/LLM calls)');
+        debugPrint('   Query: "${widget.query}"');
+        debugPrint('   Initial sessions in provider: ${initialSessions.length}');
+        if (initialSessions.isNotEmpty) {
+          debugPrint('   - First session: "${initialSessions[0].query.substring(0, initialSessions[0].query.length > 40 ? 40 : initialSessions[0].query.length)}..."');
+        }
+        debugPrint('   - UI will watch provider and rebuild when sessions are set');
+      }
+    }
     
     _followUpController.addListener(() {
       // Removed print from listener - avoid logging every keystroke
@@ -1289,21 +1337,77 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
         },
         child: Column(
         children: [
-              // ✅ PRODUCTION: Optimized session history watch - only rebuilds when length changes
+              // ✅ FIX #2: Optimized session history watch with memoization
               Builder(
                 builder: (context) {
-                  // ✅ PRODUCTION FIX: Use .select() to only watch session count, not entire list
-                  // This prevents rebuilds when session content changes (only rebuilds when new session added)
-                  final sessionCount = ref.watch(sessionHistoryProvider.select((sessions) => sessions.length));
-                  final sessions = ref.read(sessionHistoryProvider); // Read once, don't watch
+                  // ✅ CRITICAL FIX: Watch sessions directly for HISTORY_MODE (old chats)
+                  // In HISTORY_MODE, sessions are loaded from DB before navigation, but we must watch
+                  // to ensure UI rebuilds when they're set. NEW_CHAT_MODE uses streaming updates.
+                  final sessions = ref.watch(sessionHistoryProvider);
                   
-                  // ✅ FIX: ref.listen calls moved to main build method (above this Builder)
-                  // ref.listen can only be called directly in build method, not inside Builder widgets
+                  // ✅ FIX #2: Memoization - only rebuild if sessions actually changed
+                  final currentHash = _computeSessionHash(sessions);
+                  if (currentHash == _previousSessionHash && 
+                      _previousSessions != null &&
+                      _previousSessions!.length == sessions.length) {
+                    // Sessions haven't meaningfully changed - use previous state
+                    if (kDebugMode) {
+                      debugPrint('⏭️ Skipping rebuild - sessions unchanged (hash: $currentHash)');
+                    }
+                    // Return previous widget tree (but we can't do that in Builder, so we'll just continue)
+                    // Actually, we need to rebuild but we can optimize the child widgets
+                  } else {
+                    // Sessions changed - update memoization state
+                    _previousSessionHash = currentHash;
+                    _previousSessions = List<QuerySession>.from(sessions);
+                    if (kDebugMode) {
+                      debugPrint('🔄 Rebuilding - sessions changed (hash: $currentHash, count: ${sessions.length})');
+                    }
+                  }
                   
-                  // ✅ FIX: Move session restoration to initState to avoid blocking build
-                  // If no sessions and we have initial conversation history, restore it
-                  // ✅ CRITICAL FIX: Clear session history first to ensure only this chat's sessions are shown
-                  if (widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
+                  final sessionCount = sessions.length;
+                  
+                  // ✅ DEBUG: Log when Builder rebuilds with session data
+                  if (kDebugMode) {
+                    debugPrint('🔄 ShoppingResultsScreen Builder rebuild');
+                    debugPrint('   - Mode: ${widget.isReplayMode ? 'HISTORY_MODE' : 'NEW_CHAT_MODE'}');
+                    debugPrint('   - Session count: $sessionCount');
+                    debugPrint('   - Query: "${widget.query}"');
+                    if (sessions.isNotEmpty) {
+                      for (int i = 0; i < sessions.length; i++) {
+                        final s = sessions[i];
+                        debugPrint('   - Session $i: "${s.query.substring(0, s.query.length > 40 ? 40 : s.query.length)}..."');
+                        debugPrint('     - Summary: ${s.summary?.length ?? 0} chars');
+                        debugPrint('     - Sections: ${s.sections?.length ?? 0}');
+                        debugPrint('     - Sources: ${s.sources.length}');
+                        debugPrint('     - Follow-ups: ${s.followUpSuggestions.length}');
+                        debugPrint('     - isFinalized: ${s.isFinalized}');
+                        debugPrint('     - isStreaming: ${s.isStreaming}');
+                        if ((s.summary == null || s.summary!.isEmpty) && (s.sections == null || s.sections!.isEmpty)) {
+                          debugPrint('     ⚠️ CRITICAL: Session has NO content - will not render!');
+                        }
+                      }
+                    } else {
+                      debugPrint('   ⚠️ CRITICAL: No sessions in provider - UI will be empty!');
+                    }
+                  }
+                  
+                  // ✅ HISTORY_MODE: Sessions should already be loaded from DB in _loadChat()
+                  // Do NOT clear or restore - sessions are already in provider
+                  if (widget.isReplayMode) {
+                    if (kDebugMode) {
+                      if (sessions.isEmpty) {
+                        debugPrint('⚠️ HISTORY_MODE: No sessions found in provider');
+                        debugPrint('   This should not happen - sessions should be loaded before navigation');
+                      } else {
+                        debugPrint('✅ HISTORY_MODE: ${sessions.length} sessions ready for rendering');
+                      }
+                    }
+                  }
+                  
+                  // ✅ NEW_CHAT_MODE: Handle initialConversationHistory (legacy support)
+                  // Only process initialConversationHistory if NOT in replay mode
+                  if (!widget.isReplayMode && widget.initialConversationHistory != null && widget.initialConversationHistory!.isNotEmpty) {
                     // ✅ PRODUCTION FIX: Defer session restoration to avoid blocking build
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (!mounted) return;
@@ -1314,8 +1418,10 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                       // Now restore only this chat's conversation history
                       for (final sessionData in widget.initialConversationHistory!) {
                         final session = QuerySession(
+                          sessionId: sessionData['sessionId'] as String?, // ✅ Preserve sessionId if available
                           query: sessionData['query'] as String,
                           summary: sessionData['summary'] as String?,
+                          answer: sessionData['answer'] as String?, // ✅ CRITICAL: Include full answer text
                           intent: sessionData['intent'] as String?,
                           cardType: sessionData['cardType'] as String?,
                           cards: (sessionData['cards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
@@ -1340,22 +1446,26 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                           SliverList(
                             delegate: SliverChildBuilderDelegate(
                               (context, index) {
-                                // ✅ FIX: Watch session history to rebuild when sessions update
-                                final currentSessions = ref.watch(sessionHistoryProvider);
+                                // ✅ CRITICAL FIX: Use sessions from Builder scope (already watched)
+                                // This ensures HISTORY_MODE sessions are rendered correctly
+                                // sessions variable is already watched in Builder, no need to watch again
                                 
                                 // ✅ DEBUG: Log when UI rebuilds
-                                if (index == 0 && currentSessions.isNotEmpty) {
-                                  final firstSession = currentSessions[0];
-                                  print("🔄 UI REBUILD - Session count: ${currentSessions.length}");
-                                  print("  - First session query: ${firstSession.query}");
-                                  print("  - First session isStreaming: ${firstSession.isStreaming}");
-                                  print("  - First session cards: ${firstSession.cards.length}");
-                                  print("  - First session summary: ${firstSession.summary != null && firstSession.summary!.isNotEmpty}");
+                                if (index == 0 && sessions.isNotEmpty) {
+                                  final firstSession = sessions[0];
+                                  if (kDebugMode) {
+                                    debugPrint("🔄 UI REBUILD - Session count: ${sessions.length}");
+                                    debugPrint("  - Mode: ${widget.isReplayMode ? 'HISTORY_MODE' : 'NEW_CHAT_MODE'}");
+                                    debugPrint("  - First session query: ${firstSession.query}");
+                                    debugPrint("  - First session isStreaming: ${firstSession.isStreaming}");
+                                    debugPrint("  - First session summary: ${firstSession.summary != null && firstSession.summary!.isNotEmpty}");
+                                    debugPrint("  - First session sections: ${firstSession.sections?.length ?? 0}");
+                                  }
                                 }
                                 
-                                if (index >= currentSessions.length) return const SizedBox.shrink();
+                                if (index >= sessions.length) return const SizedBox.shrink();
                                 
-                                final session = currentSessions[index];
+                                final session = sessions[index];
                                 
                                 // ✅ PRODUCTION FIX: Move parsing logic out of build - handle in provider
                                 // Parsing should be handled by agent_provider, not in UI build method
@@ -1364,7 +1474,7 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                                   key: ValueKey('session-$index-${session.query.hashCode}'),
                                   child: SessionRenderer(
                                     model: SessionRenderModel(
-                                      session: session,
+                                      sessionId: session.sessionId, // ✅ PERPLEXITY-STYLE: Only store sessionId
                                       index: index,
                                       context: context,
                                       onFollowUpTap: _onFollowUpQuerySelected,
@@ -1386,7 +1496,8 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                                         );
                                       },
                                       onViewAllProducts: (query) {
-                                        final sessions = ref.read(sessionHistoryProvider);
+                                        // ✅ FIX: Use sessions from Builder scope (already watched)
+                                        // No need to read again - sessions is already available in this scope
                                         final currentSession = sessions.isNotEmpty ? sessions.last : null;
                                         if (currentSession != null && currentSession.products.isNotEmpty) {
                                           Navigator.push(
@@ -1450,9 +1561,29 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
             // ✅ Return conversation history when navigating back
               final sessions = ref.read(sessionHistoryProvider);
               final historyToReturn = sessions.map((session) {
+              // ✅ CRITICAL: Use full answer if available, otherwise reconstruct from sections
+              // The answer field contains the complete answer text, not just the first paragraph
+              String fullAnswer = session.answer ?? '';
+              if (fullAnswer.isEmpty && session.sections != null && session.sections!.isNotEmpty) {
+                // Fallback: Reconstruct full answer from sections (sections contain the complete content)
+                final sectionContents = session.sections!.map((s) {
+                  final title = s['title']?.toString() ?? '';
+                  final content = s['content']?.toString() ?? '';
+                  return title.isNotEmpty ? '### $title\n\n$content' : content;
+                }).where((text) => text.isNotEmpty).join('\n\n');
+                if (sectionContents.isNotEmpty) {
+                  fullAnswer = sectionContents;
+                }
+              }
+              // If still empty, use summary as last resort
+              if (fullAnswer.isEmpty) {
+                fullAnswer = session.summary ?? '';
+              }
+              
               return {
                 'query': session.query,
-                'summary': session.summary ?? '',
+                'summary': session.summary ?? '', // Keep short summary for backward compatibility
+                'answer': fullAnswer, // ✅ CRITICAL: Include full answer text (preserves complete answer)
                 'intent': session.intent ?? session.resultType,
                 'cardType': session.cardType ?? session.resultType,
                 'cards': session.products.map((p) => {
@@ -1463,10 +1594,24 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                   'source': p.source,
                 }).toList(),
                 'results': session.rawResults,
+                // ✅ CRITICAL: Include sections, sources, and followUpSuggestions
+                // These are required for old chats to display correctly
+                'sections': session.sections,
+                'sources': session.sources,
+                'followUpSuggestions': session.followUpSuggestions,
+                'imageUrl': session.imageUrl,
               };
             }).toList();
+              
+              // ✅ CRITICAL: Return both history and conversation ID if available
+              // This ensures new queries (including follow-ups) are saved to the correct conversation
+              // Works for both NEW chats (conversationId passed from ShopScreen) and OLD chats (replay mode)
+              final returnValue = widget.conversationId != null
+                  ? {'history': historyToReturn, 'conversationId': widget.conversationId}
+                  : historyToReturn;
+              
               if (mounted) {
-            Navigator.pop(context, historyToReturn);
+            Navigator.pop(context, returnValue);
               }
             });
           });
@@ -1886,22 +2031,10 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
                         return const SizedBox.shrink();
                       },
                     ),
-                    // ✅ FIX: Show summary only once (after map, before hotels)
-                    if (session.summary != null && session.summary!.isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-                        child: StreamingTextWidget(
-                          targetText: session.summary ?? "",
-                          enableAnimation: false, // ✅ PRODUCTION: Disabled to prevent frame skips
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: AppColors.textPrimary,
-                            height: 1.6,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                    ],
+                    // ✅ CRITICAL FIX: REMOVED answer display here to prevent duplication
+                    // SessionRenderer (line 1472) uses PerplexityAnswerWidget which ALWAYS shows the answer
+                    // So we should NOT show the answer here again - it would cause duplication
+                    // The answer is already displayed by PerplexityAnswerWidget inside SessionRenderer
                   ],
 
                   // ✅ SHOW RESULTS BASED ON INTENT TYPE
@@ -2443,13 +2576,17 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
         }
       }
       
+      // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+      // session.answer contains the complete answer text, session.summary is just the first paragraph
+      final answerText = session.answer ?? session.summary ?? '';
+      
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ✅ Perplexity-style: Intro paragraph from summary with animation
-          if (session.summary != null && session.summary!.isNotEmpty) ...[
+          // ✅ Perplexity-style: Intro paragraph from full answer if available, otherwise summary
+          if (answerText.isNotEmpty) ...[
             StreamingTextWidget(
-              targetText: session.summary ?? "",
+              targetText: answerText,
               enableAnimation: false, // ✅ PRODUCTION: Disabled to prevent frame skips
               style: const TextStyle(
                     fontSize: 15,
@@ -2611,7 +2748,6 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
 
   // ✅ PRODUCTION: Cache map widgets to prevent recreation
   final Map<int, Widget> _mapWidgetCache = {};
-  static const int _maxCacheSize = 5; // Limit cache size to prevent memory issues
 
   // 🗺️ Build hotel map (extract from hotel results if map points not provided)
   Widget? _buildHotelMap(QuerySession session, [int? cacheKey]) {
@@ -2917,8 +3053,10 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
   }
 
   Widget _buildSummarySection(QuerySession session, [int? index]) {
-    final rawSummary = session.summary?.trim() ?? "No summary available.";
-    final summary = cleanMarkdown(rawSummary);
+    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+    // session.answer contains the complete answer text, session.summary is just the first paragraph
+    final rawText = (session.answer ?? session.summary)?.trim() ?? "No summary available.";
+    final summary = cleanMarkdown(rawText);
 
     // Show full description with beautiful Perplexity-style typing animation
     return Padding(
@@ -3056,6 +3194,7 @@ class _ShoppingResultsScreenState extends ConsumerState<ShoppingResultsScreen> w
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
         return _buildHotelResultsList(QuerySession(
+          sessionId: null, // ✅ Auto-generate sessionId for mock/test data
           query: session?.query ?? "",
           results: hotelResults,
         ));

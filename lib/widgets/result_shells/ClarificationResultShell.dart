@@ -19,7 +19,9 @@ class ClarificationResultShell extends ResultShell {
 
   @override
   Widget buildAnswerSection() {
-    final summary = session.summary ?? "";
+    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
+    // session.answer contains the complete answer text, session.summary is just the first paragraph
+    final answerText = session.answer ?? session.summary ?? "";
     
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -53,7 +55,7 @@ class ClarificationResultShell extends ResultShell {
               ),
               const SizedBox(height: 8),
               StreamingTextWidget(
-                targetText: summary,
+                targetText: answerText,
                 enableAnimation: false,
                 style: TextStyle(
                   fontSize: 14,

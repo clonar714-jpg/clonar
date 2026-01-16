@@ -1,9 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import '../models/query_session_model.dart';
-import 'session_history_provider.dart';
 import 'agent_provider.dart';
-import 'streaming_text_provider.dart';
 import 'scroll_provider.dart';
 
 /// ✅ PHASE 5: Follow-up controller provider - handles follow-up query submission
@@ -19,9 +17,9 @@ class FollowUpController extends StateNotifier<void> {
     }
 
     try {
-      print("🔥🔥🔥 FOLLOW-UP: Step 1 - Resetting streaming text");
-      // ✅ Step 1: Reset streaming text
-      ref.read(streamingTextProvider.notifier).reset();
+      print("🔥🔥🔥 FOLLOW-UP: Step 1 - Starting new query");
+      // ✅ CRITICAL: Single source of truth - no need to reset streamingTextProvider
+      // The sessionHistoryProvider will handle the new session
 
       print("🔥🔥🔥 FOLLOW-UP: Step 2 - Calling submitQuery");
       // ✅ FIX: Don't create session here - submitQuery will create it

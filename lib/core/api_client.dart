@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,11 +7,19 @@ import 'package:flutter/foundation.dart';
 
 class ApiClient {
   // ✅ Local Express backend
+  // ✅ FIX: Use localhost for adb reverse (physical Android device)
+  // adb reverse tcp:4000 tcp:4000 maps device localhost:4000 → host localhost:4000
   static const String baseUrl = 'http://127.0.0.1:4000/api';
-  // For web/iOS: use 'http://localhost:4000/api'
 
   /// Builds full API URL from endpoint
-  static Uri _url(String endpoint) => Uri.parse('$baseUrl$endpoint');
+  static Uri _url(String endpoint) {
+    final url = Uri.parse('$baseUrl$endpoint');
+    // ✅ DEBUG: Log full URL for network troubleshooting
+    if (kDebugMode) {
+      debugPrint('🌐 ApiClient._url: $url');
+    }
+    return url;
+  }
 
   /// Retrieves stored token — sends fake token in dev mode
   static Future<String?> _getToken() async {
@@ -60,6 +69,28 @@ class ApiClient {
   static Future<http.Response> post(String endpoint, Map<String, dynamic> body) async =>
       _sendRequest('POST', endpoint, body: body);
 
+  /// Test connectivity to the server
+  static Future<bool> testConnectivity() async {
+    try {
+      // ✅ FIX: Use localhost for adb reverse
+      final testUrl = Uri.parse('http://127.0.0.1:4000/api/test');
+      print("🔍 Testing connectivity to: $testUrl");
+      print("🔍 Using adb reverse - ensure 'adb reverse tcp:4000 tcp:4000' is active");
+      final response = await http.get(testUrl).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          print("❌ Connectivity test timeout - server not reachable");
+          return http.Response('Timeout', 408);
+        },
+      );
+      print("✅ Connectivity test result: ${response.statusCode}");
+      return response.statusCode == 200;
+    } catch (e) {
+      print("❌ Connectivity test failed: $e");
+      return false;
+    }
+  }
+
   /// POST request with streaming support (returns StreamedResponse for SSE)
   static Future<http.StreamedResponse> postStream(String endpoint, Map<String, dynamic> body) async {
     final token = await _getToken();
@@ -73,12 +104,18 @@ class ApiClient {
     };
 
     final url = _url(endpoint);
+    // ✅ DEBUG: Log full URL for network troubleshooting (critical for adb reverse)
     print("🔥🔥🔥 API_CLIENT: Sending POST (stream) → $url");
+    print("🔥🔥🔥 API_CLIENT: Full URL: $url");
+    print("🔥🔥🔥 API_CLIENT: Base URL: $baseUrl");
+    print("🔥🔥🔥 API_CLIENT: Endpoint: $endpoint");
     print("🔥🔥🔥 API_CLIENT: Body keys: ${body.keys.join(', ')}");
     print("🔥🔥🔥 API_CLIENT: Query: ${body['query']}");
     
     if (kDebugMode) {
       debugPrint('🌐 Sending POST (stream) → $url');
+      debugPrint('🌐 Full URL: $url');
+      debugPrint('🌐 Base URL: $baseUrl');
       debugPrint('📦 Body: $body');
     }
 
@@ -87,10 +124,47 @@ class ApiClient {
     request.body = jsonEncode(body);
     
     print("🔥🔥🔥 API_CLIENT: Request created, sending...");
-    final response = await request.send();
-    print("🔥🔥🔥 API_CLIENT: Response received - status: ${response.statusCode}");
-    
-    return response;
+    try {
+      // ✅ CRITICAL: For streaming, we need a longer timeout for the initial response
+      // The server sends headers immediately, but we want to allow time for the stream to start
+      final response = await request.send().timeout(
+        const Duration(seconds: 60), // Increased timeout for streaming
+        onTimeout: () {
+          print("🔥🔥🔥❌❌❌ API_CLIENT: Request timeout after 60 seconds");
+          print("🔥🔥🔥❌❌❌ URL: $url");
+          print("🔥🔥🔥❌❌❌ Base URL: $baseUrl");
+          print("🔥🔥🔥❌❌❌ Troubleshooting:");
+          print("🔥🔥🔥❌❌❌   1. Verify IP address: Run 'ipconfig' (Windows) or 'ifconfig' (Mac/Linux)");
+          print("🔥🔥🔥❌❌❌   2. Check if server is running on port 4000");
+          print("🔥🔥🔥❌❌❌   3. Test connectivity: Open http://127.0.0.1:4000/api/test in phone browser");
+          print("🔥🔥🔥❌❌❌   4. Ensure device and computer are on SAME WiFi network");
+          print("🔥🔥🔥❌❌❌   5. Check Windows Firewall - allow port 4000");
+          throw TimeoutException('Streaming request timeout after 60 seconds');
+        },
+      );
+      print("🔥🔥🔥 API_CLIENT: Response received - status: ${response.statusCode}");
+      print("🔥🔥🔥 API_CLIENT: Response headers: ${response.headers}");
+      print("🔥🔥🔥 API_CLIENT: Content-Type: ${response.headers['content-type']}");
+      print("🔥🔥🔥 API_CLIENT: Connection: ${response.headers['connection']}");
+      return response;
+    } on SocketException catch (e) {
+      print("🔥🔥🔥❌❌❌ API_CLIENT: SocketException - Connection failed");
+      print("🔥🔥🔥❌❌❌ Error: $e");
+      print("🔥🔥🔥❌❌❌ This usually means:");
+      print("🔥🔥🔥❌❌❌   - Server is not running");
+      print("🔥🔥🔥❌❌❌   - Wrong IP address (current: 10.0.0.127)");
+      print("🔥🔥🔥❌❌❌   - Firewall blocking connection");
+      print("🔥🔥🔥❌❌❌   - Device and computer not on same network");
+      rethrow;
+    } on TimeoutException catch (e) {
+      print("🔥🔥🔥❌❌❌ API_CLIENT: TimeoutException: $e");
+      rethrow;
+    } catch (e, stackTrace) {
+      print("🔥🔥🔥❌❌❌ API_CLIENT: Error sending request: $e");
+      print("🔥🔥🔥❌❌❌ API_CLIENT: Error type: ${e.runtimeType}");
+      print("🔥🔥🔥❌❌❌ API_CLIENT: Stack trace: $stackTrace");
+      rethrow;
+    }
   }
 
   /// PUT request

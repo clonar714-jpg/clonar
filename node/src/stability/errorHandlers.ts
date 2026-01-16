@@ -102,7 +102,7 @@ async function gracefulShutdown(reason: string): Promise<void> {
 export function requestTimeout(timeoutMs: number = 15000) {
   return (req: any, res: any, next: any) => {
     // ✅ FIX: Agent routes need longer timeout (places queries take 20-30s)
-    const isAgentRoute = req.path === '/api/agent' || req.originalUrl?.includes('/api/agent');
+    const isAgentRoute = req.path === '/api/chat' || req.originalUrl?.includes('/api/chat');
     const effectiveTimeout = isAgentRoute ? 60000 : timeoutMs; // 60s for agent, 15s for others
     
     const timeout = setTimeout(() => {

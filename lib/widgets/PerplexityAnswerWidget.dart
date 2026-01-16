@@ -9,10 +9,14 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:async';
 import '../theme/AppColors.dart';
 import '../widgets/StreamingTextWidget.dart';
 import '../models/query_session_model.dart';
 import '../providers/follow_up_controller_provider.dart';
+import '../providers/session_phase_provider.dart';
+import '../providers/session_stream_provider.dart';
+import '../providers/session_history_provider.dart';
 import '../utils/card_converters.dart';
 import '../screens/ProductDetailScreen.dart';
 import '../screens/HotelDetailScreen.dart';
@@ -27,42 +31,62 @@ import '../models/Product.dart';
 /// Simple Perplexity-style answer widget
 /// Displays: Answer text (with sections) + Sources (clickable links)
 /// ✅ NO HEADERS - Just answer content directly
-class PerplexityAnswerWidget extends StatefulWidget {
-  final QuerySession session;
+/// ✅ PERPLEXITY-STYLE: Uses phase to control WHAT is shown, stream for text
+class PerplexityAnswerWidget extends ConsumerStatefulWidget {
+  final String sessionId; // ✅ PERPLEXITY-STYLE: Only store sessionId, read session lazily
 
   const PerplexityAnswerWidget({
     Key? key,
-    required this.session,
+    required this.sessionId,
   }) : super(key: key);
 
   @override
-  State<PerplexityAnswerWidget> createState() => _PerplexityAnswerWidgetState();
+  ConsumerState<PerplexityAnswerWidget> createState() => _PerplexityAnswerWidgetState();
 }
 
-class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
+class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget> {
   int _selectedTagIndex = 0; // 0: Clonar, 1: Sources, 2: Media (Images + Videos)
 
   @override
   Widget build(BuildContext context) {
-    // ✅ CRITICAL: Log IMMEDIATELY when widget builds
-    print('🔥🔥🔥 PerplexityAnswerWidget.build() called for query: "${widget.session.query}"');
+    debugPrint('🧱 PerplexityAnswerWidget BUILD');
     
-    final summary = widget.session.summary ?? "";
-    final sections = widget.session.sections;
-    final sources = widget.session.sources;
-    final images = _getAllImages();
+    // ✅ PERPLEXITY-STYLE: Watch phase only (prevents rebuilds on text changes)
+    final phase = ref.watch(sessionPhaseProvider(widget.sessionId));
     
-    // ✅ CRITICAL: Log what we're rendering (use print for visibility)
-    print('📝 PerplexityAnswerWidget: Building answer widget');
-    print('  - Summary length: ${summary.length}');
-    print('  - Sections: ${sections?.length ?? 0}');
-    print('  - Sources: ${sources.length}');
-    print('  - Images: ${images.length}');
-    
-    if (sections != null && sections.isNotEmpty) {
-      print('  - First section title: ${sections[0]['title']}');
-      print('  - All section titles: ${sections.map((s) => s['title']).join(', ')}');
+    // ✅ PERPLEXITY-STYLE: Show loading UI only during searching phase
+    if (phase == QueryPhase.searching) {
+      return _buildLoadingStatus();
     }
+    
+    // ✅ PERPLEXITY-STYLE: Read session lazily only when phase == done
+    QuerySession? session;
+    if (phase == QueryPhase.done) {
+      session = ref.read(sessionByIdProvider(widget.sessionId));
+    }
+    
+    // ✅ PERPLEXITY-STYLE: Answer widget mounted once when phase >= answering
+    // It stays mounted and never rebuilds during streaming
+    // ✅ FIX #2: Filter out "How I approached this" from main sections (it's metadata, not primary content)
+    final allSections = session?.sections;
+    // ✅ NOTE: Filtered sections reserved for future use (other non-explanation sections)
+    // final sections = allSections?.where((s) {
+    //   final title = s['title']?.toString().toLowerCase() ?? '';
+    //   return !title.contains('how i approached') && 
+    //          !title.contains('how this answer') &&
+    //          s['kind']?.toString() != 'explanation';
+    // }).toList();
+    final approachSection = allSections?.firstWhere(
+      (s) {
+        final title = s['title']?.toString().toLowerCase() ?? '';
+        return title.contains('how i approached') || 
+               title.contains('how this answer') ||
+               s['kind']?.toString() == 'explanation';
+      },
+      orElse: () => <String, dynamic>{},
+    );
+    final sources = session?.sources ?? <Map<String, dynamic>>[];
+    final images = session != null ? _getAllImages(session) : <String>[];
 
     // ✅ NEW: Tag-based interface with 3 tags: Clonar, Sources, Images (styled like ShoppingResultsScreen)
     return Column(
@@ -79,9 +103,11 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
               _buildTag('Clonar', 0),
               _buildTag('Sources', 1),
               _buildTag('Media', 2), // ✅ RENAMED: Images → Media (includes images + videos)
-              // ✅ Dynamic tags: Shopping/Hotels (only when cards exist)
-              if (_hasProductCards()) _buildNavigationTag('Shopping', context),
-              if (_hasHotelCards()) _buildNavigationTag('Hotels', context),
+              // ✅ Dynamic tags: Shopping/Hotels (only when cards exist, only when done)
+              if (phase == QueryPhase.done && session != null && _hasProductCards(session)) 
+                _buildNavigationTag('Shopping', context, session),
+              if (phase == QueryPhase.done && session != null && _hasHotelCards(session)) 
+                _buildNavigationTag('Hotels', context, session),
             ],
           ),
         ),
@@ -97,19 +123,41 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildAnswerContent(summary, sections),
-                    // ✅ PERPLEXITY-STYLE: Display map if search returned map data
-                    if (_shouldShowMap()) ...[
-                      const SizedBox(height: 32),
-                      _buildMapSection(context),
+                    // ✅ ENHANCEMENT 3: Research Progress Indicator (during streaming)
+                    if (phase == QueryPhase.answering && session?.researchStep != null) ...[
+                      _buildResearchProgress(session!),
+                      const SizedBox(height: 24),
                     ],
-                    // ✅ PERPLEXITY-STYLE: Display cards if search returned card data
-                    if (_shouldShowCards()) ...[
-                      const SizedBox(height: 32),
-                      _buildCardsSection(context),
+                    // ✅ ENHANCEMENT 1: Reasoning Display (collapsible)
+                    // ✅ FIX: Show reasoning immediately when available (even before answer starts)
+                    // Reasoning is emitted during research phase, which happens BEFORE answer generation
+                    if (session?.reasoningSteps.isNotEmpty ?? false) ...[
+                      _buildReasoningSection(session!),
+                      const SizedBox(height: 24),
                     ],
-                    const SizedBox(height: 32),
-                    _buildFollowUps(context),
+                    // ✅ ENHANCEMENT 2: Real-Time Sources (during streaming)
+                    if (phase == QueryPhase.answering && (session?.sources.isNotEmpty ?? false)) ...[
+                      _buildRealTimeSources(session!),
+                      const SizedBox(height: 24),
+                    ],
+                    // ✅ PERPLEXITY-STYLE: Answer content FIRST (not explanation)
+                    _buildAnswerContent(phase, session),
+                    // ✅ PERPLEXITY-STYLE: Display map if search returned map data (only when done)
+                    if (phase == QueryPhase.done && session != null && _shouldShowMap(session)) ...[
+                      const SizedBox(height: 32),
+                      _buildMapSection(context, session),
+                    ],
+                    // ✅ PERPLEXITY-STYLE: Display cards if search returned card data (only when done)
+                    if (phase == QueryPhase.done && session != null && _shouldShowCards(session)) ...[
+                      const SizedBox(height: 32),
+                      _buildCardsSection(context, session),
+                    ],
+                    // ✅ PERPLEXITY-STYLE: "How I approached this" comes AFTER answer, sources, cards (collapsed)
+                    if (phase == QueryPhase.done && session != null && approachSection != null && approachSection.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      _buildApproachCard(approachSection),
+                    ],
+                    if (phase == QueryPhase.done && session != null) _buildFollowUps(context, session),
                   ],
                 ),
               ),
@@ -167,12 +215,12 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
   }
   
   // ✅ Build navigation tag (Shopping/Hotels) - navigates to respective screens
-  Widget _buildNavigationTag(String label, BuildContext context) {
+  Widget _buildNavigationTag(String label, BuildContext context, QuerySession session) {
     return GestureDetector(
       onTap: () {
         if (label == 'Shopping') {
           // Convert product cards to Product models and navigate
-          final products = _getProductsFromCards();
+          final products = _getProductsFromCards(session);
           if (products.isNotEmpty) {
             Navigator.push(
               context,
@@ -193,7 +241,7 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => HotelResultsScreen(query: widget.session.query),
+              builder: (context) => HotelResultsScreen(query: session.query),
             ),
           );
         }
@@ -217,24 +265,24 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
   }
   
   // ✅ Helper: Check if product cards exist
-  bool _hasProductCards() {
-    final cardsByDomain = widget.session.cardsByDomain;
+  bool _hasProductCards(QuerySession session) {
+    final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return false;
     final products = (cardsByDomain['products'] as List?)?.whereType<Map>().toList() ?? [];
     return products.isNotEmpty;
   }
   
   // ✅ Helper: Check if hotel cards exist
-  bool _hasHotelCards() {
-    final cardsByDomain = widget.session.cardsByDomain;
+  bool _hasHotelCards(QuerySession session) {
+    final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return false;
     final hotels = (cardsByDomain['hotels'] as List?)?.whereType<Map>().toList() ?? [];
     return hotels.isNotEmpty;
   }
   
   // ✅ Helper: Convert product cards to Product models
-  List<Product> _getProductsFromCards() {
-    final cardsByDomain = widget.session.cardsByDomain;
+  List<Product> _getProductsFromCards(QuerySession session) {
+    final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return [];
     
     final productCards = (cardsByDomain['products'] as List?)?.whereType<Map>().toList() ?? [];
@@ -242,22 +290,22 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
   }
   
   // ✅ Helper: Get all images from session
-  List<String> _getAllImages() {
+  List<String> _getAllImages(QuerySession session) {
     final images = <String>[];
     
     // Add search images (all domains: web, products, hotels, places, movies)
     // Note: destinationImages name is legacy - it contains all search images, not just destinations
-    if (widget.session.destinationImages.isNotEmpty) {
-      images.addAll(widget.session.destinationImages);
+    if (session.destinationImages.isNotEmpty) {
+      images.addAll(session.destinationImages);
     }
     
     // Add allImages if available
-    if (widget.session.allImages != null && widget.session.allImages!.isNotEmpty) {
-      images.addAll(widget.session.allImages!);
+    if (session.allImages != null && session.allImages!.isNotEmpty) {
+      images.addAll(session.allImages!);
     }
     
     // Extract images from cards
-    final cardsByDomain = widget.session.cardsByDomain;
+    final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain != null) {
       // Products
       final products = (cardsByDomain['products'] as List?)?.whereType<Map>().toList() ?? [];
@@ -454,53 +502,49 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
     );
   }
 
-  Widget _buildFollowUps(BuildContext context) {
-    return Consumer(
-      builder: (context, ref, child) {
-        final session = widget.session;
-        
-        // ✅ PROFESSIONAL: Only show "Related" section if:
-        // 1. Real follow-ups are available (from backend LLM generation)
-        // 2. Streaming is complete (not still generating answer)
-        // This prevents showing placeholder/fallback follow-ups that will change
-        if (session.followUpSuggestions.isEmpty || session.isStreaming || session.isParsing) {
-          return const SizedBox.shrink();
-        }
-        
-        // ✅ Use real follow-ups directly (no fallback heuristics)
-        final followUps = session.followUpSuggestions;
-        if (followUps.isEmpty) return const SizedBox.shrink();
-        
-        final limited = followUps.take(3).toList();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 32),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(
-                "Related",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                ),
-              ),
+  Widget _buildFollowUps(BuildContext context, QuerySession session) {
+    // ✅ PROFESSIONAL: Only show follow-up suggestions section if:
+    // 1. Real follow-ups are available (from backend LLM generation)
+    // 2. Streaming is complete (not still generating answer)
+    // This prevents showing placeholder/fallback follow-ups that will change
+    if (session.followUpSuggestions.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    
+    // ✅ Use real follow-ups directly (no fallback heuristics)
+    final followUps = session.followUpSuggestions;
+    if (followUps.isEmpty) return const SizedBox.shrink();
+    
+    final limited = followUps.take(3).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            "Follow-up questions",
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
             ),
-            const SizedBox(height: 12),
-            ...limited.map((suggestion) {
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: () {
-                      // Handle follow-up tap
-                      ref.read(followUpControllerProvider.notifier).handleFollowUp(
-                        suggestion,
-                        widget.session,
-                      );
-                    },
+          ),
+        ),
+        const SizedBox(height: 12),
+        ...limited.map((suggestion) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  // Handle follow-up tap
+                  ref.read(followUpControllerProvider.notifier).handleFollowUp(
+                    suggestion,
+                    session,
+                  );
+                },
                     borderRadius: BorderRadius.circular(8),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -531,24 +575,54 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
             }),
           ],
         );
-      },
-    );
   }
 
-  Widget _buildAnswerContent(String summary, List<Map<String, dynamic>>? sections) {
-    final sources = widget.session.sources;
-    final sourcesCount = sources.length;
-    
-    // ✅ PERPLEXITY-STYLE: Render structured sections if available
-    if (sections != null && sections.isNotEmpty) {
+  Widget _buildAnswerContent(QueryPhase phase, QuerySession? session) {
+    // ✅ PERPLEXITY-STYLE: Use stream for text during answering phase
+    // Fall back to session.answer when done
+    if (phase == QueryPhase.answering) {
+      // ✅ PERPLEXITY-STYLE: Listen to stream for text chunks
+      final stream = ref.watch(sessionStreamFamilyProvider(widget.sessionId));
+      
+      return StreamBuilder<String>(
+        stream: stream,
+        initialData: '',
+        builder: (context, snapshot) {
+          final streamedText = snapshot.data ?? '';
+          
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ✅ Streaming text (updates internally, no parent rebuilds)
+              if (streamedText.isNotEmpty) ...[
+                Text(
+                  streamedText,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    color: AppColors.textPrimary,
+                    height: 1.7,
+                    letterSpacing: -0.1,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+            ],
+          );
+        },
+      );
+    } else {
+      // ✅ PERPLEXITY-STYLE: Phase done - use final answer from session
+      final answerText = session?.answer ?? session?.summary ?? '';
+      final sourcesCount = session?.sources.length ?? 0;
+      
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ✅ 1. Initial Overview Paragraph (Perplexity-style)
-          if (summary.isNotEmpty) ...[
-            StreamingTextWidget(
-              targetText: summary,
-              enableAnimation: false,
+          // ✅ Full answer text
+          if (answerText.isNotEmpty) ...[
+            Text(
+              answerText,
               style: const TextStyle(
                 fontSize: 16,
                 color: AppColors.textPrimary,
@@ -560,8 +634,8 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
             const SizedBox(height: 20),
           ],
           
-          // ✅ 2. Sources Indicator (Perplexity-style: "Reviewed X sources")
-          if (sourcesCount > 0) ...[
+          // ✅ Sources Indicator (if available) - only show when done
+          if (phase == QueryPhase.done && sourcesCount > 0) ...[
             Row(
               children: [
                 Icon(
@@ -582,111 +656,11 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
                 ),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
           ],
-          
-          // ✅ 3. Render each section with improved spacing
-          ...sections.asMap().entries.map((entry) {
-            final index = entry.key;
-            final section = entry.value;
-            final title = section['title']?.toString() ?? '';
-            final content = section['content']?.toString() ?? '';
-            
-            // ✅ FIX: Skip sections with empty title or content
-            if (title.isEmpty || content.isEmpty) return const SizedBox.shrink();
-            
-            // ✅ FIX: Skip "FOLLOW_UP_SUGGESTIONS:" section (it's metadata, not content)
-            if (title.toUpperCase().contains('FOLLOW_UP_SUGGESTIONS')) {
-              return const SizedBox.shrink();
-            }
-            
-            // ✅ FIX: Skip "Overview" section if summary is already shown (prevents duplication)
-            // But allow "Details" section even if summary exists (it contains additional content)
-            if (title.toLowerCase() == 'overview' && summary.isNotEmpty) {
-              return const SizedBox.shrink();
-            }
-            
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: index == sections.length - 1 ? 0 : 32, // ✅ More spacing between sections
-                top: index == 0 ? 0 : 0, // First section already has spacing from sources indicator
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Section title (Perplexity-style heading)
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary,
-                      letterSpacing: -0.3,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // Section content
-                  StreamingTextWidget(
-                    targetText: content,
-                    enableAnimation: false,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      color: AppColors.textPrimary,
-                      height: 1.65,
-                      letterSpacing: -0.1,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
         ],
       );
     }
-
-    // Fallback: Render summary text if no sections
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Summary text
-        StreamingTextWidget(
-          targetText: summary,
-          enableAnimation: false,
-          style: const TextStyle(
-            fontSize: 16,
-            color: AppColors.textPrimary,
-            height: 1.7,
-            letterSpacing: -0.1,
-            fontWeight: FontWeight.w400,
-          ),
-        ),
-        // Sources indicator if available
-        if (sourcesCount > 0) ...[
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Icon(
-                Icons.article_outlined,
-                size: 16,
-                color: AppColors.textSecondary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                sourcesCount == 1 
-                  ? 'Reviewed 1 source'
-                  : 'Reviewed $sourcesCount sources',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: AppColors.textSecondary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ],
-    );
   }
 
 
@@ -720,68 +694,29 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
     }
   }
   
-  // ✅ PERPLEXITY-STYLE: Check if cards should be displayed
-  // ✅ PERPLEXITY-STYLE: Frontend UI gating based on actual data presence
-  bool _shouldShowCards() {
-    // Check if we have cards from backend (search-first)
-    final cardsByDomain = widget.session.cardsByDomain;
-    if (cardsByDomain == null) return false;
+  // ✅ ARCHITECTURE FIX: Check if cards should be displayed
+  // Backend decides WHAT to show via uiDecision, frontend only renders
+  // Backend MUST always send uiDecision - if missing, don't show (bug, not feature)
+  bool _shouldShowCards(QuerySession session) {
+    if (session.uiDecision == null) return false;
     
-    final hasProducts = (cardsByDomain['products'] as List?)?.isNotEmpty ?? false;
-    final hasHotels = (cardsByDomain['hotels'] as List?)?.isNotEmpty ?? false;
-    final hasPlaces = (cardsByDomain['places'] as List?)?.isNotEmpty ?? false;
-    final hasMovies = (cardsByDomain['movies'] as List?)?.isNotEmpty ?? false;
-    
-    return hasProducts || hasHotels || hasPlaces || hasMovies;
+    final showCards = session.uiDecision!['showCards'];
+    return showCards is bool ? showCards : false;
   }
   
-  // ✅ Helper: Check if map should be shown
-  // ✅ PERPLEXITY-STYLE: Frontend UI gating based on actual data presence
-  bool _shouldShowMap() {
-    // Check if we have map points from backend (search-first)
-    if (widget.session.mapPoints != null && widget.session.mapPoints!.isNotEmpty) {
-      return true;
-    }
+  // ✅ ARCHITECTURE FIX: Check if map should be shown
+  // Backend decides WHAT to show via uiDecision, frontend only renders
+  // Backend MUST always send uiDecision - if missing, don't show (bug, not feature)
+  bool _shouldShowMap(QuerySession session) {
+    if (session.uiDecision == null) return false;
     
-    // Check if we have location data from cards
-    final cardsByDomain = widget.session.cardsByDomain;
-    if (cardsByDomain == null) return false;
-    
-    // Collect all map points from hotels and places
-    final mapPoints = <Map<String, dynamic>>[];
-    
-    // Hotels
-    final hotels = (cardsByDomain['hotels'] as List?)?.whereType<Map>().toList() ?? [];
-    for (final hotel in hotels) {
-      final location = hotel['location'];
-      if (location is Map && location['lat'] != null && location['lng'] != null) {
-        mapPoints.add({
-          'latitude': location['lat'],
-          'longitude': location['lng'],
-          'title': hotel['name'] ?? 'Hotel',
-        });
-      }
-    }
-    
-    // Places
-    final places = (cardsByDomain['places'] as List?)?.whereType<Map>().toList() ?? [];
-    for (final place in places) {
-      final location = place['location'];
-      if (location is Map && location['lat'] != null && location['lng'] != null) {
-        mapPoints.add({
-          'latitude': location['lat'],
-          'longitude': location['lng'],
-          'title': place['name'] ?? 'Place',
-        });
-      }
-    }
-    
-    return mapPoints.isNotEmpty;
+    final showMap = session.uiDecision!['showMap'];
+    return showMap is bool ? showMap : false;
   }
   
   // ✅ PERPLEXITY-STYLE: Build map section (styled like ShoppingResultsScreen)
-  Widget _buildMapSection(BuildContext context) {
-    final cardsByDomain = widget.session.cardsByDomain;
+  Widget _buildMapSection(BuildContext context, QuerySession session) {
+    final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return const SizedBox.shrink();
     
     // Collect all map points from hotels and places
@@ -825,7 +760,7 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
             MaterialPageRoute(
               builder: (context) => FullScreenMapScreen(
                 points: mapPoints,
-                title: widget.session.query,
+                title: session.query,
               ),
             ),
           );
@@ -841,7 +776,7 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
                   MaterialPageRoute(
                     builder: (context) => FullScreenMapScreen(
                       points: mapPoints,
-                      title: widget.session.query,
+                      title: session.query,
                     ),
                   ),
                 );
@@ -893,8 +828,8 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
   }
   
   // ✅ PERPLEXITY-STYLE: Build cards section
-  Widget _buildCardsSection(BuildContext context) {
-    final cardsByDomain = widget.session.cardsByDomain;
+  Widget _buildCardsSection(BuildContext context, QuerySession session) {
+    final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return const SizedBox.shrink();
     
     final widgets = <Widget>[];
@@ -1762,5 +1697,503 @@ class _PerplexityAnswerWidgetState extends State<PerplexityAnswerWidget> {
       ),
     );
   }
+
+  // ✅ PERPLEXITY-STYLE: Build approach card (collapsed, expandable, AFTER answer)
+  Widget _buildApproachCard(Map<String, dynamic> approachSection) {
+    final content = approachSection['content']?.toString() ?? '';
+    
+    if (content.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    
+    return StatefulBuilder(
+      builder: (context, setState) {
+        bool isExpanded = false; // ✅ PERPLEXITY-STYLE: Default collapsed
+        
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.surfaceVariant.withOpacity(0.3),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: AppColors.border.withOpacity(0.3),
+              width: 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header (clickable to expand/collapse)
+              InkWell(
+                onTap: () {
+                  setState(() {
+                    isExpanded = !isExpanded;
+                  });
+                },
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline,
+                        size: 18,
+                        color: AppColors.textSecondary,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'How this answer was generated',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(
+                        isExpanded ? Icons.expand_less : Icons.expand_more,
+                        color: AppColors.textSecondary,
+                        size: 18,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Content (collapsible)
+              if (isExpanded) ...[
+                Divider(height: 1, color: AppColors.border.withOpacity(0.3)),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    content,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textSecondary,
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ✅ ENHANCEMENT 1: Build reasoning section (collapsible)
+  Widget _buildReasoningSection(QuerySession session) {
+    return StatefulBuilder(
+      builder: (context, setState) {
+        bool isExpanded = true; // Default to expanded
+        
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: AppColors.primary.withOpacity(0.2),
+              width: 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header (clickable to expand/collapse)
+              InkWell(
+                onTap: () {
+                  setState(() {
+                    isExpanded = !isExpanded;
+                  });
+                },
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.psychology_outlined,
+                        size: 20,
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'AI Thinking Process',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(
+                        isExpanded ? Icons.expand_less : Icons.expand_more,
+                        color: AppColors.textSecondary,
+                        size: 20,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Reasoning steps (collapsible)
+              if (isExpanded) ...[
+                Divider(height: 1, color: AppColors.primary.withOpacity(0.2)),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: session.reasoningSteps.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final reasoning = entry.value;
+                      return Padding(
+                        padding: EdgeInsets.only(bottom: index < session.reasoningSteps.length - 1 ? 12 : 0),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: 24,
+                              height: 24,
+                              decoration: BoxDecoration(
+                                color: AppColors.primary.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  '${index + 1}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                reasoning,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: AppColors.textSecondary,
+                                  height: 1.5,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ✅ ENHANCEMENT 2: Build real-time sources section (during streaming)
+  Widget _buildRealTimeSources(QuerySession session) {
+    final sources = session.sources;
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.primary.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.article_outlined,
+                  size: 18,
+                  color: AppColors.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Sources Found (${sources.length})',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ...sources.take(5).toList().asMap().entries.map((entry) {
+              final index = entry.key;
+              final source = entry.value;
+              final title = source['title']?.toString() ?? 'Untitled Source';
+              final url = source['url']?.toString() ?? source['link']?.toString() ?? '';
+              
+              return Padding(
+                padding: EdgeInsets.only(bottom: index < sources.length - 1 ? 8 : 0),
+                child: InkWell(
+                  onTap: url.isNotEmpty ? () => _openSource(url) : null,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Center(
+                            child: Text(
+                              '${index + 1}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                title,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                  color: AppColors.textPrimary,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              if (url.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  _formatUrl(url),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        if (url.isNotEmpty)
+                          Icon(
+                            Icons.open_in_new,
+                            size: 16,
+                            color: AppColors.textSecondary,
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+            if (sources.length > 5)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '... and ${sources.length - 5} more',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ ENHANCEMENT 3: Build research progress indicator
+  Widget _buildResearchProgress(QuerySession session) {
+    final step = session.researchStep ?? 0;
+    final maxSteps = session.maxResearchSteps ?? 1;
+    final currentAction = session.currentAction ?? 'Researching...';
+    final progress = maxSteps > 0 ? (step / maxSteps).clamp(0.0, 1.0) : 0.0;
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.primary.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.search,
+                  size: 18,
+                  color: AppColors.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Research Progress',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Progress bar
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress,
+                backgroundColor: AppColors.primary.withOpacity(0.1),
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+                minHeight: 6,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Step $step of $maxSteps',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                Text(
+                  '${(progress * 100).toInt()}%',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+            if (currentAction.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Current: $currentAction',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ PERPLEXITY-STYLE: Loading status UI (shows before answer chunks arrive)
+  Widget _buildLoadingStatus() {
+    // Read session lazily for query text
+    final session = ref.read(sessionByIdProvider(widget.sessionId));
+    final query = session?.query.toLowerCase() ?? '';
+    String loadingText = 'Working…';
+    
+    // Extract contextual information from query for better UX
+    if (query.contains('hotel') || query.contains('hotels')) {
+      // Try to extract location
+      final locationMatch = RegExp(r'(?:hotels?|hotel)\s+(?:in|near|at|for)\s+([^,]+)').firstMatch(query);
+      if (locationMatch != null) {
+        final location = locationMatch.group(1)?.trim() ?? '';
+        if (location.isNotEmpty) {
+          loadingText = 'Searching for hotels in $location';
+        } else {
+          loadingText = 'Searching for hotels…';
+        }
+      } else {
+        loadingText = 'Searching for hotels…';
+      }
+    } else if (query.contains('product') || query.contains('buy') || query.contains('shop') || query.contains('shopping')) {
+      // Extract product keywords
+      final productMatch = RegExp(r'(?:product|buy|shop|shopping|find)\s+(.+?)(?:\s+(?:in|near|at|for|under|below|above|over))').firstMatch(query);
+      if (productMatch != null) {
+        final product = productMatch.group(1)?.trim() ?? '';
+        if (product.isNotEmpty && product.length < 50) {
+          loadingText = 'Searching for $product…';
+        } else {
+          loadingText = 'Searching for products…';
+        }
+      } else {
+        loadingText = 'Searching for products…';
+      }
+    } else if (query.contains('place') || query.contains('places') || query.contains('restaurant') || query.contains('restaurants')) {
+      // Extract location for places
+      final locationMatch = RegExp(r'(?:place|places|restaurant|restaurants)\s+(?:in|near|at|for)\s+([^,]+)').firstMatch(query);
+      if (locationMatch != null) {
+        final location = locationMatch.group(1)?.trim() ?? '';
+        if (location.isNotEmpty) {
+          loadingText = 'Searching for places in $location';
+        } else {
+          loadingText = 'Searching for places…';
+        }
+      } else {
+        loadingText = 'Searching for places…';
+      }
+    } else if (query.contains('movie') || query.contains('movies') || query.contains('film') || query.contains('films')) {
+      loadingText = 'Searching for movies…';
+    } else {
+      // Generic loading message
+      loadingText = 'Working…';
+    }
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              loadingText,
+              style: TextStyle(
+                fontSize: 15,
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w500,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
 }
 
