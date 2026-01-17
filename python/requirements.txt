@@ -1,5 +1,0 @@
-fastapi
-uvicorn
-requests
-httpx
-python-dotenv
