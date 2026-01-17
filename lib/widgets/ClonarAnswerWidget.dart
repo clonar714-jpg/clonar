@@ -24,24 +24,24 @@ import '../screens/FullScreenMapScreen.dart';
 import '../models/Product.dart';
 
 
-class PerplexityAnswerWidget extends ConsumerStatefulWidget {
+class ClonarAnswerWidget extends ConsumerStatefulWidget {
   final String sessionId; 
 
-  const PerplexityAnswerWidget({
+  const ClonarAnswerWidget({
     Key? key,
     required this.sessionId,
   }) : super(key: key);
 
   @override
-  ConsumerState<PerplexityAnswerWidget> createState() => _PerplexityAnswerWidgetState();
+  ConsumerState<ClonarAnswerWidget> createState() => _ClonarAnswerWidgetState();
 }
 
-class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget> {
+class _ClonarAnswerWidgetState extends ConsumerState<ClonarAnswerWidget> {
   int _selectedTagIndex = 0; 
 
   @override
   Widget build(BuildContext context) {
-    debugPrint('🧱 PerplexityAnswerWidget BUILD');
+    debugPrint('🧱 ClonarAnswerWidget BUILD');
     
    
     final phase = ref.watch(sessionPhaseProvider(widget.sessionId));
@@ -96,16 +96,12 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
           ),
         ),
         
-        // Content based on selected tag
-        // ✅ FIX: Remove Expanded/ConstrainedBox - let content size naturally like ChatGPT/Perplexity
-        // Use IntrinsicHeight so IndexedStack sizes to the currently visible child
+       
         IntrinsicHeight(
           child: IndexedStack(
             index: _selectedTagIndex,
             children: [
-              // Tag 0: Clonar - Answer content
-              // ✅ FIX: Remove SingleChildScrollView - parent CustomScrollView handles scrolling
-              // Content should size naturally without scroll constraints
+       
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: Column(
@@ -149,15 +145,13 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
                 ),
               ),
               
-              // Tag 1: Sources - Numbered sources list
-              // ✅ FIX: Remove SingleChildScrollView - parent handles scrolling
+              
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: _buildSourcesTab(sources),
               ),
               
-              // Tag 2: Images - Image grid
-              // ✅ FIX: Remove SingleChildScrollView - parent handles scrolling
+              
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: _buildImagesTab(images),

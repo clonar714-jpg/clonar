@@ -384,162 +384,19 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     }
   }
 
-  // Lightweight navigation handler - instant switching
-  void _onTabTapped(int index) {
-    // Ignore redundant taps on the same tab
-    if (index == _currentIndex) {
-      return;
-    }
+  // Navigation handler removed - bottom navigation bar moved to ShopScreenExtras.dart
 
-    // Instantly switch to the new tab
-    setState(() {
-      _currentIndex = index;
-    });
-  }
-
-  Widget _buildShopIcon(bool isActive) {
-    return Container(
-      width: 28,
-      height: 28,
-      child: CustomPaint(
-        painter: ShopIconPainter(
-          color: isActive ? AppColors.primary : AppColors.iconSecondary,
-        ),
-      ),
-    );
-  }
+  // Shop icon builder removed - moved to ShopScreenExtras.dart
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: _getScreen(_currentIndex),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          border: Border(
-            top: BorderSide(
-              color: AppColors.surfaceVariant,
-              width: 0.5,
-            ),
-          ),
-        ),
-        child: BottomNavigationBar(
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: AppColors.surface,
-          selectedItemColor: AppColors.primary,
-          unselectedItemColor: AppColors.iconSecondary,
-          currentIndex: _currentIndex,
-          onTap: _onTabTapped,
-          selectedLabelStyle: AppTypography.captionSmall,
-          unselectedLabelStyle: AppTypography.captionSmall,
-          elevation: 0,
-          items: [
-            BottomNavigationBarItem(
-              icon: _buildShopIcon(false),
-              activeIcon: _buildShopIcon(true),
-              label: 'Shop',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.grid_view),
-              activeIcon: Icon(Icons.grid_on),
-              label: 'Feed',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
-              activeIcon: Icon(Icons.person),
-              label: 'Account',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.favorite_outline),
-              activeIcon: Icon(Icons.favorite),
-              label: 'Wishlist',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.checkroom_outlined),
-              activeIcon: Icon(Icons.checkroom),
-              label: 'Wardrobe',
-            ),
-          ],
-        ),
-      ),
+      // Bottom navigation bar removed (moved to ShopScreenExtras.dart)
+      // To include: use ShopScreenExtras.buildBottomNavigationBar()
     );
   }
 }
 
-class ShopIconPainter extends CustomPainter {
-  final Color color;
-
-  ShopIconPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 2.0
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final fillPaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill;
-
-    final centerX = size.width / 2;
-    final centerY = size.height / 2;
-
-    // Draw the three horizontal lines (left side)
-    final lineSpacing = 3.0;
-    final lineLength = 10.0;
-    final startX = centerX - 7;
-    
-    // Top line (longest)
-    canvas.drawLine(
-      Offset(startX, centerY - lineSpacing),
-      Offset(startX + lineLength, centerY - lineSpacing),
-      paint,
-    );
-    
-    // Middle line (medium)
-    canvas.drawLine(
-      Offset(startX, centerY),
-      Offset(startX + lineLength - 2, centerY),
-      paint,
-    );
-    
-    // Bottom line (shortest)
-    canvas.drawLine(
-      Offset(startX, centerY + lineSpacing),
-      Offset(startX + lineLength - 4, centerY + lineSpacing),
-      paint,
-    );
-
-    // Draw the magnifying glass (right side)
-    final magnifierCenterX = centerX + 3;
-    final magnifierCenterY = centerY;
-    final magnifierRadius = 4.5;
-    
-    // Draw the magnifying glass circle
-    canvas.drawCircle(
-      Offset(magnifierCenterX, magnifierCenterY),
-      magnifierRadius,
-      paint,
-    );
-    
-    // Draw the magnifying glass handle
-    final handleStartX = magnifierCenterX + magnifierRadius * 0.7;
-    final handleStartY = magnifierCenterY + magnifierRadius * 0.7;
-    final handleEndX = magnifierCenterX + 6;
-    final handleEndY = magnifierCenterY + 6;
-    
-    canvas.drawLine(
-      Offset(handleStartX, handleStartY),
-      Offset(handleEndX, handleEndY),
-      paint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return oldDelegate is ShopIconPainter && oldDelegate.color != color;
-  }
-}
+// ShopIconPainter removed - moved to ShopScreenExtras.dart

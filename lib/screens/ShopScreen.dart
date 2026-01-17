@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint, compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
@@ -11,15 +10,13 @@ import 'dart:convert';
 import 'dart:async';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
-// ✅ RIVERPOD: Removed AgentService import - now using agentProvider
 import '../core/api_client.dart';
 import '../services/ChatHistoryServiceCloud.dart';
 import '../providers/query_state_provider.dart';
 import '../providers/session_history_provider.dart';
 import '../providers/conversation_loader_provider.dart';
 import '../models/query_session_model.dart';
-import 'PerplexityAnswerScreen.dart';
-import 'TravelScreen.dart';
+import 'ClonarAnswerScreen.dart';
 
 // Chat history model
 class ChatHistoryItem {
@@ -100,58 +97,51 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
   List<ChatHistoryItem> _chatHistory = [];
   Timer? _chatSearchDebounceTimer;
   
-  // ✅ PRODUCTION: ValueNotifier for speech updates to prevent full rebuilds
+
   final ValueNotifier<String> _speechTextNotifier = ValueNotifier<String>('');
   final ValueNotifier<bool> _isListeningNotifier = ValueNotifier<bool>(false);
   
-  // ✅ PRODUCTION: ValueNotifier for chat search to isolate drawer rebuilds
+
   final ValueNotifier<String> _chatSearchQueryNotifier = ValueNotifier<String>('');
   
-  // ✅ STARTUP FIX: Track if first frame has rendered to defer heavy UI
+
   bool _firstFrameRendered = false;
-  bool _shouldShowQuickActions = false;
-  bool _isUiReady = false; // Gate for all heavy UI components
+ 
+  bool _isUiReady = false; 
 
   @override
   void initState() {
     super.initState();
-    // Pre-load query if provided
+  
     if (widget.preloadedQuery != null) {
       _searchController.text = widget.preloadedQuery!;
       _hasText = widget.preloadedQuery!.isNotEmpty;
-      // ✅ RIVERPOD: Initialize query provider with preloaded query
+     
       ref.read(queryProvider.notifier).state = widget.preloadedQuery!;
     }
     // Pre-load image URL if provided
     if (widget.imageUrl != null) {
       _uploadedImageUrl = widget.imageUrl;
     }
-    // ✅ PRODUCTION-GRADE: Optimized listener - prevents excessive provider updates
+  
     _searchController.addListener(() {
-      if (_isProgrammaticUpdate) return; // ⛔ prevents infinite loops
+      if (_isProgrammaticUpdate) return; 
       
-      final text = _searchController.text; // Don't trim here - preserve user input
+      final text = _searchController.text; 
       final hasTextNow = text.isNotEmpty;
       
-      // ✅ PRODUCTION: Only update local state, not queryProvider (prevents rebuilds)
-      // queryProvider should only be updated on submit or when explicitly needed
-      
-      // ✅ PRODUCTION: Autocomplete feature removed to prevent freezes
-      
-      // Update local _hasText for UI state (minimal setState, only when changed)
+
       if (_hasText != hasTextNow) {
         setState(() {
           _hasText = hasTextNow;
         });
       }
     });
-    // ✅ PRODUCTION FIX: Removed empty setState - no state change needed for focus
-    // Focus changes don't require state updates unless we're tracking focus state
-    // Ensure search field is not focused when screen loads
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _searchFocusNode.unfocus();
-        // ✅ PRODUCTION: Defer speech initialization to prevent startup freeze
+       
         Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted) {
             _initializeSpeech();
@@ -159,7 +149,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         });
       }
     });
-    // ✅ STARTUP FIX: Defer ALL heavy UI until AFTER first frame
+    
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         // Mark first frame as rendered
@@ -169,7 +159,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
           if (mounted) {
             setState(() {
               _isUiReady = true;
-              _shouldShowQuickActions = true;
+              
             });
           }
         });
@@ -183,15 +173,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     });
   }
   
-  /// ✅ PRODUCTION: Load chat history from persistent storage (async, non-blocking, deferred)
+  
   Future<void> _loadChatHistoryFromStorage() async {
     try {
-      // ✅ PRODUCTION: Load from storage (now uses isolate for JSON parsing)
-      // This is truly non-blocking as parsing happens in isolate
+     
       final chats = await ChatHistoryServiceCloud.loadChatHistory();
       
       if (mounted) {
-        // ✅ PRODUCTION: Update state immediately (parsing already done in isolate)
+        
         setState(() {
           _chatHistory = chats;
         });
@@ -211,7 +200,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     try {
       bool available = await _speech.initialize(
         onStatus: (status) {
-          // ✅ PRODUCTION: Use ValueNotifier instead of setState to prevent full rebuilds
+        
           final isListeningNow = status == 'listening';
           if (_isListeningNotifier.value != isListeningNow) {
             _isListeningNotifier.value = isListeningNow;
@@ -298,7 +287,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     super.dispose();
   }
 
-  // ✅ PRODUCTION: Autocomplete feature removed - _onSuggestionTap removed
+ 
 
   Future<void> _requestMicrophonePermission() async {
     final status = await Permission.microphone.request();
@@ -342,7 +331,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
 
       await _speech.listen(
         onResult: (result) {
-          // ✅ PRODUCTION: Update ValueNotifier instead of setState to prevent full rebuilds
+        
           _lastWords = result.recognizedWords;
           _speechTextNotifier.value = result.recognizedWords;
           
@@ -422,7 +411,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     }
   }
 
-  // ✅ Show plus menu (Take photo, Add photos & files, Web search)
+  
   void _showPlusMenu() {
     showModalBottomSheet(
       context: context,
@@ -518,7 +507,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     );
   }
 
-  // Handle "Take photo" option
+  
   Future<void> _handleTakePhoto() async {
     try {
       final XFile? image = await _imagePicker.pickImage(
@@ -584,7 +573,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     }
   }
 
-  // ✅ Process image: Upload and perform image search
+ 
   Future<void> _processImageForSearch(File imageFile, String source) async {
     if (!mounted) return;
     
@@ -610,7 +599,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         throw Exception('Image upload failed: ${uploadResponse.statusCode}');
       }
       
-      // ✅ PRODUCTION: Parse JSON in isolate to prevent UI freeze
+      
       final uploadData = await compute(_parseJsonInIsolate, uploadBody);
       final imageUrl = uploadData['url'] as String?;
       
@@ -625,13 +614,12 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
       // Close loading dialog
       if (mounted) Navigator.pop(context);
       
-      // ✅ Store image URL in state and show preview (don't navigate yet)
-      // ✅ FIX: Clear previous image URL first to ensure fresh search
+      
       if (mounted) {
         setState(() {
           _uploadedImageUrl = null; // Clear old image first
         });
-        // Set new image URL in next frame to ensure state is cleared
+        
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             setState(() {
@@ -639,14 +627,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
             });
           }
         });
-        // Note: No success message - image preview in search bar is sufficient feedback
+        
       }
     } catch (e) {
       if (kDebugMode) {
         debugPrint('❌ Error processing image: $e');
       }
       
-      // Close loading dialog
+      
       if (mounted) Navigator.pop(context);
       
       if (mounted) {
@@ -684,7 +672,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     if (kDebugMode) {
       debugPrint('🌐 Web search mode: ${_isWebSearchMode ? "ON" : "OFF"}');
     }
-    // TODO: Use _isWebSearchMode flag when submitting search to enable web search
+    
   }
 
   void _onSearchSubmitted() async {
@@ -699,29 +687,25 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     _isSubmitting = true;
     
     try {
-      // ✅ PRODUCTION: Capture values before navigation to prevent state conflicts
+     
       final query = _searchController.text.trim();
       final imageUrl = _uploadedImageUrl ?? widget.imageUrl;
       
       print('🔥🔥🔥 Query: "$query" (isEmpty: ${query.isEmpty})');
       print('🔥🔥🔥 ImageUrl: $imageUrl (isNull: ${imageUrl == null})');
       
-      // ✅ PRODUCTION: Clear UI state before navigation
+      
       _searchFocusNode.unfocus();
       FocusScope.of(context).unfocus();
       
-      // ✅ PRODUCTION: Update providers without triggering rebuilds
+      
       ref.read(queryProvider.notifier).state = query;
     
     if (kDebugMode) {
       debugPrint('ShopScreen submitting query: "$query"');
     }
     
-    // ✅ FIX: Don't submit query here - let PerplexityAnswerScreen handle it
-    // This prevents duplicate session creation and duplicate query display
-    // await ref.read(agentControllerProvider.notifier).submitQuery(query);
     
-    // ✅ CRITICAL: Check if conversation creation should proceed
     final shouldCreateConversation = query.isNotEmpty || imageUrl != null;
     print('🔥🔥🔥 Should create conversation: $shouldCreateConversation (query.isNotEmpty: ${query.isNotEmpty}, imageUrl != null: ${imageUrl != null})');
     
@@ -741,7 +725,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     
     if (query.isNotEmpty || imageUrl != null) {
       print('🔥🔥🔥 Entering conversation creation block');
-      // ✅ FIX: Create conversation in backend FIRST to get UUID (ChatGPT/Perplexity-style)
+      
       final title = (query.isNotEmpty ? query : 'Find similar items').length > 50 
           ? (query.isNotEmpty ? query : 'Find similar items').substring(0, 50) + '...' 
           : (query.isNotEmpty ? query : 'Find similar items');
@@ -850,7 +834,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => PerplexityAnswerScreen(
+          builder: (context) => ClonarAnswerScreen(
             query: finalQuery,
             imageUrl: imageUrl,
             conversationId: chatId, // ✅ CRITICAL FIX: Pass conversationId so follow-up queries are saved to this conversation
@@ -902,8 +886,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
               }
             });
             } else if (returnedConversationId != null) {
-              // ✅ Replay mode: Chat might not be in local history yet, but we have conversation ID
-              // Find by conversation ID or create new entry
+           
               final existingIndex = _chatHistory.indexWhere((item) => item.id == returnedConversationId);
               if (existingIndex == -1) {
                 // Create new chat entry for this conversation
@@ -1061,7 +1044,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     );
   }
 
-  // ✅ PRODUCTION: Autocomplete feature removed to prevent freezes
+
 
   @override
   Widget build(BuildContext context) {
@@ -1079,17 +1062,17 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
       child: Scaffold(
         key: _scaffoldKey,
         backgroundColor: AppColors.background,
-        // ✅ STARTUP FIX: Defer drawer build until after first frame
+        
         drawer: _isUiReady ? _buildDrawer() : null,
         body: SafeArea(
           child: Column(
             children: [
-              // ✅ PRODUCTION FIX: Wrap expensive widgets in RepaintBoundary
+              
               RepaintBoundary(
                 child: _buildTopSection(),
               ),
               
-              // ✅ PRODUCTION FIX: Middle Section - Removed IntrinsicHeight (incompatible with SingleChildScrollView)
+              
               Expanded(
                 child: SingleChildScrollView(
                   physics: const ClampingScrollPhysics(),
@@ -1106,13 +1089,13 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        // ✅ STARTUP FIX: Defer search bar until after first frame
+                        
                         if (_isUiReady)
                           RepaintBoundary(
                             child: _buildSearchBar(),
                           )
                         else
-                          // ✅ STARTUP FIX: Lightweight placeholder for first frame
+                          
                           Container(
                             height: 56,
                             margin: const EdgeInsets.symmetric(horizontal: 20),
@@ -1128,11 +1111,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                         
                         if (_isUiReady) const SizedBox(height: 16),
                         
-                        // ✅ STARTUP FIX: Defer quick actions until after first frame
-                        if (_shouldShowQuickActions)
-                          _buildQuickActions(context)
-                        else
-                          const SizedBox.shrink(),
+                        
                         
                         SizedBox(height: isKeyboardVisible ? 8.0 : 40.0),
                       ],
@@ -1174,43 +1153,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
             style: AppTypography.headline1,
           ),
         
-          // Top Right Icons
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Notification Icon
-              GestureDetector(
-                onTap: () {
-                  // Dismiss keyboard when tapping notification
-                  FocusScope.of(context).unfocus();
-                },
-                child: FaIcon(
-                  FontAwesomeIcons.bell,
-                  color: AppColors.iconPrimary,
-                  size: 24,
-                ),
-              ),
-              const SizedBox(width: 30),
-              // Chat Icon
-              GestureDetector(
-                onTap: () {
-                  // Dismiss keyboard when tapping chat
-                  FocusScope.of(context).unfocus();
-                },
-                child: FaIcon(
-                  FontAwesomeIcons.facebookMessenger,
-                  color: AppColors.iconPrimary,
-                  size: 24,
-                ),
-              ),
-            ],
-          ),
+          
+          const SizedBox(width: 48), // Spacer to maintain layout
       ],
       ),
     );
   }
 
-  // Build drawer/sidebar (ChatGPT style)
+  
   Widget _buildDrawer() {
     return Drawer(
       backgroundColor: AppColors.background,
@@ -1315,7 +1265,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                     ),
                     onTap: () {
                       Navigator.of(context).pop();
-                      // TODO: Implement library functionality
+                      
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text('Library feature coming soon'),
@@ -1354,11 +1304,11 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                       ),
                     )
                   else
-                    // ✅ PRODUCTION: Use ValueListenableBuilder to isolate drawer search from main UI
+                    
                     ValueListenableBuilder<String>(
                       valueListenable: _chatSearchQueryNotifier,
                       builder: (context, searchQuery, _) {
-                        // ✅ PRODUCTION: Filter chats efficiently
+                        
                         final filteredChats = searchQuery.isEmpty
                             ? _chatHistory
                             : _chatHistory.where((chat) => 
@@ -1366,14 +1316,14 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                                 chat.query.toLowerCase().contains(searchQuery)
                               ).toList();
                         
-                        // ✅ STARTUP FIX: Limit initial item count to prevent first-frame freeze
+                        
                         final itemCount = _firstFrameRendered 
                             ? filteredChats.length 
                             : filteredChats.length.clamp(0, 10);
                         
                         return ListView.builder(
                           shrinkWrap: true,
-                          // ✅ PRODUCTION: Add cache extent to limit off-screen rendering
+                          
                           cacheExtent: 200, // Only cache 200px off-screen
                           physics: const NeverScrollableScrollPhysics(),
                           itemCount: itemCount,
@@ -1471,7 +1421,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
               borderSide: BorderSide(color: AppColors.primary),
             ),
           ),
-          // ✅ PRODUCTION: Update ValueNotifier instead of setState to isolate drawer rebuilds
+          
           onChanged: (value) {
             _chatSearchDebounceTimer?.cancel();
             _chatSearchDebounceTimer = Timer(const Duration(milliseconds: 200), () {
@@ -1548,8 +1498,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
       debugPrint('   Has local history: ${chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty}');
     }
     
-    // ✅ HISTORY_MODE: Clear session history first to ensure clean state
-    // This ensures replaceAllSessions() does a simple replace (state is empty)
+
     ref.read(sessionHistoryProvider.notifier).clear();
     
     // ✅ HISTORY_MODE: Load conversation messages from backend
@@ -1569,10 +1518,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         }
       }
       
-      // ✅ HISTORY_MODE: Replace session history with loaded sessions
-      // Since state is empty (cleared above), replaceAllSessions() will do a simple replace
-      // DB-hydrated sessions may not have sections/sources (DB doesn't store them)
-      // This is expected - old chats show what was stored, not streaming answer content
+      
       if (sessions.isNotEmpty) {
         if (kDebugMode) {
           debugPrint('🔄 HISTORY_MODE: Setting ${sessions.length} sessions in provider');
@@ -1592,10 +1538,10 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
           debugPrint('   - Ready for navigation and rendering');
         }
         
-        // ✅ CRITICAL: Wait one frame to ensure provider state is propagated before navigation
+        
         await Future.delayed(const Duration(milliseconds: 50));
         
-        // ✅ Verify sessions are still in provider before navigation
+       
         final finalCheck = ref.read(sessionHistoryProvider);
         if (kDebugMode) {
           debugPrint('🔍 Final check before navigation: ${finalCheck.length} sessions');
@@ -1632,11 +1578,11 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         }
       }
       
-      // ✅ Navigate to PerplexityAnswerScreen (read-only replay mode)
+      
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PerplexityAnswerScreen(
+        builder: (context) => ClonarAnswerScreen(
           query: chat.query,
           imageUrl: chat.imageUrl,
             isReplayMode: true, // ✅ Mark as replay mode to prevent streaming
@@ -1742,7 +1688,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => PerplexityAnswerScreen(
+            builder: (context) => ClonarAnswerScreen(
             query: chat.query,
             imageUrl: chat.imageUrl,
               isReplayMode: true,
@@ -1934,8 +1880,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                     color: AppColors.textPrimary,
                         height: 1.4, // Line height for better text spacing
                   ),
-                      // ✅ PRODUCTION FIX: onChanged is handled by controller listener
-                      // No need for separate setState here - listener handles it efficiently
+
                   decoration: const InputDecoration(
                     hintText: 'Shop, style, or clone an agent...',
                     hintStyle: TextStyle(
@@ -2122,88 +2067,10 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     );
   }
 
-  Widget _buildQuickActions(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        children: [
-          // Row 1: Shop Anything, Clone others' Style, Suggest an Outfit
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _buildActionButton(context, 'Shop Anything'),
-              _buildActionButton(context, 'Clone  Style'),
-              _buildActionButton(context, 'Suggest an Outfit'),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // Row 2: Virtual Try On, Travel
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _buildActionButton(context, 'Virtual Try On'),
-              const SizedBox(width: 12),
-              _buildActionButton(
-                context, 
-                'Travel',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const TravelScreen(),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActionButton(BuildContext context, String text, {VoidCallback? onTap}) {
-    return SizedBox(
-      width: MediaQuery.of(context).size.width * 0.28, // ~28% of screen width
-      height: 36,
-      child: ElevatedButton(
-        onPressed: () {
-          // Dismiss keyboard when tapping action button
-          FocusScope.of(context).unfocus();
-          // Call custom callback if provided, otherwise default action
-          if (onTap != null) {
-            onTap();
-          } else {
-            // TODO: Implement default action
-          }
-        },
-        style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.buttonSecondary,
-          foregroundColor: AppColors.textPrimary,
-          elevation: 0,
-          shadowColor: Colors.transparent,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          padding: const EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 8,
-          ),
-        ),
-        child: Text(
-          text,
-          style: AppTypography.button.copyWith(
-            fontSize: 10,
-            fontWeight: FontWeight.w500,
-          ),
-          textAlign: TextAlign.center,
-        ),
-      ),
-    );
-  }
+  
 }
 
-// ✅ PRODUCTION: Top-level function for isolate JSON parsing
+
 Map<String, dynamic> _parseJsonInIsolate(String jsonString) {
   return jsonDecode(jsonString) as Map<String, dynamic>;
 }

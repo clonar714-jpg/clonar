@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/query_session_model.dart';
 import '../models/Product.dart';
 import '../theme/AppColors.dart';
-import 'PerplexityAnswerWidget.dart';
+import 'ClonarAnswerWidget.dart';
 import '../providers/session_phase_provider.dart';
 import '../providers/session_history_provider.dart';
 import '../widgets/ResearchActivityWidget.dart';
@@ -114,7 +114,7 @@ class _SessionContentRenderer extends ConsumerWidget {
                 },
               ),
             )
-          : PerplexityAnswerWidget(
+          : ClonarAnswerWidget(
               key: ValueKey('perplexity-$sessionId'),
               sessionId: sessionId,
             ),
