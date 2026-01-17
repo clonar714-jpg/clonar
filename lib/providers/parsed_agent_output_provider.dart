@@ -2,14 +2,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show compute, kDebugMode, debugPrint;
 import '../isolates/text_parsing_isolate.dart';
 
-/// ✅ PHASE 7: Memoized parsed agent output provider with keepAlive
+
 final parsedAgentOutputProvider = FutureProvider.family<Map<String, dynamic>?, Map<String, dynamic>?>((ref, agentResponse) async {
-  // Keep alive to cache parsed results
+  
   ref.keepAlive();
   if (agentResponse == null) return null;
   
   try {
-    // Extract fields from agent response
+    
     final answerText = agentResponse['answer']?.toString() ?? 
                        agentResponse['summary']?.toString() ?? '';
     final locationCards = (agentResponse['locationCards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
@@ -20,7 +20,7 @@ final parsedAgentOutputProvider = FutureProvider.family<Map<String, dynamic>?, M
     final results = agentResponse['results'] ?? [];
     final summary = agentResponse['summary']?.toString();
     
-    // Use isolate for expensive parsing operations
+   
     ParsedContent? parsedContent;
     if (answerText.isNotEmpty && locationCards.isNotEmpty) {
       try {
@@ -38,7 +38,7 @@ final parsedAgentOutputProvider = FutureProvider.family<Map<String, dynamic>?, M
       }
     }
     
-    // Use isolate for agent response preprocessing
+    
     Map<String, dynamic>? preprocessedResponse;
     try {
       preprocessedResponse = await compute(parseAgentResponseIsolate, {

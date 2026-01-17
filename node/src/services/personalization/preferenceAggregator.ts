@@ -1,7 +1,4 @@
-/**
- * Preference Aggregator Service
- * Aggregates preference signals into user preferences
- */
+
 
 import { getRecentSignals, updateUserPreferences, getUserPreferences } from "./preferenceStorage";
 import { UserPreferences } from "./preferenceStorage";
@@ -11,21 +8,19 @@ interface StyleConfidence {
   confidence: number;
 }
 
-/**
- * Aggregate user preferences from signals
- */
+
 export async function aggregateUserPreferences(userId: string): Promise<UserPreferences | null> {
   try {
-    // 1. Get recent signals (last 50)
+    
     const signals = await getRecentSignals(userId, 50);
     
     if (signals.length < 3) {
-      // Not enough data yet
+      
       console.log(`ℹ️ Not enough signals for user ${userId} (${signals.length} < 3)`);
       return null;
     }
 
-    // 2. Count occurrences
+   
     const styleCounts: Record<string, number> = {};
     const priceRanges: Array<{ min?: number; max?: number }> = [];
     const brandCounts: Record<string, number> = {};
@@ -33,11 +28,11 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
     const categoryRatingCounts: Record<string, number[]> = {};
 
     signals.forEach(signal => {
-      // Count style keywords
+      
       signal.style_keywords?.forEach(style => {
         styleCounts[style] = (styleCounts[style] || 0) + 1;
         
-        // Category-specific styles
+       
         if (signal.intent) {
           if (!categoryStyleCounts[signal.intent]) {
             categoryStyleCounts[signal.intent] = {};
@@ -47,18 +42,18 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
         }
       });
 
-      // Collect price ranges
+      
       signal.price_mentions?.forEach(mention => {
         const range = parsePriceMention(mention);
         if (range) priceRanges.push(range);
       });
 
-      // Count brands
+      
       signal.brand_mentions?.forEach(brand => {
         brandCounts[brand] = (brandCounts[brand] || 0) + 1;
       });
 
-      // Collect ratings by category
+      
       if (signal.intent && signal.rating_mentions) {
         signal.rating_mentions.forEach(rating => {
           const ratingNum = parseRating(rating);
@@ -72,7 +67,7 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
       }
     });
 
-    // 3. Calculate confidence scores (30% threshold)
+   
     const totalSignals = signals.length;
     const threshold = totalSignals * 0.3;
 
@@ -82,14 +77,14 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
         style,
         confidence: count / totalSignals,
       }))
-      .sort((a, b) => b.confidence - a.confidence); // Sort by confidence
+      .sort((a, b) => b.confidence - a.confidence); 
 
     const styleKeywords = styleConfidences.map(s => s.style);
 
-    // 4. Calculate price range (median approach)
+    
     const priceRange = calculatePriceRange(priceRanges);
 
-    // 5. Top brands (appear in >20% of signals)
+    
     const brandThreshold = totalSignals * 0.2;
     const topBrands = Object.entries(brandCounts)
       .filter(([_, count]) => count >= brandThreshold)
@@ -97,7 +92,7 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
       .map(([brand]) => brand)
       .slice(0, 10); // Top 10
 
-    // 6. Build category-specific preferences
+    
     const categoryPreferences: Record<string, any> = {};
     
     for (const [category, styleCounts] of Object.entries(categoryStyleCounts)) {
@@ -119,10 +114,10 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
       }
     }
 
-    // 7. Calculate overall confidence (capped at 1.0)
+    
     const overallConfidence = Math.min(totalSignals / 20, 1.0);
 
-    // 8. Update user preferences
+    
     const preferences: Partial<UserPreferences> = {
       style_keywords: styleKeywords,
       price_range_min: priceRange?.min,
@@ -149,11 +144,9 @@ export async function aggregateUserPreferences(userId: string): Promise<UserPref
   }
 }
 
-/**
- * Parse price mention into range
- */
+
 function parsePriceMention(mention: string): { min?: number; max?: number } | null {
-  // "$200-$500" -> {min: 200, max: 500}
+ 
   const rangeMatch = mention.match(/\$?(\d+)\s*-\s*\$?(\d+)/);
   if (rangeMatch) {
     return {
@@ -162,13 +155,13 @@ function parsePriceMention(mention: string): { min?: number; max?: number } | nu
     };
   }
 
-  // "under $100" -> {max: 100}
+  
   const underMatch = mention.match(/under\s*\$?(\d+)/i);
   if (underMatch) {
     return { max: parseInt(underMatch[1]) };
   }
 
-  // "above $500" -> {min: 500}
+ 
   const aboveMatch = mention.match(/above\s*\$?(\d+)/i);
   if (aboveMatch) {
     return { min: parseInt(aboveMatch[1]) };
@@ -177,17 +170,13 @@ function parsePriceMention(mention: string): { min?: number; max?: number } | nu
   return null;
 }
 
-/**
- * Parse rating mention
- */
+
 function parseRating(rating: string): number | null {
   const match = rating.match(/(\d+)/);
   return match ? parseFloat(match[1]) : null;
 }
 
-/**
- * Calculate aggregated price range from multiple ranges
- */
+
 function calculatePriceRange(
   ranges: Array<{ min?: number; max?: number }>
 ): { min?: number; max?: number } | null {

@@ -1,6 +1,4 @@
-/**
- * ✅ Follow-up Scorer: Multi-factor scoring system
- */
+
 
 export interface ScoringFactors {
   embeddingScore: number;
@@ -10,9 +8,7 @@ export interface ScoringFactors {
   gapMatch: number;
 }
 
-/**
- * Score a follow-up suggestion using multiple factors
- */
+
 export function scoreFollowup(factors: ScoringFactors): number {
   const {
     embeddingScore,
@@ -22,13 +18,13 @@ export function scoreFollowup(factors: ScoringFactors): number {
     gapMatch,
   } = factors;
 
-  // Weighted combination (Perplexity-style)
+  
   const weights = {
-    embedding: 0.35,    // Semantic relevance
-    behavior: 0.20,     // User behavior pattern
-    stage: 0.15,        // Intent stage alignment
-    novelty: 0.15,      // Novelty (avoid repetition)
-    gap: 0.15,          // Fills answer gaps
+    embedding: 0.35,    
+    behavior: 0.20,     
+    stage: 0.15,        
+    novelty: 0.15,      
+    gap: 0.15,          
   };
 
   return (

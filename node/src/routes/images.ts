@@ -1,19 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Dedicated Image Search Endpoint
- * POST /api/images
- * 
- * Request body:
- * {
- *   query: string,
- *   conversationHistory?: any[],
- *   maxResults?: number (default: 20)
- * }
- * 
- * Response:
- * {
- *   images: Array<{url, title, source}>
- * }
- */
+
 import express from "express";
 import { Request, Response } from "express";
 import { searchImages } from "../services/searchService";

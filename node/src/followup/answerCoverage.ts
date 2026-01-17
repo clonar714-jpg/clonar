@@ -1,6 +1,4 @@
-/**
- * ✅ Answer Coverage Detection: Detect what dimensions the answer already covers
- */
+
 
 export interface AnswerCoverage {
   comparison: boolean;
@@ -9,9 +7,7 @@ export interface AnswerCoverage {
   useCase: boolean;
 }
 
-/**
- * Detect what the answer already covers to avoid redundant follow-ups
- */
+
 export function detectAnswerCoverage(answer: string): AnswerCoverage {
   const lower = answer.toLowerCase();
   

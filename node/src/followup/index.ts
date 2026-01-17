@@ -1,13 +1,4 @@
-/**
- * ✅ PERPLEXITY-STYLE FOLLOW-UP SUGGESTION ENGINE
- * 
- * Features:
- * - Domain-specific templates (shopping, hotels, restaurants, etc.)
- * - Slot extraction (brand, category, price, city)
- * - Answer coverage detection (avoids redundant follow-ups)
- * - Multi-factor scoring (behavior, intent stage, gap matching)
- * - Embedding-based reranking
- */
+
 
 import { analyzeCardNeed, type SlotExtraction } from './cardAnalyzer';
 import { TEMPLATES } from './templates';
@@ -20,7 +11,7 @@ import { rerankFollowUps } from './rerankFollowups';
 import { extractAnswerGaps } from './answerGapExtractor';
 import { generateSmartFollowUps } from './smartFollowups';
 
-// Session-based behavior state storage
+
 const behaviorStore = new Map<string, any>();
 
 function getSessionId(sessionId?: string): string {
@@ -58,9 +49,7 @@ export interface FollowUpResult {
   slots: SlotExtraction;
 }
 
-/**
- * Main function to generate Perplexity-style follow-up suggestions
- */
+
 export async function getFollowUpSuggestions(params: FollowUpParams): Promise<FollowUpResult> {
   const {
     query,
@@ -77,7 +66,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
   const sessionId = getSessionId(providedSessionId);
   const prevState = getBehaviorState(sessionId);
 
-  // Step 1: Extract slots from query
+  
   const extracted = analyzeCardNeed(query);
   const parentSlots = parentQuery ? analyzeCardNeed(parentQuery) : {
     brand: null,
@@ -86,7 +75,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     city: null,
   };
 
-  // Merge slots: new query slots take priority, fallback to parent, then routing
+  
   const slots: SlotExtraction = {
     brand: extracted.brand ?? parentSlots.brand ?? routingSlots?.brand ?? null,
     category: extracted.category ?? parentSlots.category ?? routingSlots?.category ?? null,
@@ -94,7 +83,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     city: extracted.city ?? parentSlots.city ?? routingSlots?.city ?? null,
   };
 
-  // Step 2: Get domain-specific templates
+  
   const domain = intent === 'shopping' ? 'shopping'
     : intent === 'hotel' || intent === 'hotels' ? 'hotels'
     : intent === 'restaurants' ? 'restaurants'
@@ -105,10 +94,10 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
 
   const templates = TEMPLATES[domain] || TEMPLATES.general;
 
-  // Step 3: Extract attributes from answer
+  
   const attrs = extractAttributes(answer);
 
-  // Step 4: Fill slots in templates
+  
   const slotValues = {
     brand: slots.brand,
     category: slots.category,
@@ -122,7 +111,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     .map((t) => fillSlots(t, slotValues))
     .filter((t) => t.length > 0);
 
-  // Step 5: Add attribute-based follow-ups
+  
   const combined: string[] = [...slotFilled];
   
   if (attrs.purpose) {
@@ -138,14 +127,14 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     combined.push('Is there a better budget option?');
   }
 
-  // Step 6: Get follow-up history and infer intent stage
+  
   const recentFollowups = prevState.followUpHistory || [];
   const intentStage = inferIntentStage(query, recentFollowups);
 
-  // Step 7: Detect answer coverage (what was already answered)
+  
   const answerCoverage = detectAnswerCoverage(answer);
 
-  // Step 8: Extract reasoning gaps from answer
+  
   const answerGaps = await extractAnswerGaps(query, answer, cards);
   console.log(`🧠 Answer gaps extracted: ${answerGaps.potentialFollowUps.length} follow-ups from reasoning gaps`);
 
@@ -153,7 +142,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     combined.push(...answerGaps.potentialFollowUps);
   }
 
-  // Step 9: Filter out redundant follow-ups
+  
   const filteredCombined = combined.filter((followup) => {
     const lower = followup.toLowerCase();
     
@@ -172,11 +161,11 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     return true;
   });
 
-  // Step 10: Embedding-based reranking
+  
   const answerSummary = answer.length > 200 ? answer.substring(0, 200) + '...' : answer;
   const rankedWithScores = await rerankFollowUps(query, filteredCombined, 5, answerSummary, recentFollowups);
 
-  // Step 11: Fallback to smart follow-ups if needed
+  
   let allCandidates = rankedWithScores.map((r) => ({
     candidate: r.candidate,
     embeddingScore: r.score,
@@ -205,13 +194,13 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     allCandidates = [...allCandidates, ...newSmartFollowUps].slice(0, 5);
   }
 
-  // Step 12: Multi-factor scoring
+  
   const userGoal = prevState.userGoal || null;
   const scoredFollowups = allCandidates.map((item) => {
     const followup = item.candidate;
     const lower = followup.toLowerCase();
 
-    // Behavior score
+    
     let behaviorScore = 0.5;
     if (userGoal === 'comparison' && /compare|vs|versus/i.test(lower)) {
       behaviorScore = 1.0;
@@ -223,7 +212,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
       behaviorScore = 1.0;
     }
 
-    // Stage match
+    
     let stageMatch = 0.5;
     if (intentStage === 'compare' && /compare|vs|versus|difference/i.test(lower)) {
       stageMatch = 1.0;
@@ -235,7 +224,7 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
       stageMatch = 1.0;
     }
 
-    // Gap match
+    
     let gapMatch = 0.0;
     if (!answerCoverage.comparison && /compare|vs|versus|alternative/i.test(lower)) {
       gapMatch = 1.0;
@@ -247,14 +236,14 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
       gapMatch = 1.0;
     }
 
-    // Novelty score (simple implementation)
+    
     const novelty = recentFollowups.length > 0
       ? recentFollowups.some((f: string) => f.toLowerCase() === followup.toLowerCase()) ? 0.3 : 0.8
       : 0.8;
 
     const adjustedNovelty = recentFollowups.length >= 3 ? novelty * 1.5 : novelty;
 
-    // Final score
+    
     const finalScore = scoreFollowup({
       embeddingScore: item.embeddingScore,
       behaviorScore,
@@ -269,13 +258,13 @@ export async function getFollowUpSuggestions(params: FollowUpParams): Promise<Fo
     };
   });
 
-  // Step 13: Sort and return top 3
+  
   let finalFollowUps = scoredFollowups
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)
     .map((item) => item.candidate);
 
-  // Step 14: Update behavior state
+  
   const behaviorState = {
     ...prevState,
     followUpHistory: [...recentFollowups, query].slice(-10), // Keep last 10

@@ -1,7 +1,4 @@
-/**
- * ✅ OpenAIProvider: OpenAI implementation of BaseModelProvider
- * Provides OpenAI LLM and embedding models
- */
+
 
 import BaseModelProvider from '../base/provider';
 import { ModelList, ProviderMetadata } from '../types';
@@ -10,20 +7,14 @@ import OpenAILLM from '../llms/openai';
 import OpenAIEmbedding from '../embeddings/openai';
 import z from 'zod';
 
-/**
- * OpenAI provider configuration
- */
+
 export interface OpenAIProviderConfig {
   apiKey: string;
 }
 
-/**
- * OpenAI provider implementation
- */
+
 class OpenAIProvider extends BaseModelProvider<OpenAIProviderConfig> {
-  /**
-   * Get default models
-   */
+ 
   async getDefaultModels(): Promise<ModelList> {
     return {
       chat: [
@@ -49,16 +40,12 @@ class OpenAIProvider extends BaseModelProvider<OpenAIProviderConfig> {
     };
   }
 
-  /**
-   * Get full model list (same as defaults for OpenAI)
-   */
+  
   async getModelList(): Promise<ModelList> {
     return this.getDefaultModels();
   }
 
-  /**
-   * Load a chat model
-   */
+ 
   async loadChatModel(modelName: string): Promise<OpenAILLM> {
     return new OpenAILLM({
       model: modelName,
@@ -66,9 +53,7 @@ class OpenAIProvider extends BaseModelProvider<OpenAIProviderConfig> {
     });
   }
 
-  /**
-   * Load an embedding model
-   */
+  
   async loadEmbeddingModel(modelName: string): Promise<OpenAIEmbedding> {
     return new OpenAIEmbedding({
       model: modelName,
@@ -76,9 +61,7 @@ class OpenAIProvider extends BaseModelProvider<OpenAIProviderConfig> {
     });
   }
 
-  /**
-   * Get UI configuration fields
-   */
+ 
   static getProviderConfigFields(): UIConfigField[] {
     return [
       {
@@ -94,9 +77,7 @@ class OpenAIProvider extends BaseModelProvider<OpenAIProviderConfig> {
     ];
   }
 
-  /**
-   * Get provider metadata
-   */
+  
   static getProviderMetadata(): ProviderMetadata {
     return {
       key: 'openai',
@@ -104,9 +85,7 @@ class OpenAIProvider extends BaseModelProvider<OpenAIProviderConfig> {
     };
   }
 
-  /**
-   * Parse and validate configuration
-   */
+  
   static parseAndValidate(raw: any): OpenAIProviderConfig {
     const schema = z.object({
       apiKey: z.string().min(1, 'API key is required'),

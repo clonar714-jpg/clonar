@@ -9,7 +9,7 @@ import { ApiResponse, AuthenticatedRequest } from '@/types';
 
 const router = express.Router();
 
-// Upload single image - improved debugging version
+
 router.post("/single", skipAuthInDev(), (req, res, next) => {
   console.log("📤 Upload request received");
 
@@ -44,7 +44,7 @@ router.post("/single", skipAuthInDev(), (req, res, next) => {
   });
 });
 
-// Upload multiple images
+
 router.post('/multiple', skipAuthInDev(), uploadMultiple, processImage, handleUploadError, async (req: AuthenticatedRequest, res: express.Response) => {
   try {
     if (!req.files || (req.files as Express.Multer.File[]).length === 0) {
@@ -84,7 +84,7 @@ router.post('/multiple', skipAuthInDev(), uploadMultiple, processImage, handleUp
   }
 });
 
-// Upload to Supabase Storage (for production)
+
 router.post('/supabase', skipAuthInDev(), uploadSingle, processImage, handleUploadError, async (req: AuthenticatedRequest, res: express.Response) => {
   try {
     if (!req.file) {
@@ -95,7 +95,7 @@ router.post('/supabase', skipAuthInDev(), uploadSingle, processImage, handleUplo
       return res.status(400).json(response);
     }
 
-    // Upload to Supabase Storage
+    
     const fileBuffer = require('fs').readFileSync(req.file.path);
     const fileName = `${req.user!.id}/${req.file.filename}`;
     
@@ -110,12 +110,12 @@ router.post('/supabase', skipAuthInDev(), uploadSingle, processImage, handleUplo
       throw error;
     }
 
-    // Get public URL
+    
     const { data: urlData } = db.storage()
       .from('images')
       .getPublicUrl(fileName);
 
-    // Clean up local file
+    
     require('fs').unlinkSync(req.file.path);
 
     const response: ApiResponse = {
@@ -142,13 +142,13 @@ router.post('/supabase', skipAuthInDev(), uploadSingle, processImage, handleUplo
   }
 });
 
-// Delete uploaded file
+
 router.delete('/:filename', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
     const { filename } = req.params;
     const filePath = path.join(process.env.UPLOAD_PATH || './uploads', filename);
 
-    // Check if file exists
+   
     if (!require('fs').existsSync(filePath)) {
       const response: ApiResponse = {
         success: false,
@@ -157,7 +157,7 @@ router.delete('/:filename', skipAuthInDev(), async (req: AuthenticatedRequest, r
       return res.status(404).json(response);
     }
 
-    // Delete file
+   
     require('fs').unlinkSync(filePath);
 
     const response: ApiResponse = {
@@ -176,13 +176,13 @@ router.delete('/:filename', skipAuthInDev(), async (req: AuthenticatedRequest, r
   }
 });
 
-// Get file info
+
 router.get('/:filename', skipAuthInDev(), async (req, res) => {
   try {
     const { filename } = req.params;
     const filePath = path.join(process.env.UPLOAD_PATH || './uploads', filename);
 
-    // Check if file exists
+    
     if (!require('fs').existsSync(filePath)) {
       const response: ApiResponse = {
         success: false,

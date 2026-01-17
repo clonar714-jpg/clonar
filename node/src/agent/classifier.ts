@@ -1,7 +1,4 @@
-/**
- * ✅ Structured Classifier using Zod schema
- * Matches the provided pattern with structured output
- */
+
 
 import z from 'zod';
 import { ClassifierInput } from './types';
@@ -66,7 +63,7 @@ export const classify = async (input: ClassifierInput) => {
     schema,
   });
 
-  // GenerateObjectOutput returns { object: T, additionalInfo?: ... }
+  
   return output.object;
 };
 

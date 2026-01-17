@@ -1,13 +1,10 @@
-// src/memory/RedisSessionStore.ts
+
 
 import Redis from 'ioredis';
 import { SessionStore } from "./SessionStore";
 import { SessionState } from "./sessionMemory";
 
-/**
- * Redis-backed session store
- * Persistent across server restarts, supports scaling
- */
+
 export class RedisSessionStore implements SessionStore {
   private client: Redis | null = null;
   private isConnected: boolean = false;
@@ -15,19 +12,17 @@ export class RedisSessionStore implements SessionStore {
   private readonly keyPrefix: string = 'session:';
 
   constructor(ttlMinutes: number = 30, redisUrl?: string) {
-    this.ttl = ttlMinutes * 60; // Redis TTL is in seconds
+    this.ttl = ttlMinutes * 60; 
     this.initializeRedis(redisUrl);
   }
 
-  /**
-   * Initialize Redis client with graceful fallback
-   */
+  
   private async initializeRedis(redisUrl?: string): Promise<void> {
     try {
       const url = redisUrl || process.env.REDIS_URL || 'redis://localhost:6379';
       this.client = new Redis(url, {
         retryStrategy: (times) => {
-          // Exponential backoff, max 30 seconds
+          
           const delay = Math.min(times * 50, 30000);
           return delay;
         },
@@ -56,7 +51,7 @@ export class RedisSessionStore implements SessionStore {
         this.isConnected = false;
       });
 
-      // Attempt connection
+      
       await this.client.connect();
     } catch (err: any) {
       console.warn('⚠️ RedisSessionStore: Failed to connect, will fall back to in-memory store:', err.message);
@@ -82,7 +77,7 @@ export class RedisSessionStore implements SessionStore {
         return null;
       }
 
-      // Refresh TTL on access
+      
       await this.refreshTTL(sessionId);
 
       const state = JSON.parse(data) as SessionState;
@@ -102,7 +97,7 @@ export class RedisSessionStore implements SessionStore {
       const key = this.getKey(sessionId);
       const data = JSON.stringify(state);
       
-      // Set with TTL
+      
       await this.client!.setex(key, this.ttl, data);
 
       console.log(`💾 RedisSessionStore: Saved session state for ${sessionId}:`, {
@@ -119,7 +114,7 @@ export class RedisSessionStore implements SessionStore {
 
   async delete(sessionId: string): Promise<void> {
     if (!this.isAvailable()) {
-      return; // Silently fail if Redis unavailable
+      return; 
     }
 
     try {
@@ -148,9 +143,7 @@ export class RedisSessionStore implements SessionStore {
     return this.isConnected && this.client !== null;
   }
 
-  /**
-   * Gracefully close Redis connection
-   */
+  
   async destroy(): Promise<void> {
     if (this.client) {
       await this.client.quit();

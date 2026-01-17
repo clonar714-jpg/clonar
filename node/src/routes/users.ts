@@ -7,7 +7,7 @@ import { ApiResponse, AuthenticatedRequest } from '@/types';
 
 const router = express.Router();
 
-// Validation schemas
+
 const updateProfileSchema = Joi.object({
   username: Joi.string().alphanum().min(3).max(30).optional(),
   full_name: Joi.string().max(100).optional().allow(''),
@@ -15,7 +15,7 @@ const updateProfileSchema = Joi.object({
   avatar_url: Joi.string().uri().optional().allow(''),
 });
 
-// Get user profile by ID
+
 router.get('/:id', skipAuthInDev(), async (req, res) => {
   try {
     const { id } = req.params;
@@ -49,7 +49,7 @@ router.get('/:id', skipAuthInDev(), async (req, res) => {
   }
 });
 
-// Update user profile
+
 router.put('/profile', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
     const { error, value } = updateProfileSchema.validate(req.body);
@@ -62,7 +62,7 @@ router.put('/profile', skipAuthInDev(), async (req: AuthenticatedRequest, res) =
       return res.status(400).json(response);
     }
 
-    // Check if username is already taken (if being updated)
+   
     if (value.username) {
       const { data: existingUser, error: checkError } = await db.users()
         .select('id')
@@ -129,7 +129,7 @@ router.get('/:id/personas', skipAuthInDev(), async (req, res) => {
         )
       `)
       .eq('user_id', id)
-      .eq('is_secret', false) // Only show public personas
+      .eq('is_secret', false) 
       .order('created_at', { ascending: false })
       .range(offset, offset + Number(limit) - 1);
 
@@ -161,7 +161,7 @@ router.get('/:id/personas', skipAuthInDev(), async (req, res) => {
   }
 });
 
-// Get user's collages
+
 router.get('/:id/collages', skipAuthInDev(), async (req, res) => {
   try {
     const { id } = req.params;
@@ -183,7 +183,7 @@ router.get('/:id/collages', skipAuthInDev(), async (req, res) => {
         )
       `)
       .eq('user_id', id)
-      .eq('is_published', true) // Only show published collages
+      .eq('is_published', true) 
       .order('created_at', { ascending: false })
       .range(offset, offset + Number(limit) - 1);
 
@@ -215,12 +215,12 @@ router.get('/:id/collages', skipAuthInDev(), async (req, res) => {
   }
 });
 
-// Get user's private content (only for the user themselves)
+
 router.get('/:id/private', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
 
-    // Check if user is accessing their own private content
+   
     if (req.user!.id !== id) {
       const response: ApiResponse = {
         success: false,
@@ -232,7 +232,7 @@ router.get('/:id/private', skipAuthInDev(), async (req: AuthenticatedRequest, re
     const { page = 1, limit = 20 } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
 
-    // Get private personas
+   
     const { data: privatePersonas, error: personasError } = await db.personas()
       .select(`
         *,
@@ -249,7 +249,7 @@ router.get('/:id/private', skipAuthInDev(), async (req: AuthenticatedRequest, re
       .eq('is_secret', true)
       .order('created_at', { ascending: false });
 
-    // Get unpublished collages
+    
     const { data: privateCollages, error: collagesError } = await db.collages()
       .select(`
         *,

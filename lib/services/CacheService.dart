@@ -2,147 +2,40 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
+import 'cache_expiry_strategy.dart';
 
-/// Perplexity-style persistent caching service
-/// Features:
-/// - Disk persistence (survives app restarts)
-/// - LRU eviction (removes least recently used entries)
-/// - Size limits (prevents cache from growing too large)
-/// - Smart cache keys (query + context hash)
-/// - Cache metadata (timestamp, size, access count)
+
 class CacheService {
   static const String _cachePrefix = 'api_cache_';
   static const String _metadataKey = 'cache_metadata';
-  static const int _maxCacheSize = 50; // Maximum number of cached responses
-  static const int _maxCacheSizeBytes = 10 * 1024 * 1024; // 10MB max cache size
-  static const Duration _defaultExpiry = Duration(days: 7); // 7 days default expiry
+  static const int _maxCacheSize = 50; 
+  static const int _maxCacheSizeBytes = 10 * 1024 * 1024; 
+  static const Duration _defaultExpiry = Duration(days: 7); 
   
-  /// Get smart expiry based on query type
-  /// Shopping queries need shorter expiry (products change frequently)
-  /// Hotel queries can have longer expiry (data changes slowly)
+  
   static Duration getSmartExpiry(String query) {
-    final lower = query.toLowerCase();
-    
-    // NO CACHE: Stock/availability queries (changes too fast)
-    // BUT: "places available" or "attractions available" should still be cached (different context)
-    if ((lower.contains('in stock') || 
-         lower.contains('stock status')) &&
-        !lower.contains('place') &&
-        !lower.contains('attraction')) {
-      return Duration.zero; // No cache
+    return CacheExpiryStrategy.getSmartExpiry(query);
   }
   
-    // NO CACHE: Real-time availability queries (but not for places)
-    if (lower.contains('available now') && 
-        !lower.contains('place') &&
-        !lower.contains('attraction')) {
-      return Duration.zero; // No cache
-    }
-    
-    // VERY SHORT CACHE (15 min): Price-sensitive queries
-    if (lower.contains('under') || 
-        lower.contains('cheap') ||
-        lower.contains('sale') ||
-        lower.contains('discount') ||
-        lower.contains('price') ||
-        lower.contains('cost') ||
-        lower.contains('affordable')) {
-      return Duration(minutes: 15);
-    }
-    
-    // SHORT CACHE (30 min): General shopping/product searches
-    if (lower.contains('buy') ||
-        lower.contains('shop') ||
-        lower.contains('product') ||
-        lower.contains('shopping')) {
-      return Duration(minutes: 30);
-    }
-    
-    // MEDIUM CACHE (1 hour): General product searches (best, top, review)
-    if (lower.contains('best') || 
-        lower.contains('top') ||
-        lower.contains('review') ||
-        lower.contains('compare')) {
-      return Duration(hours: 1);
-    }
-    
-    // LONG CACHE (2 hours): Brand/model searches (catalog changes slowly)
-    if (lower.contains('nike') || 
-        lower.contains('adidas') ||
-        lower.contains('iphone') ||
-        lower.contains('samsung') ||
-        lower.contains('gucci') ||
-        lower.contains('puma')) {
-      return Duration(hours: 2);
-    }
-    
-    // VERY LONG CACHE (7 days): Hotels, restaurants, places (data changes slowly)
-    // Places queries: Tourist attractions, landmarks, things to do, etc. change very slowly
-    if (lower.contains('hotel') ||
-        lower.contains('resort') ||
-        lower.contains('restaurant') ||
-        lower.contains('cafe') ||
-        lower.contains('dining') ||
-        // Places/attractions queries
-        lower.contains('places to visit') ||
-        lower.contains('place to visit') ||
-        lower.contains('things to do') ||
-        lower.contains('attraction') ||
-        lower.contains('attractions') ||
-        lower.contains('tourist spot') ||
-        lower.contains('tourist attraction') ||
-        lower.contains('landmark') ||
-        lower.contains('landmarks') ||
-        lower.contains('sightseeing') ||
-        lower.contains('must visit') ||
-        lower.contains('city to visit') ||
-        lower.contains('heritage site') ||
-        lower.contains('cultural site') ||
-        lower.contains('cultural sites') ||
-        // Specific place types (these change very slowly)
-        lower.contains('temple') ||
-        lower.contains('temples') ||
-        lower.contains('park') ||
-        lower.contains('parks') ||
-        lower.contains('beach') ||
-        lower.contains('beaches') ||
-        lower.contains('island') ||
-        lower.contains('islands') ||
-        lower.contains('mountain') ||
-        lower.contains('mountains') ||
-        lower.contains('waterfall') ||
-        lower.contains('waterfalls') ||
-        lower.contains('museum') ||
-        lower.contains('museums') ||
-        lower.contains('monument') ||
-        lower.contains('monuments')) {
-      return Duration(days: 7);
-    }
-    
-    // DEFAULT: 30 minutes (safe for most queries)
-    return Duration(minutes: 30);
-            }
   
-  // In-memory metadata for fast access
   static Map<String, CacheMetadata>? _metadataCache;
   
-  /// Initialize cache service (load metadata)
+
   static Future<void> initialize() async {
     await _loadMetadata();
   }
   
-  /// Generate smart cache key from query and context
-  /// Perplexity strategy: Include query + conversation history hash
+  
   static String generateCacheKey(
     String query, {
     List<Map<String, dynamic>>? conversationHistory,
     Map<String, dynamic>? context,
   }) {
-    // Create hash from query + history + context
+    
     final queryLower = query.trim().toLowerCase();
     final historyHash = conversationHistory?.length ?? 0;
     
-    // Include context in hash if provided
+   
     String contextHash = '';
     if (context != null) {
       final contextStr = jsonEncode({
@@ -153,34 +46,32 @@ class CacheService {
       contextHash = _hashString(contextStr);
     }
     
-    // Create composite key
+    
     final keyString = '${queryLower}_h${historyHash}_c$contextHash';
     return _hashString(keyString);
   }
   
-  /// Hash string to create consistent cache key
+ 
   static String _hashString(String input) {
     final bytes = utf8.encode(input);
     final digest = sha256.convert(bytes);
     return digest.toString().substring(0, 16); // Use first 16 chars
   }
   
-  /// Get cached response
-  /// Returns null if cache miss or expired
+ 
   static Future<Map<String, dynamic>?> get(String cacheKey) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-    
-      // Check if key exists
+     // Check if key exists
       if (!prefs.containsKey('$_cachePrefix$cacheKey')) {
         return null;
       }
       
-      // Load metadata
+      
       await _loadMetadata();
       final metadata = _metadataCache?[cacheKey];
       
-      // Check expiry
+      
       if (metadata != null) {
         final now = DateTime.now();
         final age = now.difference(metadata.timestamp);
@@ -228,17 +119,15 @@ class CacheService {
     }
   }
   
-  /// Store response in cache
-  /// Automatically handles LRU eviction if cache is full
-  /// If expiry not provided, uses smart expiry based on query content
+  
   static Future<void> set(
     String cacheKey,
     Map<String, dynamic> data, {
     Duration? expiry,
-    String? query, // Optional: query string for smart expiry
+    String? query,
   }) async {
     try {
-      // If expiry is zero (no cache), don't store
+      
       final finalExpiry = expiry ?? (query != null ? getSmartExpiry(query) : _defaultExpiry);
       if (finalExpiry == Duration.zero) {
         if (kDebugMode) {
@@ -312,13 +201,12 @@ class CacheService {
     }
   }
   
-  /// Enforce cache size limits using LRU eviction
-  /// Perplexity strategy: Remove least recently used entries first
+  
   static Future<void> _enforceSizeLimits(int newEntrySize) async {
     await _loadMetadata();
     if (_metadataCache == null || _metadataCache!.isEmpty) return;
     
-    // Calculate current cache size
+    
     int totalSize = _metadataCache!.values.fold(0, (sum, meta) => sum + meta.size);
     final entries = _metadataCache!.length;
     

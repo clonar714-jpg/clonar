@@ -1,6 +1,4 @@
-/**
- * ✅ Domain-specific follow-up templates (Perplexity-style)
- */
+
 
 export const TEMPLATES: Record<string, string[]> = {
   shopping: [

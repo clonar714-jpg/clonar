@@ -1,8 +1,4 @@
-// ======================================================================
-// PERPLEXITY ANSWER WIDGET - Simple, clean answer display
-// ======================================================================
-// Displays Perplexity-style answers with sections and sources
-// No cards, no complexity - just answer + sections + sources
+
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -11,7 +7,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:async';
 import '../theme/AppColors.dart';
-import '../widgets/StreamingTextWidget.dart';
 import '../models/query_session_model.dart';
 import '../providers/follow_up_controller_provider.dart';
 import '../providers/session_phase_provider.dart';
@@ -28,12 +23,9 @@ import '../widgets/HotelMapView.dart';
 import '../screens/FullScreenMapScreen.dart';
 import '../models/Product.dart';
 
-/// Simple Perplexity-style answer widget
-/// Displays: Answer text (with sections) + Sources (clickable links)
-/// ✅ NO HEADERS - Just answer content directly
-/// ✅ PERPLEXITY-STYLE: Uses phase to control WHAT is shown, stream for text
+
 class PerplexityAnswerWidget extends ConsumerStatefulWidget {
-  final String sessionId; // ✅ PERPLEXITY-STYLE: Only store sessionId, read session lazily
+  final String sessionId; 
 
   const PerplexityAnswerWidget({
     Key? key,
@@ -45,37 +37,29 @@ class PerplexityAnswerWidget extends ConsumerStatefulWidget {
 }
 
 class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget> {
-  int _selectedTagIndex = 0; // 0: Clonar, 1: Sources, 2: Media (Images + Videos)
+  int _selectedTagIndex = 0; 
 
   @override
   Widget build(BuildContext context) {
     debugPrint('🧱 PerplexityAnswerWidget BUILD');
     
-    // ✅ PERPLEXITY-STYLE: Watch phase only (prevents rebuilds on text changes)
+   
     final phase = ref.watch(sessionPhaseProvider(widget.sessionId));
     
-    // ✅ PERPLEXITY-STYLE: Show loading UI only during searching phase
+    
     if (phase == QueryPhase.searching) {
       return _buildLoadingStatus();
     }
     
-    // ✅ PERPLEXITY-STYLE: Read session lazily only when phase == done
+   
     QuerySession? session;
     if (phase == QueryPhase.done) {
       session = ref.read(sessionByIdProvider(widget.sessionId));
     }
     
-    // ✅ PERPLEXITY-STYLE: Answer widget mounted once when phase >= answering
-    // It stays mounted and never rebuilds during streaming
-    // ✅ FIX #2: Filter out "How I approached this" from main sections (it's metadata, not primary content)
+    
     final allSections = session?.sections;
-    // ✅ NOTE: Filtered sections reserved for future use (other non-explanation sections)
-    // final sections = allSections?.where((s) {
-    //   final title = s['title']?.toString().toLowerCase() ?? '';
-    //   return !title.contains('how i approached') && 
-    //          !title.contains('how this answer') &&
-    //          s['kind']?.toString() != 'explanation';
-    // }).toList();
+    
     final approachSection = allSections?.firstWhere(
       (s) {
         final title = s['title']?.toString().toLowerCase() ?? '';
@@ -88,12 +72,12 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     final sources = session?.sources ?? <Map<String, dynamic>>[];
     final images = session != null ? _getAllImages(session) : <String>[];
 
-    // ✅ NEW: Tag-based interface with 3 tags: Clonar, Sources, Images (styled like ShoppingResultsScreen)
+    
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // ✅ Tag-style chips (no icons, styled like ShoppingResultsScreen)
+        
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Wrap(
@@ -102,8 +86,8 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
             children: [
               _buildTag('Clonar', 0),
               _buildTag('Sources', 1),
-              _buildTag('Media', 2), // ✅ RENAMED: Images → Media (includes images + videos)
-              // ✅ Dynamic tags: Shopping/Hotels (only when cards exist, only when done)
+              _buildTag('Media', 2), 
+              
               if (phase == QueryPhase.done && session != null && _hasProductCards(session)) 
                 _buildNavigationTag('Shopping', context, session),
               if (phase == QueryPhase.done && session != null && _hasHotelCards(session)) 
@@ -113,46 +97,49 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
         ),
         
         // Content based on selected tag
-        Expanded(
+        // ✅ FIX: Remove Expanded/ConstrainedBox - let content size naturally like ChatGPT/Perplexity
+        // Use IntrinsicHeight so IndexedStack sizes to the currently visible child
+        IntrinsicHeight(
           child: IndexedStack(
             index: _selectedTagIndex,
             children: [
               // Tag 0: Clonar - Answer content
-              SingleChildScrollView(
+              // ✅ FIX: Remove SingleChildScrollView - parent CustomScrollView handles scrolling
+              // Content should size naturally without scroll constraints
+              Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    // ✅ ENHANCEMENT 3: Research Progress Indicator (during streaming)
+                    
                     if (phase == QueryPhase.answering && session?.researchStep != null) ...[
                       _buildResearchProgress(session!),
                       const SizedBox(height: 24),
                     ],
-                    // ✅ ENHANCEMENT 1: Reasoning Display (collapsible)
-                    // ✅ FIX: Show reasoning immediately when available (even before answer starts)
-                    // Reasoning is emitted during research phase, which happens BEFORE answer generation
+                    
                     if (session?.reasoningSteps.isNotEmpty ?? false) ...[
                       _buildReasoningSection(session!),
                       const SizedBox(height: 24),
                     ],
-                    // ✅ ENHANCEMENT 2: Real-Time Sources (during streaming)
+                    
                     if (phase == QueryPhase.answering && (session?.sources.isNotEmpty ?? false)) ...[
                       _buildRealTimeSources(session!),
                       const SizedBox(height: 24),
                     ],
-                    // ✅ PERPLEXITY-STYLE: Answer content FIRST (not explanation)
+                    
                     _buildAnswerContent(phase, session),
-                    // ✅ PERPLEXITY-STYLE: Display map if search returned map data (only when done)
+                    
                     if (phase == QueryPhase.done && session != null && _shouldShowMap(session)) ...[
                       const SizedBox(height: 32),
                       _buildMapSection(context, session),
                     ],
-                    // ✅ PERPLEXITY-STYLE: Display cards if search returned card data (only when done)
+                    
                     if (phase == QueryPhase.done && session != null && _shouldShowCards(session)) ...[
                       const SizedBox(height: 32),
                       _buildCardsSection(context, session),
                     ],
-                    // ✅ PERPLEXITY-STYLE: "How I approached this" comes AFTER answer, sources, cards (collapsed)
+                    
                     if (phase == QueryPhase.done && session != null && approachSection != null && approachSection.isNotEmpty) ...[
                       const SizedBox(height: 24),
                       _buildApproachCard(approachSection),
@@ -163,13 +150,15 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
               ),
               
               // Tag 1: Sources - Numbered sources list
-              SingleChildScrollView(
+              // ✅ FIX: Remove SingleChildScrollView - parent handles scrolling
+              Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: _buildSourcesTab(sources),
               ),
               
               // Tag 2: Images - Image grid
-              SingleChildScrollView(
+              // ✅ FIX: Remove SingleChildScrollView - parent handles scrolling
+              Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 child: _buildImagesTab(images),
               ),
@@ -180,7 +169,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ Build tag-style chip (styled like ShoppingResultsScreen, no icons)
+
   Widget _buildTag(String label, int index) {
     final isSelected = _selectedTagIndex == index;
     return GestureDetector(
@@ -214,12 +203,12 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ Build navigation tag (Shopping/Hotels) - navigates to respective screens
+  
   Widget _buildNavigationTag(String label, BuildContext context, QuerySession session) {
     return GestureDetector(
       onTap: () {
         if (label == 'Shopping') {
-          // Convert product cards to Product models and navigate
+          
           final products = _getProductsFromCards(session);
           if (products.isNotEmpty) {
             Navigator.push(
@@ -264,7 +253,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ Helper: Check if product cards exist
+ 
   bool _hasProductCards(QuerySession session) {
     final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return false;
@@ -272,7 +261,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     return products.isNotEmpty;
   }
   
-  // ✅ Helper: Check if hotel cards exist
+  
   bool _hasHotelCards(QuerySession session) {
     final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return false;
@@ -280,7 +269,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     return hotels.isNotEmpty;
   }
   
-  // ✅ Helper: Convert product cards to Product models
+  
   List<Product> _getProductsFromCards(QuerySession session) {
     final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return [];
@@ -289,22 +278,21 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     return productCards.map((card) => cardToProduct(Map<String, dynamic>.from(card))).toList();
   }
   
-  // ✅ Helper: Get all images from session
+  
   List<String> _getAllImages(QuerySession session) {
     final images = <String>[];
     
-    // Add search images (all domains: web, products, hotels, places, movies)
-    // Note: destinationImages name is legacy - it contains all search images, not just destinations
+
     if (session.destinationImages.isNotEmpty) {
       images.addAll(session.destinationImages);
     }
     
-    // Add allImages if available
+    
     if (session.allImages != null && session.allImages!.isNotEmpty) {
       images.addAll(session.allImages!);
     }
     
-    // Extract images from cards
+   
     final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain != null) {
       // Products
@@ -503,15 +491,12 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
   }
 
   Widget _buildFollowUps(BuildContext context, QuerySession session) {
-    // ✅ PROFESSIONAL: Only show follow-up suggestions section if:
-    // 1. Real follow-ups are available (from backend LLM generation)
-    // 2. Streaming is complete (not still generating answer)
-    // This prevents showing placeholder/fallback follow-ups that will change
+    
     if (session.followUpSuggestions.isEmpty) {
       return const SizedBox.shrink();
     }
     
-    // ✅ Use real follow-ups directly (no fallback heuristics)
+    
     final followUps = session.followUpSuggestions;
     if (followUps.isEmpty) return const SizedBox.shrink();
     
@@ -578,10 +563,9 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
   }
 
   Widget _buildAnswerContent(QueryPhase phase, QuerySession? session) {
-    // ✅ PERPLEXITY-STYLE: Use stream for text during answering phase
-    // Fall back to session.answer when done
+    
     if (phase == QueryPhase.answering) {
-      // ✅ PERPLEXITY-STYLE: Listen to stream for text chunks
+      
       final stream = ref.watch(sessionStreamFamilyProvider(widget.sessionId));
       
       return StreamBuilder<String>(
@@ -593,7 +577,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ✅ Streaming text (updates internally, no parent rebuilds)
+              
               if (streamedText.isNotEmpty) ...[
                 Text(
                   streamedText,
@@ -612,14 +596,14 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
         },
       );
     } else {
-      // ✅ PERPLEXITY-STYLE: Phase done - use final answer from session
+      
       final answerText = session?.answer ?? session?.summary ?? '';
       final sourcesCount = session?.sources.length ?? 0;
       
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ✅ Full answer text
+         
           if (answerText.isNotEmpty) ...[
             Text(
               answerText,
@@ -634,7 +618,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
             const SizedBox(height: 20),
           ],
           
-          // ✅ Sources Indicator (if available) - only show when done
+          
           if (phase == QueryPhase.done && sourcesCount > 0) ...[
             Row(
               children: [
@@ -694,9 +678,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     }
   }
   
-  // ✅ ARCHITECTURE FIX: Check if cards should be displayed
-  // Backend decides WHAT to show via uiDecision, frontend only renders
-  // Backend MUST always send uiDecision - if missing, don't show (bug, not feature)
+  
   bool _shouldShowCards(QuerySession session) {
     if (session.uiDecision == null) return false;
     
@@ -704,9 +686,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     return showCards is bool ? showCards : false;
   }
   
-  // ✅ ARCHITECTURE FIX: Check if map should be shown
-  // Backend decides WHAT to show via uiDecision, frontend only renders
-  // Backend MUST always send uiDecision - if missing, don't show (bug, not feature)
+
   bool _shouldShowMap(QuerySession session) {
     if (session.uiDecision == null) return false;
     
@@ -714,15 +694,15 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     return showMap is bool ? showMap : false;
   }
   
-  // ✅ PERPLEXITY-STYLE: Build map section (styled like ShoppingResultsScreen)
+ 
   Widget _buildMapSection(BuildContext context, QuerySession session) {
     final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return const SizedBox.shrink();
     
-    // Collect all map points from hotels and places
+    
     final mapPoints = <Map<String, dynamic>>[];
     
-    // Hotels
+    
     final hotels = (cardsByDomain['hotels'] as List?)?.whereType<Map>().toList() ?? [];
     for (final hotel in hotels) {
       final location = hotel['location'];
@@ -782,7 +762,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
                 );
               },
             ),
-            // Visual indicator at bottom (styled like ShoppingResultsScreen)
+            
             Positioned(
               bottom: 12,
               left: 0,
@@ -827,7 +807,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ PERPLEXITY-STYLE: Build cards section
+  
   Widget _buildCardsSection(BuildContext context, QuerySession session) {
     final cardsByDomain = session.cardsByDomain;
     if (cardsByDomain == null) return const SizedBox.shrink();
@@ -841,7 +821,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ✅ Section header only if multiple products (Perplexity-style)
+            
             if (products.length > 1) ...[
               const Text(
                 'Products',
@@ -933,7 +913,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ Shopping Product card (Perplexity-style: 2 side-by-side swipeable images, rating+price+retailer on same line, 2 buttons)
+  
   Widget _buildProductCard(BuildContext context, Map<dynamic, dynamic> card) {
     final cardMap = Map<String, dynamic>.from(card);
     final product = cardToProduct(cardMap);
@@ -972,8 +952,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
               ),
               const SizedBox(height: 8),
               
-              // Rating + Reviews + Price + Retailer (all on same line, Perplexity-style)
-              // Format: ★ 4.8 (101) · $225.00 · Dillard's
+              
               Row(
                 children: [
                   if (hasRating) ...[
@@ -1051,7 +1030,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
               
               const SizedBox(height: 12),
               
-              // ✅ 2 Action Buttons (always shown): "Learn more" and "Visit site"
+              
               Row(
                 children: [
                   // Learn more button (opens detail page)
@@ -1178,15 +1157,13 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ Build 2 side-by-side swipeable images (PageView for each)
+  
   Widget _buildSwipeableProductImages(List<String> images) {
-    // Always show exactly 2 images side-by-side
-    // If only 1 image, duplicate it
-    // If 3+ images, show first 2, but make them swipeable to see more
+    
     final image1 = images.isNotEmpty ? images[0] : '';
     final image2 = images.length > 1 ? images[1] : (images.isNotEmpty ? images[0] : '');
     
-    // Prepare image lists for PageView (include all images for swiping)
+    
     final image1List = images.isNotEmpty ? images : [];
     final image2List = images.length > 1 ? images.sublist(1) : (images.isNotEmpty ? images : []);
     
@@ -1582,7 +1559,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
   
-  // ✅ Image helper methods (matching ShoppingResultsScreen)
+  
   Widget _buildImage(String url, {double height = 160}) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
@@ -1698,7 +1675,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
 
-  // ✅ PERPLEXITY-STYLE: Build approach card (collapsed, expandable, AFTER answer)
+  
   Widget _buildApproachCard(Map<String, dynamic> approachSection) {
     final content = approachSection['content']?.toString() ?? '';
     
@@ -1708,7 +1685,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     
     return StatefulBuilder(
       builder: (context, setState) {
-        bool isExpanded = false; // ✅ PERPLEXITY-STYLE: Default collapsed
+        bool isExpanded = false; 
         
         return Container(
           decoration: BoxDecoration(
@@ -1893,7 +1870,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
 
-  // ✅ ENHANCEMENT 2: Build real-time sources section (during streaming)
+  
   Widget _buildRealTimeSources(QuerySession session) {
     final sources = session.sources;
     
@@ -2024,7 +2001,7 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
 
-  // ✅ ENHANCEMENT 3: Build research progress indicator
+  
   Widget _buildResearchProgress(QuerySession session) {
     final step = session.researchStep ?? 0;
     final maxSteps = session.maxResearchSteps ?? 1;
@@ -2112,14 +2089,14 @@ class _PerplexityAnswerWidgetState extends ConsumerState<PerplexityAnswerWidget>
     );
   }
 
-  // ✅ PERPLEXITY-STYLE: Loading status UI (shows before answer chunks arrive)
+  
   Widget _buildLoadingStatus() {
     // Read session lazily for query text
     final session = ref.read(sessionByIdProvider(widget.sessionId));
     final query = session?.query.toLowerCase() ?? '';
     String loadingText = 'Working…';
     
-    // Extract contextual information from query for better UX
+    
     if (query.contains('hotel') || query.contains('hotels')) {
       // Try to extract location
       final locationMatch = RegExp(r'(?:hotels?|hotel)\s+(?:in|near|at|for)\s+([^,]+)').firstMatch(query);

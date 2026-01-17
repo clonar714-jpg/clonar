@@ -1,13 +1,8 @@
-// src/services/fileProcessingService.ts
-// ✅ PERPLEXICA-STYLE: File processing service for user-uploaded files
-// Extracts text from various file formats and chunks them for embedding
+
 
 import fs from 'fs';
 import path from 'path';
 
-/**
- * Extract text content from a file based on its MIME type
- */
 export async function extractTextFromFile(
   filePath: string,
   mimeType: string,
@@ -16,12 +11,12 @@ export async function extractTextFromFile(
   try {
     const ext = path.extname(fileName).toLowerCase();
     
-    // Text files
+    
     if (mimeType.startsWith('text/') || ext === '.txt' || ext === '.md') {
       return fs.readFileSync(filePath, 'utf-8');
     }
     
-    // PDF files
+    
     if (mimeType === 'application/pdf' || ext === '.pdf') {
       try {
         const pdfParse = require('pdf-parse');
@@ -34,7 +29,7 @@ export async function extractTextFromFile(
       }
     }
     
-    // Word documents (.docx)
+    
     if (
       mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
       ext === '.docx'
@@ -49,7 +44,7 @@ export async function extractTextFromFile(
       }
     }
     
-    // Plain text fallback
+    
     try {
       return fs.readFileSync(filePath, 'utf-8');
     } catch (error: any) {
@@ -62,10 +57,7 @@ export async function extractTextFromFile(
   }
 }
 
-/**
- * Chunk text into smaller pieces for embedding
- * Each chunk should be ~500-1000 tokens (roughly 2000-4000 characters)
- */
+
 export function chunkText(text: string, chunkSize: number = 3000, overlap: number = 200): string[] {
   if (!text || text.trim().length === 0) {
     return [];
@@ -77,14 +69,14 @@ export function chunkText(text: string, chunkSize: number = 3000, overlap: numbe
   while (start < text.length) {
     let end = Math.min(start + chunkSize, text.length);
     
-    // Try to break at sentence boundary
+    
     if (end < text.length) {
       const lastPeriod = text.lastIndexOf('.', end);
       const lastNewline = text.lastIndexOf('\n', end);
       const breakPoint = Math.max(lastPeriod, lastNewline);
       
       if (breakPoint > start + chunkSize * 0.5) {
-        // Only use break point if it's not too early
+        
         end = breakPoint + 1;
       }
     }
@@ -94,7 +86,7 @@ export function chunkText(text: string, chunkSize: number = 3000, overlap: numbe
       chunks.push(chunk);
     }
     
-    // Move start forward with overlap
+    
     start = end - overlap;
     if (start >= text.length) break;
   }
@@ -102,9 +94,7 @@ export function chunkText(text: string, chunkSize: number = 3000, overlap: numbe
   return chunks;
 }
 
-/**
- * Get file metadata
- */
+
 export function getFileMetadata(filePath: string, fileName: string, mimeType: string) {
   try {
     const stats = fs.statSync(filePath);

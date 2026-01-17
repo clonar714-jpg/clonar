@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Social Search Action
- * Performs social media searches for posts, discussions, and trends
- */
+
 
 import { randomUUID } from 'crypto';
 import z from 'zod';
@@ -38,10 +35,10 @@ const socialSearchAction: ResearchAction<typeof schema> = {
     );
   },
   execute: async (input, additionalConfig) => {
-    // Limit to 3 queries
+   
     input.queries = input.queries.slice(0, 3);
 
-    // ✅ Check for abort signal
+    
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Social search aborted');
     }
@@ -49,7 +46,7 @@ const socialSearchAction: ResearchAction<typeof schema> = {
     let results: Chunk[] = [];
 
     const search = async (q: string) => {
-      // ✅ Check for abort signal before each search
+      
       if (additionalConfig.abortSignal?.aborted) {
         throw new Error('Social search aborted');
       }
@@ -71,10 +68,10 @@ const socialSearchAction: ResearchAction<typeof schema> = {
       results.push(...resultChunks);
     };
 
-    // Execute all searches in parallel
+    
     await Promise.all(input.queries.map(search));
 
-    // ✅ Emit source block for social results (matches current codebase pattern)
+    
     if (results.length > 0) {
       additionalConfig.session.emitBlock({
         id: randomUUID(),
@@ -87,7 +84,7 @@ const socialSearchAction: ResearchAction<typeof schema> = {
       });
     }
 
-    // Return search results as ActionOutput
+   
     const output: SearchActionOutput = {
       type: 'search_results',
       results,

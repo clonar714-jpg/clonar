@@ -1,10 +1,10 @@
-// src/routes/hotelDetails.ts
+
 import express from "express";
 import { Request, Response } from "express";
 import OpenAI from "openai";
 import { extractHotelAmenities } from "../services/hotelAmenitiesExtractor";
 
-// Lazy-load OpenAI client
+
 let clientInstance: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
@@ -22,10 +22,7 @@ function getOpenAIClient(): OpenAI {
 
 const router = express.Router();
 
-/**
- * Perplexity-style hotel intelligence generator
- * Generates all hotel sections: whatPeopleSay, reviewSummary, chooseThisIf, about, amenitiesClean, locationSummary, ratingInsights
- */
+
 router.post("/", async (req: Request, res: Response) => {
   try {
     const { 
@@ -49,8 +46,7 @@ router.post("/", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Hotel name is required" });
     }
 
-    // Build comprehensive hotel data object - auto-adapts to any fields present
-    // This structure works with minimal SerpAPI data and automatically uses richer data when available
+   
     const hotelData: any = {
       name,
       ...(location && { location }),
@@ -60,15 +56,14 @@ router.post("/", async (req: Request, res: Response) => {
       ...(description && { description }),
       ...(amenities && Array.isArray(amenities) && { amenities }),
       ...(nearby && { nearby }),
-      // Rating breakdowns (if available from any source)
+      
       ...(cleanliness && { cleanliness }),
       ...(rooms && { rooms }),
       ...(service && { service }),
       ...(sleepQuality && { sleepQuality }),
       ...(value && { value }),
       ...(locationRating && { locationRating }),
-      // Future-proof: Include any additional fields that might be present
-      // The AI will automatically use them if they appear
+      
       ...(req.body.reviews && { reviews: req.body.reviews }),
       ...(req.body.review_snippets && { review_snippets: req.body.review_snippets }),
       ...(req.body.ratings_breakdown && { ratings_breakdown: req.body.ratings_breakdown }),
@@ -216,10 +211,10 @@ Return ONLY valid JSON, no markdown, no extra text.
 
       const content = response.choices[0]?.message?.content || "";
       
-      // Try to parse JSON from response
+      
       let hotelDetails: any = {};
       try {
-        // Extract JSON from markdown code blocks if present
+        
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           hotelDetails = JSON.parse(jsonMatch[0]);
@@ -228,11 +223,11 @@ Return ONLY valid JSON, no markdown, no extra text.
         }
       } catch (e) {
         console.error("❌ Failed to parse LLM response as JSON:", e);
-        // Fallback to default values
+        
         hotelDetails = getDefaultHotelDetails(hotelData);
       }
 
-      // Ensure all required fields exist with fallbacks
+      
       hotelDetails = {
         whatPeopleSay: hotelDetails.whatPeopleSay || getDefaultWhatPeopleSay(name, location, rating),
         reviewSummary: hotelDetails.reviewSummary || getDefaultReviewSummary(name, rating, reviewCount),
@@ -248,14 +243,14 @@ Return ONLY valid JSON, no markdown, no extra text.
       }
     } catch (err: any) {
       console.error("❌ LLM hotel details generation error:", err.message || err);
-      // Return default values on error (only if headers not already sent)
+      
       if (!res.headersSent) {
         return res.json(getDefaultHotelDetails({ name, location, rating, reviewCount, description, amenities, address, nearby, cleanliness, rooms, service, value }));
       }
     }
   } catch (err: any) {
     console.error("❌ Error generating hotel details:", err);
-    // Only send response if headers haven't been sent (e.g., by timeout middleware)
+    
     if (!res.headersSent) {
       return res.status(500).json({ 
         error: "Failed to generate hotel details",
@@ -265,7 +260,7 @@ Return ONLY valid JSON, no markdown, no extra text.
   }
 });
 
-// Default fallback functions
+
 function getDefaultHotelDetails(hotelData: any) {
   const { name, location, rating, reviewCount, description, amenities, address, nearby, cleanliness, rooms, service, value } = hotelData;
   

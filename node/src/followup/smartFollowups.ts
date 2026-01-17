@@ -1,6 +1,4 @@
-/**
- * ✅ Smart Follow-ups Generator: Fallback LLM-based generator
- */
+
 
 import OpenAI from 'openai';
 
@@ -30,9 +28,7 @@ export interface SmartFollowUpParams {
   cards?: any[];
 }
 
-/**
- * Generate smart follow-ups using LLM (fallback when templates aren't enough)
- */
+
 export async function generateSmartFollowUps(params: SmartFollowUpParams): Promise<string[]> {
   try {
     const { query, answer, intent, brand, category, price, city } = params;
@@ -70,7 +66,7 @@ Return ONLY a JSON array of 3-4 follow-up questions:
 
     const content = response.choices[0]?.message?.content?.trim() || '[]';
     
-    // Extract JSON array
+    
     let jsonStr = content;
     const jsonMatch = content.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
     if (jsonMatch) {
@@ -97,7 +93,7 @@ Return ONLY a JSON array of 3-4 follow-up questions:
     console.warn('⚠️ Smart follow-ups generation failed:', error.message);
   }
 
-  // Fallback
+  
   return [
     'Tell me more',
     'What else should I know?',

@@ -1,11 +1,9 @@
-/**
- * Server utility functions
- */
+
 
 import crypto from 'crypto';
 
 /**
- * ✅ PERPLEXICA PATTERN: Hash an object to a deterministic SHA256 hash
+ * 
  * Uses sorted keys to ensure consistent hashing regardless of property order
  * 
  * @param obj - Object to hash

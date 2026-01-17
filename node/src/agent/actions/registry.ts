@@ -1,13 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Action Registry
- * Registry pattern for managing research actions
- * 
- * Benefits:
- * - Extensible: Add new actions without modifying core logic
- * - Self-contained: Each action manages its own logic
- * - Testable: Easy to test individual actions
- * - Maintainable: Better code organization
- */
+
 
 import {
   ResearchAction,
@@ -22,24 +13,18 @@ import { Tool, ToolCall } from '../../models/types';
 class ActionRegistry {
   private static actions: Map<string, ResearchAction<any>> = new Map();
 
-  /**
-   * Register a research action
-   */
+ 
   static register(action: ResearchAction<any>): void {
     this.actions.set(action.name, action);
     console.log(`✅ Registered action: ${action.name}`);
   }
 
-  /**
-   * Get an action by name
-   */
+  
   static get(name: string): ResearchAction<any> | undefined {
     return this.actions.get(name);
   }
 
-  /**
-   * Get available actions based on configuration
-   */
+  
   static getAvailableActions(config: {
     classification: ClassifierOutput;
     fileIds: string[];
@@ -51,9 +36,7 @@ class ActionRegistry {
     );
   }
 
-  /**
-   * Get available actions as Tool format (for LLM function calling)
-   */
+  
   static getAvailableActionTools(config: {
     classification: ClassifierOutput;
     fileIds: string[];
@@ -69,9 +52,7 @@ class ActionRegistry {
     }));
   }
 
-  /**
-   * Get available actions as formatted descriptions (for prompts)
-   */
+  
   static getAvailableActionsDescriptions(config: {
     classification: ClassifierOutput;
     fileIds: string[];
@@ -88,9 +69,7 @@ class ActionRegistry {
       .join('\n\n');
   }
 
-  /**
-   * Execute a single action
-   */
+  
   static async execute(
     name: string,
     params: any,
@@ -108,9 +87,7 @@ class ActionRegistry {
     return action.execute(params, additionalConfig);
   }
 
-  /**
-   * Execute multiple actions in parallel
-   */
+ 
   static async executeAll(
     actions: ToolCall[],
     additionalConfig: AdditionalConfig & {
@@ -134,9 +111,6 @@ class ActionRegistry {
     return results;
   }
 
-  /**
-   * Clear all registered actions (useful for testing)
-   */
   static clear(): void {
     this.actions.clear();
   }

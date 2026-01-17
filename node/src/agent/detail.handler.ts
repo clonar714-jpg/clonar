@@ -1,16 +1,4 @@
-/**
- * ✅ PERPLEXITY-STYLE: Detail endpoints for Products, Hotels, Places, Movies
- * 
- * When user taps a card, this endpoint generates:
- * - "Buy this if" / "Stay here if" / "Visit this if" / "Watch this if"
- * - "What people say" (review summary with sentiment analysis)
- * - "Key features" (specs/amenities/characteristics)
- * - "Traveler insights" (hotels/places only)
- * - "Rating breakdown" (hotels/products only)
- * - "Price comparison" (products only)
- * - "Location context" (hotels/places only)
- * - Additional images
- */
+
 
 import { Request, Response } from "express";
 import OpenAI from "openai";
@@ -30,9 +18,7 @@ function getClient(): OpenAI {
   return client;
 }
 
-/**
- * Generate detail content using LLM
- */
+
 async function generateDetailContent(
   domain: 'product' | 'hotel' | 'place' | 'movie',
   title: string,
@@ -42,10 +28,10 @@ async function generateDetailContent(
   buyThisIf?: string;
   whatPeopleSay: string;
   keyFeatures: string[];
-  travelerInsights?: string; // Hotels/Places only
-  ratingBreakdown?: string; // Hotels/Products only
-  priceComparison?: string; // Products only
-  locationContext?: string; // Hotels/Places only
+  travelerInsights?: string; 
+  ratingBreakdown?: string; 
+  priceComparison?: string; 
+  locationContext?: string; 
   images?: string[];
 }> {
   const domainPrompts = {
@@ -73,7 +59,7 @@ async function generateDetailContent(
 
   const prompts = domainPrompts[domain];
   
-  // Build domain-specific system prompt
+  
   let system = `You are analyzing a ${domain} for a detail page.
 
 ${domain === 'product' ? 'Product' : domain === 'hotel' ? 'Hotel' : domain === 'place' ? 'Place' : 'Movie'}: ${title}
@@ -82,7 +68,7 @@ ${additionalInfo ? `Additional Info: ${JSON.stringify(additionalInfo)}` : ''}
 
 Generate the following sections:`;
 
-  // Base sections (all domains)
+ 
   system += `
 1. "${domain === 'product' ? 'Buy this if' : domain === 'hotel' ? 'Stay here if' : domain === 'place' ? 'Visit this if' : 'Watch this if'}" - One sentence describing the ideal user/use case
 2. "What people say" - 2-3 sentence summary with sentiment analysis. Analyze review themes and highlight:
@@ -92,7 +78,7 @@ Generate the following sections:`;
    - Specific themes (cleanliness, service, value, quality, etc.)
 3. "Key features" - ${domain === 'hotel' ? 'List all key amenities or features. If amenities are missing from the provided data, infer likely amenities based on hotel type, rating, and description (e.g., WiFi, parking, pool, gym, restaurant, etc.)' : '3-5 bullet points of main features/amenities/characteristics'}`;
 
-  // Domain-specific sections
+  
   if (domain === 'hotel' || domain === 'place') {
     system += `
 4. "Traveler insights" - 2-3 sentences about:
@@ -102,7 +88,7 @@ Generate the following sections:`;
    - Any unique aspects that make this special`;
   }
 
-  // Calculate section numbers based on domain
+  
   let sectionNum = 4;
   
   if (domain === 'hotel' || domain === 'product') {
@@ -135,13 +121,13 @@ ${sectionNum}. "Location context" - Describe the location:
    - Distance from key landmarks or city center`;
   }
 
-  // Build JSON format string
+  
   let jsonFormat = `{
   "${domain === 'product' ? 'buyThisIf' : domain === 'hotel' ? 'stayHereIf' : domain === 'place' ? 'visitThisIf' : 'watchThisIf'}": "...",
   "whatPeopleSay": "...",
   "keyFeatures": ["...", "...", "..."]`;
 
-  // Add domain-specific fields to JSON format
+  
   if (domain === 'hotel' || domain === 'place') {
     jsonFormat += `,
   "travelerInsights": "...",
@@ -179,7 +165,7 @@ ${jsonFormat}`;
 
     const content = response.choices[0]?.message?.content || '';
     
-    // Try to parse JSON from response
+    
     let parsed: any = {};
     try {
       const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -187,7 +173,7 @@ ${jsonFormat}`;
         parsed = JSON.parse(jsonMatch[0]);
       }
     } catch (e) {
-      // Fallback: generate from text
+      
       const lines = content.split('\n').filter(l => l.trim());
       parsed = {
         whatPeopleSay: lines.find(l => l.toLowerCase().includes('people say') || l.toLowerCase().includes('review')) || 'Customers appreciate the quality and value.',
@@ -212,7 +198,7 @@ ${jsonFormat}`;
       keyFeatures: [],
     };
     
-    // Add domain-specific fallbacks
+    
     if (domain === 'hotel' || domain === 'place') {
       fallback.travelerInsights = 'This location offers a great experience for various types of travelers throughout the year.';
       fallback.locationContext = 'The location is well-situated with good access to local attractions and amenities.';
@@ -230,18 +216,13 @@ ${jsonFormat}`;
   }
 }
 
-/**
- * Fetch additional product images/details
- */
+
 async function fetchProductDetails(productId: string, title: string, link?: string): Promise<any> {
-  // For products, we can fetch more images from SerpAPI or the product link
-  // For now, return empty (images already in main response)
+  
   return { images: [] };
 }
 
-/**
- * Fetch additional hotel images/details
- */
+
 async function fetchHotelDetails(hotelId: string, name: string, link?: string): Promise<any> {
   const serpKey = process.env.SERPAPI_KEY;
   if (!serpKey) return { images: [] };
@@ -279,18 +260,13 @@ async function fetchHotelDetails(hotelId: string, name: string, link?: string): 
   }
 }
 
-/**
- * Fetch additional place images/details
- */
+
 async function fetchPlaceDetails(placeId: string, name: string, link?: string): Promise<any> {
-  // For places, we can fetch more images from Google Places API
-  // For now, return empty (images already in main response)
+  
   return { images: [] };
 }
 
-/**
- * Fetch additional movie images/details
- */
+
 async function fetchMovieDetails(movieId: string, title: string): Promise<any> {
   const tmdbKey = process.env.TMDB_API_KEY;
   if (!tmdbKey) return { images: [] };
@@ -327,9 +303,7 @@ async function fetchMovieDetails(movieId: string, title: string): Promise<any> {
   }
 }
 
-/**
- * Unified detail handler
- */
+
 export async function handleDetailRequest(req: Request, res: Response): Promise<void> {
   try {
     const { domain, id, title, description, price, rating, source, link, ...additionalInfo } = req.body;
@@ -350,7 +324,7 @@ export async function handleDetailRequest(req: Request, res: Response): Promise<
 
     console.log(`🔍 Generating detail content for ${domain}: "${title}"`);
 
-    // Fetch additional details (images, etc.)
+    
     let additionalDetails: any = {};
     try {
       if (domain === 'product') {
@@ -366,7 +340,7 @@ export async function handleDetailRequest(req: Request, res: Response): Promise<
       console.warn("⚠️ Failed to fetch additional details:", error.message);
     }
 
-    // Generate LLM content
+    
     const detailContent = await generateDetailContent(
       domain,
       title,

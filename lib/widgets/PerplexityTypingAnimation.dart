@@ -1,12 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
-/// 🎨 Beautiful Perplexity-style typing animation widget
-/// Features:
-/// - Smooth word-by-word animation
-/// - Animated blinking cursor
-/// - Fade-in effects
-/// - Smooth scrolling
+
 class PerplexityTypingAnimation extends StatefulWidget {
   final String text;
   final bool isStreaming;
@@ -42,7 +37,7 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
   void initState() {
     super.initState();
     
-    // Animated blinking cursor (Perplexity-style)
+    
     _cursorController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 530), // Smooth blink speed
@@ -58,8 +53,7 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
     
     _cursorController.repeat(reverse: true);
     
-    // ✅ Always start animation, even if text is already provided
-    // This ensures smooth word-by-word appearance
+   
     _startAnimation();
   }
 
@@ -67,11 +61,10 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
   void didUpdateWidget(PerplexityTypingAnimation oldWidget) {
     super.didUpdateWidget(oldWidget);
     
-    // If text changed, continue animation from current position
+    
     if (widget.text != oldWidget.text) {
       if (widget.text.length > oldWidget.text.length) {
-        // Text is being appended (streaming) - continue animating
-        // Don't reset _displayedText, just continue from where we are
+        
         if (_animationTimer == null || !_animationTimer!.isActive) {
           _startAnimation();
         }
@@ -82,39 +75,38 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
       }
     }
     
-    // Update cursor visibility based on streaming state
+    
     if (widget.isStreaming) {
       if (!_cursorController.isAnimating) {
         _cursorController.repeat(reverse: true);
       }
     } else {
       _cursorController.stop();
-      _cursorController.value = 0.0; // Hide cursor when done
+      _cursorController.value = 0.0; 
     }
   }
 
   void _startAnimation() {
-    // Don't cancel if already running - let it continue smoothly
+   
     if (_animationTimer?.isActive ?? false) {
       return;
     }
     
-    // ✅ FIX: Always start from current displayed text, not from empty
-    // This allows smooth continuation when new text arrives during streaming
+   
     if (_displayedText.length >= widget.text.length) {
       // If displayed text is already longer, reset to match widget text
       _displayedText = widget.text;
       return;
     }
     
-    // Word-by-word animation (smoother than character-by-character)
+    
     _animationTimer = Timer.periodic(widget.animationDuration, (timer) {
       if (!mounted) {
         timer.cancel();
         return;
       }
       
-      // ✅ FIX: Always check against current widget.text (which updates during streaming)
+      
       if (_displayedText.length < widget.text.length) {
         // Get remaining text to display
         final remainingText = widget.text.substring(_displayedText.length).trimLeft();
@@ -210,8 +202,7 @@ class _PerplexityTypingAnimationState extends State<PerplexityTypingAnimation>
       return Text(widget.text, style: widget.textStyle);
     }
     
-    // ✅ Always use displayed text for animation
-    // This ensures smooth word-by-word appearance
+   
     final displayText = _displayedText;
     
     return Column(

@@ -1,6 +1,4 @@
-/**
- * Classifier prompt for structured query classification
- */
+
 
 export const classifierPrompt = `
 <role>

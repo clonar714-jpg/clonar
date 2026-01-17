@@ -45,8 +45,7 @@ class _AnswerHeaderRowState extends State<AnswerHeaderRow>
   }
 
   void _showOverlay() {
-    // Legacy overlay method - kept for backward compatibility
-    // Now using modal bottom sheet instead
+    
     _showSourcesBottomSheet(context);
   }
 

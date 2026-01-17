@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart' hide DatePickerMode;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
-import '../services/AgentService.dart';
+import '../providers/agent_provider.dart';
+import '../providers/session_history_provider.dart';
+import '../models/query_session_model.dart';
 import '../widgets/HotelCardPerplexity.dart';
 import '../widgets/CustomDatePicker.dart' show CustomDatePickerMode, showCustomDatePicker;
 import 'HotelDetailScreen.dart';
 import '../widgets/HotelMapView.dart';
 import 'FullScreenMapScreen.dart';
 
-class HotelResultsScreen extends StatefulWidget {
+class HotelResultsScreen extends ConsumerStatefulWidget {
   final String query;
   final DateTime? checkInDate;
   final DateTime? checkOutDate;
@@ -27,10 +30,10 @@ class HotelResultsScreen extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  State<HotelResultsScreen> createState() => _HotelResultsScreenState();
+  ConsumerState<HotelResultsScreen> createState() => _HotelResultsScreenState();
 }
 
-class _HotelResultsScreenState extends State<HotelResultsScreen> {
+class _HotelResultsScreenState extends ConsumerState<HotelResultsScreen> {
   bool _loading = true;
   String? _error;
 
@@ -81,18 +84,51 @@ class _HotelResultsScreenState extends State<HotelResultsScreen> {
     try {
       setState(() => _loading = true);
 
-      // ✅ Pass empty conversation history (this screen doesn't maintain session history)
-      final res = await AgentService.askAgent(
+      // ✅ Use provider system for consistency with main app
+      // Submit query without streaming for instant results
+      await ref.read(agentControllerProvider.notifier).submitQuery(
         widget.query,
-        conversationHistory: const [], // Empty history for standalone hotel search
+        useStreaming: false, // Non-streaming for instant results
       );
 
-      setState(() {
-        _sections = res["sections"] ?? [];
-        _mapPoints = res["map"] as List<dynamic>?; // Extract map points if available
-        _summary = res["summary"] as String?; // Extract summary if available
-        _loading = false;
+      // Wait for response and get the session
+      // Listen for session updates
+      await Future.delayed(const Duration(milliseconds: 1000));
+      
+      // Get the latest session from provider
+      final sessions = ref.read(sessionHistoryProvider);
+      final matchingSession = sessions.firstWhere(
+        (s) => s.query.trim() == widget.query.trim() && s.isFinalized,
+        orElse: () => sessions.isNotEmpty ? sessions.last : QuerySession(sessionId: '', query: ''),
+      );
+      
+      if (matchingSession.query.isNotEmpty && matchingSession.sections != null) {
+        setState(() {
+          _sections = matchingSession.sections ?? [];
+          _mapPoints = matchingSession.mapPoints as List<dynamic>?;
+          _summary = matchingSession.summary;
+          _loading = false;
         });
+      } else {
+        // Fallback: wait a bit more and try again
+        await Future.delayed(const Duration(milliseconds: 1000));
+        final updatedSessions = ref.read(sessionHistoryProvider);
+        final latestSession = updatedSessions.isNotEmpty ? updatedSessions.last : null;
+        
+        if (latestSession != null && latestSession.sections != null) {
+          setState(() {
+            _sections = latestSession.sections ?? [];
+            _mapPoints = latestSession.mapPoints as List<dynamic>?;
+            _summary = latestSession.summary;
+            _loading = false;
+          });
+        } else {
+          setState(() {
+            _error = "No results received";
+            _loading = false;
+          });
+        }
+      }
     } catch (e) {
       setState(() {
         _error = "Failed to load hotels: $e";
@@ -212,14 +248,14 @@ class _HotelResultsScreenState extends State<HotelResultsScreen> {
     }
   }
 
-  // ✅ Build map view (like ShoppingResultsScreen - map first, then description, then list)
+  // ✅ Build map view (map first, then description, then list)
   Widget _buildMapView(List<dynamic> allHotels) {
     return SingleChildScrollView(
       controller: _scrollController,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ✅ STEP 1: Map FIRST (like ShoppingResultsScreen)
+          // ✅ STEP 1: Map FIRST
           if (_mapPoints != null && _mapPoints!.isNotEmpty) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),

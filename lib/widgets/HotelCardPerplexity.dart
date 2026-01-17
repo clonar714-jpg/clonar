@@ -30,11 +30,9 @@ class HotelCardPerplexity extends StatelessWidget {
     bool isValidImageUrl(String url) {
       if (url.isEmpty) return false;
       
-      // Filter out invalid Google Photos CDN URLs that cause 400 errors
-      // These URLs often have format issues or require authentication
+      
       if (url.contains('googleusercontent.com/p/')) {
-        // Only accept if it's a properly formatted Places API photo URL
-        // or if it's a valid Google Photos URL with proper parameters
+        
         if (url.contains('maps.googleapis.com/maps/api/place/photo')) {
           return true; // This is a valid Places API photo URL
         }
@@ -156,8 +154,7 @@ class HotelCardPerplexity extends StatelessWidget {
     
     final price = getPrice();
     
-    // ✅ Perplexity-style: Extract review-based themes (dynamically generated from reviews)
-    // Themes are provided by backend after analyzing hotel reviews
+    
     final themesData = hotel["themes"];
     List<String> themes = [];
     if (themesData != null && themesData is List) {
@@ -300,8 +297,7 @@ class HotelCardPerplexity extends StatelessWidget {
 
                 const SizedBox(height: 12),
 
-                // ✅ FEATURE TAGS (Perplexity-style: Review-based dynamic themes)
-                // Horizontal scrollable single line with equal spacing
+               
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(

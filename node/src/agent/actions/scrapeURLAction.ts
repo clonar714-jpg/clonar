@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Scrape URL Action
- * Scrapes and extracts content from provided URLs
- */
+
 
 import { randomUUID } from 'crypto';
 import z from 'zod';
@@ -19,7 +16,7 @@ You should only call this tool when the user has specifically requested informat
 For example, if the user says "Please summarize the content of https://example.com/article", you can call this tool with that URL to get the content and then provide the summary or "What does X mean according to https://example.com/page", you can call this tool with that URL to get the content and provide the explanation.
 `;
 
-// ✅ Initialize turndown service for HTML to markdown conversion
+
 const turndownService = new TurnDown();
 
 const scrapeURLAction: ResearchAction<typeof schema> = {
@@ -30,10 +27,10 @@ const scrapeURLAction: ResearchAction<typeof schema> = {
   getDescription: (config) => actionDescription,
   enabled: (_) => true,
   execute: async (params, additionalConfig) => {
-    // Limit to 3 URLs
+    
     params.urls = params.urls.slice(0, 3);
 
-    // ✅ Check for abort signal
+   
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Scrape URL action aborted');
     }
@@ -42,7 +39,7 @@ const scrapeURLAction: ResearchAction<typeof schema> = {
 
     await Promise.all(
       params.urls.map(async (url) => {
-        // ✅ Check for abort signal before each fetch
+       
         if (additionalConfig.abortSignal?.aborted) {
           results.push({
             content: `Scraping aborted for ${url}`,
@@ -67,11 +64,11 @@ const scrapeURLAction: ResearchAction<typeof schema> = {
 
           const text = await res.text();
 
-          // Extract title from HTML
+          
           const titleMatch = text.match(/<title>(.*?)<\/title>/i);
           const title = titleMatch?.[1]?.trim() || `Content from ${url}`;
 
-          // Convert HTML to markdown using turndown
+          
           const markdown = turndownService.turndown(text);
 
           results.push({
@@ -94,7 +91,7 @@ const scrapeURLAction: ResearchAction<typeof schema> = {
       }),
     );
 
-    // ✅ Emit source block for scraped results (matches current codebase pattern)
+    
     if (results.length > 0) {
       additionalConfig.session.emitBlock({
         id: randomUUID(),
@@ -107,7 +104,7 @@ const scrapeURLAction: ResearchAction<typeof schema> = {
       });
     }
 
-    // Return search results as ActionOutput
+    
     const output: SearchActionOutput = {
       type: 'search_results',
       results,

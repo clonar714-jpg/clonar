@@ -1,8 +1,8 @@
-// src/embeddings/embeddingClient.ts
+
 import OpenAI from "openai";
 import { LRUCache } from "lru-cache";
 
-// Lazy-load OpenAI client to ensure environment variables are loaded
+
 let client: OpenAI | null = null;
 
 function getClient(): OpenAI {
@@ -16,15 +16,13 @@ function getClient(): OpenAI {
   return client;
 }
 
-// LRU cache to avoid recomputing embeddings
+
 const cache = new LRUCache<string, number[]>({
   max: 5000,
   ttl: 1000 * 60 * 60 * 24, // 24 hours
 });
 
-// -----------------------------
-// Cosine Similarity
-// -----------------------------
+
 export function cosine(a: number[], b: number[]): number {
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
@@ -36,9 +34,7 @@ export function cosine(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-// -----------------------------
-// Single text embedding
-// -----------------------------
+
 export async function getEmbedding(text: string): Promise<number[]> {
   if (!text || !text.trim()) return [];
 
@@ -58,9 +54,7 @@ export async function getEmbedding(text: string): Promise<number[]> {
   return emb;
 }
 
-// -----------------------------
-// Batch embedding (array of strings)
-// -----------------------------
+
 export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   const results: number[][] = [];
   const uncached: string[] = [];
@@ -99,9 +93,7 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   return results;
 }
 
-// -----------------------------
-// Similarity search helper
-// -----------------------------
+
 export async function similaritySearch(
   query: string,
   items: string[]

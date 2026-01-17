@@ -1,6 +1,4 @@
-/**
- * Format chat history as string for LLM prompts
- */
+
 export default function formatChatHistoryAsString(chatHistory: any[]): string {
   if (!chatHistory || chatHistory.length === 0) {
     return '';

@@ -58,13 +58,7 @@ class Message {
   }
 }
 
-/// ✅ CHATGPT/PERPLEXITY-STYLE: Hydrate QuerySession list from stored messages
-/// Each message represents a complete turn (user query + assistant response)
-/// Messages are already paired in the database
-/// 
-/// ✅ CRITICAL: DB does NOT store sections/sources/cards from streaming answers.
-/// These are only available in-memory from SSE streaming.
-/// Hydrated sessions are used for metadata only - finalized streaming sessions preserve answer content.
+
 List<QuerySession> hydrateSessionsFromMessages(List<Message> messages) {
   if (kDebugMode) {
     debugPrint('🔄 Hydrating ${messages.length} messages into QuerySession list');
@@ -168,10 +162,7 @@ List<QuerySession> hydrateSessionsFromMessages(List<Message> messages) {
         }
       }
 
-      // ✅ Create QuerySession from message (each message = one turn)
-      // ✅ CRITICAL: DB-hydrated sessions may not have sections/sources/cards
-      // These are only available from streaming answers (in-memory).
-      // Finalized streaming sessions will preserve their answer content when merged.
+      
       final session = QuerySession(
         sessionId: null, // ✅ Auto-generate sessionId for rehydrated sessions
         query: message.query,
@@ -185,6 +176,7 @@ List<QuerySession> hydrateSessionsFromMessages(List<Message> messages) {
         cardsByDomain: cardsByDomain, // ✅ May be null - DB doesn't always store this
         results: results,
         destinationImages: destinationImages, // ✅ FIX: Extract destination_images from results
+        phase: QueryPhase.done, // ✅ HISTORY MODE: Set to done - these are completed sessions, never searching
         isStreaming: false, // ✅ Always false for rehydrated chats
         isParsing: false,
         isFinalized: true, // ✅ CRITICAL FIX: Mark DB-hydrated sessions as finalized so they render

@@ -5,10 +5,7 @@ import { getValidUserId } from "../utils/userIdHelper";
 
 const router = express.Router();
 
-/**
- * GET /api/chats
- * Get all conversations for the current user
- */
+
 router.get("/", async (req: Request, res: Response) => {
   try {
     const rawUserId = req.headers["user-id"] as string || "dev-user-id";
@@ -36,10 +33,7 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /api/chats/:id
- * Get a single conversation with all messages
- */
+
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const conversationId = req.params.id;
@@ -81,15 +75,11 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /api/chats
- * Create a new conversation
- * Database generates UUID for id
- */
+
 router.post("/", async (req: Request, res: Response) => {
   console.log("🔥🔥🔥 POST /api/chats entered");
   
-  // ✅ CRITICAL: Ensure response is ALWAYS sent, even on timeout
+  
   let responseSent = false;
   const sendResponse = (status: number, data: any) => {
     if (responseSent) {
@@ -109,7 +99,7 @@ router.post("/", async (req: Request, res: Response) => {
     }
   };
 
-  // ✅ CRITICAL: Set timeout guard (3 seconds max for fast response)
+  
   const timeoutId = setTimeout(() => {
     if (!responseSent) {
       console.error("❌❌❌ POST /api/chats TIMEOUT - No response sent after 3 seconds");
@@ -140,7 +130,7 @@ router.post("/", async (req: Request, res: Response) => {
     console.log("🔥🔥🔥 Creating chat in DB...");
     console.log(`🔥🔥🔥 Insert data: { user_id: "${userId}", title: "${title.trim().substring(0, 255)}" }`);
     
-    // ✅ CRITICAL: Create DB call promise
+    
     const dbCall = db.conversations()
       .insert({
         user_id: userId,
@@ -149,7 +139,7 @@ router.post("/", async (req: Request, res: Response) => {
       .select("id, title, created_at, updated_at")
       .single();
     
-    // ✅ CRITICAL: Create timeout promise that resolves (not rejects) with timeout error structure
+    
     const timeoutPromise = new Promise<{ data: null; error: { message: string; code: string } }>((resolve) => {
       setTimeout(() => {
         console.error("❌❌❌ Database operation TIMEOUT after 2 seconds");
@@ -163,10 +153,10 @@ router.post("/", async (req: Request, res: Response) => {
       }, 2000);
     });
     
-    // ✅ CRITICAL: Race between DB call and timeout - both resolve, never reject
+
     let dbResult: { data: any; error: any };
     try {
-      // Wrap Supabase call in Promise.resolve to ensure it's a full Promise
+      
       const dbPromise = Promise.resolve(dbCall).then((result: any) => {
         console.log("🔥🔥🔥 Database promise resolved");
         return { data: result.data, error: result.error };
@@ -189,7 +179,7 @@ router.post("/", async (req: Request, res: Response) => {
     
     clearTimeout(timeoutId);
     
-    // ✅ CRITICAL: Check for timeout error first
+    
     if (dbResult.error && dbResult.error.code === "TIMEOUT") {
       console.error("❌❌❌ Database operation timed out");
       sendResponse(500, { 
@@ -199,7 +189,7 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
     
-    // ✅ CRITICAL: Extract data and error from Supabase result
+    
     const { data, error } = dbResult;
     
     if (error) {
@@ -244,7 +234,7 @@ router.post("/", async (req: Request, res: Response) => {
       console.warn("⚠️ Response already sent, but error occurred after");
     }
   } finally {
-    // ✅ CRITICAL: Final safety check - ensure response is ALWAYS sent
+    
     if (!responseSent) {
       console.error("❌❌❌ CRITICAL: No response sent in any code path!");
       try {
@@ -262,11 +252,7 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /api/chats/:id/messages
- * Add a message to a conversation
- * Auto-creates conversation if missing
- */
+
 router.post("/:id/messages", async (req: Request, res: Response) => {
   try {
     const conversationId = req.params.id;
@@ -323,9 +309,9 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       sections,
       answer,
       imageUrl,
-      destinationImages, // ✅ NEW: Array of images for media tab
-      sources, // ✅ CRITICAL: Sources must be saved for old chats to display
-      followUpSuggestions, // ✅ CRITICAL: Follow-ups must be saved for old chats to display
+      destinationImages, 
+      sources, 
+      followUpSuggestions, 
     } = req.body;
     
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
@@ -344,8 +330,7 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       answer: answer ? (typeof answer === 'string' ? answer : JSON.stringify(answer)).substring(0, 100000) : null,
     };
     
-    // ✅ CRITICAL: Add sources and follow_up_suggestions only if columns exist
-    // This prevents errors if migration hasn't been run yet
+   
     if (sources) {
       messageData.sources = typeof sources === 'string' ? sources : JSON.stringify(sources);
       if (messageData.sources.length > 100000) messageData.sources = messageData.sources.substring(0, 100000);
@@ -359,10 +344,9 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
       messageData.image_url = imageUrl.substring(0, 500);
     }
     
-    // ✅ NEW: Save destination_images (array of image URLs for media tab)
+    
     if (destinationImages && Array.isArray(destinationImages) && destinationImages.length > 0) {
-      // Store as JSONB array (can be stored in cards JSONB or add separate column)
-      // For now, store in results JSONB with a key
+      
       if (!messageData.results) {
         messageData.results = JSON.stringify({ destination_images: destinationImages });
       } else {
@@ -373,7 +357,7 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
           existingResults.destination_images = destinationImages;
           messageData.results = JSON.stringify(existingResults);
         } catch {
-          // If parsing fails, create new object
+          
           messageData.results = JSON.stringify({ destination_images: destinationImages });
         }
       }
@@ -411,10 +395,7 @@ router.post("/:id/messages", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * PUT /api/chats/:id
- * Update conversation (e.g., rename)
- */
+
 router.put("/:id", async (req: Request, res: Response) => {
   try {
     const conversationId = req.params.id;
@@ -426,7 +407,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Title is required and must be non-empty" });
     }
     
-    // Verify conversation belongs to user
+   
     const { data: conversation, error: convError } = await db.conversations()
       .select("id")
       .eq("id", conversationId)
@@ -459,17 +440,14 @@ router.put("/:id", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * DELETE /api/chats/:id
- * Soft delete a conversation
- */
+
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const conversationId = req.params.id;
     const rawUserId = req.headers["user-id"] as string || "dev-user-id";
     const userId = getValidUserId(rawUserId);
     
-    // Verify conversation belongs to user
+   
     const { data: conversation, error: convError } = await db.conversations()
       .select("id")
       .eq("id", conversationId)
@@ -481,7 +459,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Conversation not found" });
     }
     
-    // Soft delete
+    
     const { error } = await db.conversations()
       .update({
         deleted_at: new Date().toISOString(),

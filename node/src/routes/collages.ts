@@ -8,7 +8,7 @@ import { ApiResponse, CreateCollageRequest, UpdateCollageRequest, AddCollageItem
 
 const router = express.Router();
 
-// Validation schemas
+
 const createCollageSchema = Joi.object({
   title: Joi.string().min(1).max(100).required(),
   description: Joi.string().max(500).allow('', null).optional(),
@@ -48,7 +48,7 @@ const addItemSchema = Joi.object({
   z_index: Joi.number().integer().min(0).optional(),
 });
 
-// Get all collages with filtering and pagination
+
 router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
@@ -67,7 +67,7 @@ router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
 
     const offset = (Number(page) - 1) * Number(limit);
 
-    // Build query
+    
     let queryBuilder = db.collages()
       .select(`
         *,
@@ -83,7 +83,7 @@ router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
         )
       `);
 
-    // Apply filters
+   
     console.log('🔍 GET /collages - User context:', req.user ? `user_id: ${req.user.id}` : 'not authenticated');
     console.log('🔍 Query params:', { user_id, is_published, page, limit });
     
@@ -91,7 +91,7 @@ router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
       queryBuilder = queryBuilder.eq('user_id', user_id);
       console.log('🔍 Filtering by user_id:', user_id);
     } else if (req.user && req.user.id) {
-      // If authenticated, show user's collages by default
+      
       queryBuilder = queryBuilder.eq('user_id', req.user.id);
       console.log('🔍 Filtering by authenticated user_id:', req.user.id);
       if (is_published !== undefined) {
@@ -99,7 +99,7 @@ router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
         console.log('🔍 Also filtering by is_published:', String(is_published) === 'true');
       }
     } else if (!req.user) {
-      // If not authenticated, only show published collages
+      
       queryBuilder = queryBuilder.eq('is_published', true);
       console.log('🔍 Not authenticated - showing only published collages');
     } else if (is_published !== undefined) {
@@ -127,12 +127,12 @@ router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
       queryBuilder = queryBuilder.lte('created_at', created_before);
     }
 
-    // Apply sorting
+    
     const orderColumn = sort_by === 'title' ? 'title' : 'created_at';
     const ascending = sort_order === 'asc';
     queryBuilder = queryBuilder.order(orderColumn, { ascending });
 
-    // Apply pagination
+    
     queryBuilder = queryBuilder.range(offset, offset + Number(limit) - 1);
 
     const { data: collages, error, count } = await queryBuilder;
@@ -175,7 +175,7 @@ router.get('/', optionalAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// Get single collage by ID
+
 router.get('/:id', optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
@@ -205,7 +205,7 @@ router.get('/:id', optionalAuth, async (req: AuthenticatedRequest, res) => {
       return res.status(404).json(response);
     }
 
-    // Check if user can view this collage
+    
     if (!collage.is_published && (!req.user || req.user.id !== collage.user_id)) {
       const response: ApiResponse = {
         success: false,
@@ -230,12 +230,12 @@ router.get('/:id', optionalAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// Create new collage
+
 router.post('/', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
     console.log('🔍 POST /collages - Request body:', JSON.stringify(req.body, null, 2));
     
-    // ✅ Validate user context
+    
     if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Unauthorized: No user context' });
     }
@@ -252,7 +252,7 @@ router.post('/', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
 
     const { title, description, cover_image_url, layout, settings, tags, is_published, items }: CreateCollageRequest = value;
 
-    // ✅ Auto-set published if essential info is complete
+    
     const autoPublished =
       title?.trim()?.length > 0 &&
       cover_image_url &&
@@ -297,7 +297,7 @@ router.post('/', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       throw createError;
     }
 
-    // ✅ Process collage items if provided
+    
     console.log('🔍 Items check - items:', items, 'length:', items?.length);
     if (items && items.length > 0) {
       console.log('🔍 Processing collage items:', items.length);
@@ -305,11 +305,10 @@ router.post('/', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       const collageItems = items.map((item: any) => {
         console.log('🔍 Processing item:', JSON.stringify(item, null, 2));
         
-        // For text items, we need to store the text in a way that can be retrieved
-        // Since we don't have text columns yet, let's store text in the image_url field temporarily
+        
         let imageUrl = item.image_url || 'https://via.placeholder.com/100x100';
         if (item.type === 'text' && item.text) {
-          // Store text with font info as a special URL that we can detect
+          
           const textData = {
             text: item.text,
             fontFamily: item.fontFamily || 'Roboto',
@@ -348,13 +347,13 @@ router.post('/', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       if (itemsError) {
         console.error('❌ Error inserting collage items:', itemsError);
         console.error('❌ Error details:', JSON.stringify(itemsError, null, 2));
-        // Don't fail the entire request, just log the error
+        
       } else {
         console.log('✅ Successfully inserted collage items');
       }
     }
 
-    // ✅ Fetch the complete collage with items for response
+    
     console.log('🔍 Fetching complete collage with items for ID:', collageId);
     const { data: completeCollage, error: fetchError } = await db.collages()
       .select(`
@@ -396,10 +395,10 @@ router.post('/', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// Update collage
+
 router.put('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
-    // ✅ Validate user context
+    
     if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Unauthorized: No user context' });
     }
@@ -416,7 +415,7 @@ router.put('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       return res.status(400).json(response);
     }
 
-    // Check if collage exists and user owns it
+    
     const { data: existingCollage, error: findError } = await db.collages()
       .select('user_id')
       .eq('id', id)
@@ -438,19 +437,19 @@ router.put('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       return res.status(403).json(response);
     }
 
-    // ✅ Auto-publish when user adds missing cover image
+    
     if (value.cover_image_url && value.title && !value.is_published) {
       value.is_published = true;
     }
 
-    // ✅ Process items if provided
+    
     if (value.items && Array.isArray(value.items)) {
       console.log('🔍 Processing items for update:', value.items.length);
       
-      // Delete existing items
+      
       await db.collageItems().delete().eq('collage_id', id);
       
-      // Insert new items
+      
       const itemsToInsert = value.items.map((item: any) => {
         let imageUrl = item.image_url || 'https://via.placeholder.com/100x100';
         if (item.type === 'text' && item.text) {
@@ -497,7 +496,7 @@ router.put('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       console.log('✅ Items processed successfully');
     }
 
-    // Remove items from the main update since we handle them separately
+    
     const { items, ...updateData } = value;
     
     const { data: updatedCollage, error: updateError } = await db.collages()
@@ -542,12 +541,12 @@ router.put('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// Delete collage
+
 router.delete('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
     console.log('🗑️ DELETE /collages/:id - Request received');
     
-    // ✅ Validate user context
+    
     if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Unauthorized: No user context' });
     }
@@ -556,7 +555,7 @@ router.delete('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) =>
     const { id } = req.params;
     console.log('🗑️ Deleting collage with ID:', id);
 
-    // Check if collage exists and user owns it
+    
     const { data: existingCollage, error: findError } = await db.collages()
       .select('user_id')
       .eq('id', id)
@@ -578,10 +577,10 @@ router.delete('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) =>
       return res.status(403).json(response);
     }
 
-    // Delete collage items first
+   
     await db.collageItems().delete().eq('collage_id', id);
 
-    // Delete collage
+    
     const { error: deleteError } = await db.collages().delete().eq('id', id);
 
     if (deleteError) {
@@ -604,10 +603,10 @@ router.delete('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res) =>
   }
 });
 
-// Add item to collage
+
 router.post('/:id/items', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
-    // ✅ Validate user context
+    
     if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Unauthorized: No user context' });
     }
@@ -624,7 +623,7 @@ router.post('/:id/items', skipAuthInDev(), async (req: AuthenticatedRequest, res
       return res.status(400).json(response);
     }
 
-    // Check if collage exists and user owns it
+    
     const { data: existingCollage, error: findError } = await db.collages()
       .select('user_id')
       .eq('id', id)
@@ -666,7 +665,7 @@ router.post('/:id/items', skipAuthInDev(), async (req: AuthenticatedRequest, res
       throw createError;
     }
 
-    // Update collage updated_at
+    
     await db.collages()
       .update({ updated_at: new Date().toISOString() })
       .eq('id', id);
@@ -688,10 +687,10 @@ router.post('/:id/items', skipAuthInDev(), async (req: AuthenticatedRequest, res
   }
 });
 
-// Update collage item
+
 router.put('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
-    // ✅ Validate user context
+   
     if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Unauthorized: No user context' });
     }
@@ -708,7 +707,7 @@ router.put('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedReque
       return res.status(400).json(response);
     }
 
-    // Check if collage exists and user owns it
+    
     const { data: existingCollage, error: findError } = await db.collages()
       .select('user_id')
       .eq('id', id)
@@ -748,7 +747,7 @@ router.put('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedReque
       throw updateError;
     }
 
-    // Update collage updated_at
+    
     await db.collages()
       .update({ updated_at: new Date().toISOString() })
       .eq('id', id);
@@ -770,10 +769,10 @@ router.put('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedReque
   }
 });
 
-// Remove item from collage
+
 router.delete('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
-    // ✅ Validate user context
+    
     if (!req.user || !req.user.id) {
       return res.status(401).json({ success: false, message: 'Unauthorized: No user context' });
     }
@@ -781,7 +780,7 @@ router.delete('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedRe
 
     const { id, itemId } = req.params;
 
-    // Check if collage exists and user owns it
+    
     const { data: existingCollage, error: findError } = await db.collages()
       .select('user_id')
       .eq('id', id)
@@ -803,7 +802,7 @@ router.delete('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedRe
       return res.status(403).json(response);
     }
 
-    // Delete the item
+    
     const { error: deleteError } = await db.collageItems()
       .delete()
       .eq('id', itemId)
@@ -813,7 +812,7 @@ router.delete('/:id/items/:itemId', skipAuthInDev(), async (req: AuthenticatedRe
       throw deleteError;
     }
 
-    // Update collage updated_at
+    
     await db.collages()
       .update({ updated_at: new Date().toISOString() })
       .eq('id', id);

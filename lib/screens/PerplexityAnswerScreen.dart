@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../theme/AppColors.dart';
 import '../providers/agent_provider.dart';
 import '../providers/session_history_provider.dart';
+import '../providers/follow_up_controller_provider.dart';
 import '../models/query_session_model.dart';
 import '../widgets/SessionRenderer.dart';
 import '../screens/ProductDetailScreen.dart';
@@ -12,8 +13,7 @@ import '../screens/HotelDetailScreen.dart';
 import '../screens/HotelResultsScreen.dart';
 import '../screens/ShoppingGridScreen.dart';
 
-/// ✅ Full-screen Perplexity-style answer display
-/// Replaces ShoppingResultsScreen - directly uses PerplexityAnswerWidget via SessionRenderer
+
 class PerplexityAnswerScreen extends ConsumerStatefulWidget {
   final String query;
   final String? imageUrl;
@@ -51,7 +51,16 @@ class _PerplexityAnswerScreenState extends ConsumerState<PerplexityAnswerScreen>
     WidgetsBinding.instance.addObserver(this);
     
     if (kDebugMode) {
-      debugPrint('PerplexityAnswerScreen query: "${widget.query}"');
+      debugPrint('📱 PerplexityAnswerScreen initState');
+      debugPrint('   - Query: "${widget.query}"');
+      debugPrint('   - isReplayMode: ${widget.isReplayMode}');
+      debugPrint('   - conversationId: ${widget.conversationId}');
+      final sessions = ref.read(sessionHistoryProvider);
+      debugPrint('   - Sessions in provider: ${sessions.length}');
+      for (int i = 0; i < sessions.length; i++) {
+        final s = sessions[i];
+        debugPrint('     Session $i: "${s.query}" (finalized: ${s.isFinalized})');
+      }
     }
     
     // Unfocus follow-up field immediately
@@ -72,16 +81,32 @@ class _PerplexityAnswerScreenState extends ConsumerState<PerplexityAnswerScreen>
     }
     _queryKeys.add(GlobalKey());
     
-    // Submit query if not in replay mode
+   
     if (!widget.isReplayMode) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (mounted) {
+          // ✅ CRITICAL: Wait a bit for sessions to load (in case they're being loaded asynchronously)
+          await Future.delayed(const Duration(milliseconds: 100));
+          
+          if (!mounted) return;
+          
           final existingSessions = ref.read(sessionHistoryProvider);
           final trimmedQuery = widget.query.trim();
+          
+          if (kDebugMode) {
+            debugPrint('🔍 Checking for duplicate query: "$trimmedQuery"');
+            debugPrint('   - Existing sessions: ${existingSessions.length}');
+            for (int i = 0; i < existingSessions.length; i++) {
+              final s = existingSessions[i];
+              debugPrint('   - Session $i: "${s.query}" (finalized: ${s.isFinalized}, summary: ${s.summary?.length ?? 0} chars)');
+            }
+          }
+          
+          // ✅ FIX: Check for finalized sessions (not just summary)
           final queryAlreadySubmitted = existingSessions.any((s) => 
             s.query.trim() == trimmedQuery && 
             s.imageUrl == widget.imageUrl &&
-            (s.isStreaming || s.isParsing || s.summary != null)
+            (s.isFinalized || s.isStreaming || s.isParsing || s.summary != null)
           );
           
           if (!queryAlreadySubmitted) {
@@ -97,6 +122,18 @@ class _PerplexityAnswerScreenState extends ConsumerState<PerplexityAnswerScreen>
           }
         }
       });
+    } else {
+      // ✅ REPLAY MODE: Sessions are already loaded from history - DO NOT submit query
+      if (kDebugMode) {
+        final existingSessions = ref.read(sessionHistoryProvider);
+        debugPrint('✅ REPLAY MODE: Skipping query submission');
+        debugPrint('   - Query: "${widget.query}"');
+        debugPrint('   - Sessions in provider: ${existingSessions.length}');
+        for (int i = 0; i < existingSessions.length; i++) {
+          final s = existingSessions[i];
+          debugPrint('   - Session $i: "${s.query}" (finalized: ${s.isFinalized})');
+        }
+      }
     }
   }
 
@@ -404,6 +441,16 @@ class _PerplexityAnswerScreenState extends ConsumerState<PerplexityAnswerScreen>
                       builder: (context) {
                         final sessions = ref.watch(sessionHistoryProvider);
                         
+                        // ✅ DEBUG: Log sessions when in replay mode
+                        if (widget.isReplayMode && kDebugMode) {
+                          debugPrint('📱 PerplexityAnswerScreen BUILD (replay mode)');
+                          debugPrint('   - Sessions count: ${sessions.length}');
+                          for (int i = 0; i < sessions.length; i++) {
+                            final s = sessions[i];
+                            debugPrint('   - Session $i: "${s.query}" (finalized: ${s.isFinalized}, summary: ${s.summary?.length ?? 0} chars, answer: ${s.answer?.length ?? 0} chars)');
+                          }
+                        }
+                        
                         // Memoization check
                         final currentHash = _computeSessionHash(sessions);
                         if (currentHash == _previousSessionHash && 
@@ -434,8 +481,10 @@ class _PerplexityAnswerScreenState extends ConsumerState<PerplexityAnswerScreen>
                                 results: sessionData['results'] ?? [],
                                 destinationImages: (sessionData['destination_images'] as List?)?.map((e) => e.toString()).toList() ?? [],
                                 locationCards: (sessionData['locationCards'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
+                                phase: QueryPhase.done, // ✅ HISTORY MODE: Set to done - these are completed sessions
                                 isStreaming: false,
                                 isParsing: false,
+                                isFinalized: true, // ✅ CRITICAL FIX: Mark as finalized to prevent re-execution
                               );
                               ref.read(sessionHistoryProvider.notifier).addSession(session);
                             }
@@ -461,8 +510,11 @@ class _PerplexityAnswerScreenState extends ConsumerState<PerplexityAnswerScreen>
                                           index: index,
                                           context: context,
                                           onFollowUpTap: (query, previousSession) {
-                                            _followUpController.text = query;
-                                            _onFollowUpSubmitted();
+                                            // ✅ FIX: Use followUpControllerProvider directly (same as PerplexityAnswerWidget)
+                                            ref.read(followUpControllerProvider.notifier).handleFollowUp(
+                                              query,
+                                              previousSession,
+                                            );
                                           },
                                           onHotelTap: (hotel) {
                                             Navigator.push(

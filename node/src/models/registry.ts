@@ -1,7 +1,4 @@
-/**
- * ✅ ModelRegistry: Manages active model providers
- * Central registry for loading and managing LLM/embedding models
- */
+
 
 import { ConfigModelProvider } from '../config/types';
 import BaseModelProvider, { createProviderInstance } from './base/provider';
@@ -38,8 +35,7 @@ class ModelRegistry {
       }
     });
 
-    // ✅ FALLBACK: If no providers are configured, create a default OpenAI provider
-    // This allows the app to work even if OPENAI_API_KEY is not in config file
+    
     if (this.activeProviders.length === 0) {
       console.warn('⚠️ No providers configured. Creating default OpenAI provider from environment...');
       
@@ -105,7 +101,7 @@ class ModelRegistry {
           };
         }
 
-        // Convert ModelList format (chat/embedding) to MinimalProvider format (chatModels/embeddingModels)
+        
         const chatModels = m.chat || [];
         const embeddingModels = m.embedding || [];
 
@@ -122,10 +118,10 @@ class ModelRegistry {
   }
 
   async loadChatModel(providerId: string, modelName: string) {
-    // ✅ FIX: Support both provider ID (UUID) and provider type (e.g., "openai")
+   
     let provider = this.activeProviders.find((p) => p.id === providerId);
     
-    // If not found by ID, try to find by type
+    
     if (!provider) {
       provider = this.activeProviders.find((p) => p.type === providerId);
     }
@@ -141,10 +137,10 @@ class ModelRegistry {
   }
 
   async loadEmbeddingModel(providerId: string, modelName: string) {
-    // ✅ FIX: Support both provider ID (UUID) and provider type (e.g., "openai")
+   
     let provider = this.activeProviders.find((p) => p.id === providerId);
     
-    // If not found by ID, try to find by type
+    
     if (!provider) {
       provider = this.activeProviders.find((p) => p.type === providerId);
     }
@@ -196,7 +192,7 @@ class ModelRegistry {
       };
     }
 
-    // Convert ModelList format (chat/embedding) to MinimalProvider format (chatModels/embeddingModels)
+    
     const chatModels = m.chat || [];
     const embeddingModels = m.embedding || [];
 
@@ -262,11 +258,11 @@ class ModelRegistry {
       };
     }
 
-    // Convert ModelList format (chat/embedding) to MinimalProvider format (chatModels/embeddingModels)
+    
     const chatModels = m.chat || [];
     const embeddingModels = m.embedding || [];
 
-    // Update existing provider in activeProviders
+    
     const index = this.activeProviders.findIndex((p) => p.id === providerId);
     if (index !== -1) {
       this.activeProviders[index] = {
@@ -287,10 +283,7 @@ class ModelRegistry {
     };
   }
 
-  /**
-   * Add a model to a provider
-   * Using async here because maybe in the future we might want to add some validation
-   */
+  
   async addProviderModel(
     providerId: string,
     type: 'embedding' | 'chat',
@@ -300,9 +293,7 @@ class ModelRegistry {
     return addedModel;
   }
 
-  /**
-   * Remove a model from a provider
-   */
+  
   async removeProviderModel(
     providerId: string,
     type: 'embedding' | 'chat',

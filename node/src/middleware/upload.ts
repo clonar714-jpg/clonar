@@ -5,13 +5,13 @@ import sharp from 'sharp';
 import fs from 'fs';
 import { Request } from 'express';
 
-// Ensure upload directory exists
+
 const uploadDir = process.env.UPLOAD_PATH || './uploads';
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure multer storage
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
@@ -22,7 +22,7 @@ const storage = multer.diskStorage({
   },
 });
 
-// File filter
+
 const fileFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const allowedTypes = (process.env.ALLOWED_IMAGE_TYPES || 'image/jpeg,image/png,image/webp,image/gif,image/jpg').split(',');
   
@@ -32,7 +32,7 @@ const fileFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFilt
   console.log('  - Field name:', file.fieldname);
   console.log('  - Allowed types:', allowedTypes);
   
-  // More flexible MIME type checking
+  
   const isAllowed = allowedTypes.includes(file.mimetype) || 
                    file.mimetype.startsWith('image/') ||
                    /\.(jpg|jpeg|png|webp|gif)$/i.test(file.originalname);
@@ -46,7 +46,7 @@ const fileFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFilt
   }
 };
 
-// Configure multer
+
 export const upload = multer({
   storage,
   fileFilter,
@@ -55,7 +55,7 @@ export const upload = multer({
   },
 });
 
-// Image processing middleware
+
 export const processImage = async (req: Request, res: any, next: any) => {
   try {
     if (!req.file) {
@@ -65,7 +65,7 @@ export const processImage = async (req: Request, res: any, next: any) => {
     const filePath = req.file.path;
     const processedPath = filePath.replace(path.extname(filePath), '_processed.jpg');
 
-    // Process image with Sharp
+    
     await sharp(filePath)
       .resize(1920, 1920, { 
         fit: 'inside',
@@ -74,10 +74,10 @@ export const processImage = async (req: Request, res: any, next: any) => {
       .jpeg({ quality: 85 })
       .toFile(processedPath);
 
-    // Delete original file
+    
     fs.unlinkSync(filePath);
 
-    // Update file info
+    
     req.file.path = processedPath;
     req.file.filename = path.basename(processedPath);
     req.file.mimetype = 'image/jpeg';
@@ -89,13 +89,13 @@ export const processImage = async (req: Request, res: any, next: any) => {
   }
 };
 
-// Multiple file upload middleware
+
 export const uploadMultiple = upload.array('images', 10); // Max 10 files
 
-// Single file upload middleware
+
 export const uploadSingle = upload.single('image');
 
-// Error handling for multer
+
 export const handleUploadError = (error: any, req: Request, res: any, next: any) => {
   console.log('❌ Upload Error:', error);
   console.log('❌ Upload Error Type:', typeof error);

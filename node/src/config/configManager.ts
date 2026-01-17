@@ -1,9 +1,4 @@
-/**
- * ✅ ConfigManager: Server-side configuration management
- * 
- * Manages application configuration stored in JSON file
- * Handles preferences, personalization, model providers, and search settings
- */
+
 
 import path from 'node:path';
 import fs from 'fs';
@@ -133,7 +128,7 @@ class ConfigManager {
   }
 
   private saveConfig() {
-    // Ensure data directory exists
+    
     const dataDir = path.dirname(this.configPath);
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
@@ -191,7 +186,7 @@ class ConfigManager {
       const newProvider: ConfigModelProvider & { required?: string[] } = {
         id: crypto.randomUUID(),
         name: provider.name || 'Provider',
-        type: provider.key || 'openai', // ✅ FIX: Use provider.key (e.g., "openai"), not field.key
+        type: provider.key || 'openai', 
         chatModels: [],
         embeddingModels: [],
         config: {},
@@ -203,7 +198,7 @@ class ConfigManager {
         newProvider.config[field.key] =
           process.env[field.env!] ||
           field.default ||
-          ''; /* Env var must exist for providers */
+          ''; 
 
         if (field.required) newProvider.required?.push(field.key);
       });
@@ -233,7 +228,7 @@ class ConfigManager {
 
     this.currentConfig.modelProviders.push(...newProviders);
 
-    /* search section */
+    
     this.uiConfigSections.search.forEach((f) => {
       if (f.env && !this.currentConfig.search[f.key]) {
         this.currentConfig.search[f.key] =

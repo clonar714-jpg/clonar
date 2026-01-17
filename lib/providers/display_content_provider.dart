@@ -6,7 +6,7 @@ import '../isolates/text_parsing_isolate.dart';
 import '../isolates/content_normalization_isolate.dart';
 import 'agent_provider.dart';
 
-/// ✅ PHASE 6: DisplayContent model - unified content structure for UI rendering
+
 class DisplayContent {
   final String summaryText;
   final List<Map<String, dynamic>> locations;
@@ -34,7 +34,7 @@ class DisplayContent {
     required this.resultType,
   });
 
-  /// Create empty/fallback content
+ 
   factory DisplayContent.empty() {
     return DisplayContent(
       summaryText: '',
@@ -52,22 +52,18 @@ class DisplayContent {
   }
 }
 
-/// ✅ PHASE 7: Memoized display content provider with keepAlive and isolate offloading
+
 final displayContentProvider = FutureProvider.family<DisplayContent, QuerySession>((ref, session) async {
-  // Keep alive to cache processed content
+  
   ref.keepAlive();
   try {
-    // ✅ Step 1: Get parsed output if available
+    
     ParsedContent? parsedContent = session.parsedOutput;
     
-    // ✅ Step 2: Get agent response for additional data
+    
     final agentResponse = ref.read(agentResponseProvider);
     
-    // ✅ FIX A & B: Collect all raw data first, then batch normalize in ONE isolate call
     
-    // Step 1: Extract raw summary text (before normalization)
-    // ✅ CRITICAL FIX: Use full answer if available, fallback to summary
-    // session.answer contains the complete answer text, session.summary is just the first paragraph
     String rawSummary = session.answer ?? session.summary ?? '';
     if (parsedContent != null && parsedContent.briefingText.isNotEmpty) {
       rawSummary = parsedContent.briefingText;
@@ -76,10 +72,10 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
                    agentResponse['summary']?.toString() ?? '';
     }
     
-    // Step 2: Collect location cards from all sources
+    
     final locationCardsToNormalize = <Map<String, dynamic>>[];
     
-    // From parsed content segments
+   
     if (parsedContent != null) {
       for (final segment in parsedContent.segments) {
         final location = segment['location'] as Map<String, dynamic>?;
@@ -89,22 +85,22 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // From session locationCards
+    
     locationCardsToNormalize.addAll(session.locationCards.map((e) => Map<String, dynamic>.from(e)));
     
-    // From agent response
+    
     if (agentResponse != null) {
       final responseLocations = (agentResponse['locationCards'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [];
       locationCardsToNormalize.addAll(responseLocations);
     }
     
-    // ✅ FIX B: Deduplicate location cards before isolate work
+    
     final uniqueLocationCards = {
       for (var e in locationCardsToNormalize)
         e['id']?.toString() ?? e['name']?.toString() ?? e['title']?.toString() ?? e.hashCode.toString(): e
     }.values.toList();
     
-    // ✅ Step 5: Extract destination images
+    
     final destinationImages = <String>[];
     destinationImages.addAll(session.destinationImages);
     if (agentResponse != null) {
@@ -116,11 +112,11 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // ✅ Step 6: Extract products
+    
     final products = <Product>[];
     products.addAll(session.products);
     
-    // Also extract from cards
+    
     if (session.cards.isNotEmpty) {
       for (final card in session.cards) {
         try {
@@ -136,11 +132,11 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // Step 3: Collect hotel cards from all sources
+    
     final hotelCardsToNormalize = <Map<String, dynamic>>[];
     hotelCardsToNormalize.addAll(session.hotelResults.map((e) => Map<String, dynamic>.from(e)));
     
-    // From results
+    
     for (final result in session.results) {
       if (result is Map) {
         final resultMap = Map<String, dynamic>.from(result);
@@ -152,7 +148,7 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // From agent response
+    
     if (agentResponse != null) {
       final responseHotels = (agentResponse['results'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [];
       final intent = agentResponse['intent']?.toString().toLowerCase() ?? '';
@@ -163,13 +159,13 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // ✅ FIX B: Deduplicate hotel cards before isolate work
+
     final uniqueHotelCards = {
       for (var e in hotelCardsToNormalize)
         e['id']?.toString() ?? e['name']?.toString() ?? e.hashCode.toString(): e
     }.values.toList();
     
-    // Step 4: Collect flight cards
+    
     final flightCardsToNormalize = <Map<String, dynamic>>[];
     for (final result in session.results) {
       if (result is Map) {
@@ -181,13 +177,13 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // ✅ FIX B: Deduplicate flight cards before isolate work
+    
     final uniqueFlightCards = {
       for (var e in flightCardsToNormalize)
         e['id']?.toString() ?? e.hashCode.toString(): e
     }.values.toList();
     
-    // Step 5: Collect restaurant cards
+    
     final restaurantCardsToNormalize = <Map<String, dynamic>>[];
     for (final result in session.results) {
       if (result is Map) {
@@ -199,13 +195,13 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       }
     }
     
-    // ✅ FIX B: Deduplicate restaurant cards before isolate work
+    
     final uniqueRestaurantCards = {
       for (var e in restaurantCardsToNormalize)
         e['id']?.toString() ?? e['name']?.toString() ?? e.hashCode.toString(): e
     }.values.toList();
     
-    // ✅ FIX A: Batch ALL normalization into ONE isolate call
+    
     final normalized = await compute(normalizeDisplayContentIsolate, {
       'summary': rawSummary,
       'locations': uniqueLocationCards,
@@ -214,14 +210,14 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       'restaurants': uniqueRestaurantCards,
     });
     
-    // Extract normalized results (compute returns Map)
+    
     final summaryText = normalized['summary'] as String;
     final locations = (normalized['locations'] as List).cast<Map<String, dynamic>>();
     final hotels = (normalized['hotels'] as List).cast<Map<String, dynamic>>();
     final flights = (normalized['flights'] as List).cast<Map<String, dynamic>>();
     final restaurants = (normalized['restaurants'] as List).cast<Map<String, dynamic>>();
     
-    // ✅ Step 8: Extract sections (for hotels) - no normalization needed
+    
     final sections = <Map<String, dynamic>>[];
     if (session.hotelSections != null) {
       sections.addAll(session.hotelSections!.map((e) => Map<String, dynamic>.from(e)));
@@ -231,7 +227,7 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       sections.addAll(responseSections);
     }
     
-    // ✅ Step 11: Extract sources
+    
     final sources = <Map<String, dynamic>>[];
     sources.addAll(session.sources.map((e) => Map<String, dynamic>.from(e)));
     if (agentResponse != null) {
@@ -239,13 +235,13 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
       sources.addAll(responseSources);
     }
     
-    // ✅ Step 12: Build answer markdown (from parsed content or summary)
+    
     String answerMarkdown = summaryText;
     if (parsedContent != null && parsedContent.placeNamesText.isNotEmpty) {
       answerMarkdown += '\n\nTop places to visit include: ${parsedContent.placeNamesText}.';
     }
     
-    // ✅ Step 13: Determine result type
+    
     final resultType = session.resultType;
     
     if (kDebugMode) {
@@ -289,5 +285,5 @@ final displayContentProvider = FutureProvider.family<DisplayContent, QuerySessio
   }
 });
 
-// ✅ PHASE 7: Removed local normalization functions - now using isolate functions
+
 

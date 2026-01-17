@@ -1,18 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Providers Endpoint
- * GET /api/providers
- * 
- * Returns available LLM providers and models
- * 
- * Response:
- * {
- *   providers: Array<{
- *     id: string,
- *     name: string,
- *     models: Array<{id, name, description}>
- *   }>
- * }
- */
+
 import express from "express";
 import { Request, Response } from "express";
 
@@ -20,7 +6,7 @@ const router = express.Router();
 
 router.get("/", async (req: Request, res: Response) => {
   try {
-    // ✅ PERPLEXICA-STYLE: Return available providers and models
+    
     const providers = [
       {
         id: "openai",
@@ -38,7 +24,7 @@ router.get("/", async (req: Request, res: Response) => {
           },
         ],
       },
-      // Add more providers as they become available
+      
     ];
 
     res.json({

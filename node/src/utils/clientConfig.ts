@@ -1,10 +1,4 @@
-/**
- * ✅ Client Configuration Utility
- * 
- * Parses and normalizes client-side configuration from request headers/body
- * These settings come from localStorage on the client side
- * Can also fall back to server-side config from ConfigManager
- */
+
 
 import { configManager } from '../config';
 
@@ -17,9 +11,7 @@ export interface ClientConfig {
   measurementUnit?: 'metric' | 'imperial';
 }
 
-/**
- * Parse boolean from string (handles 'true'/'false' strings)
- */
+
 function parseBoolean(value: any, defaultValue: boolean = true): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -28,17 +20,14 @@ function parseBoolean(value: any, defaultValue: boolean = true): boolean {
   return defaultValue;
 }
 
-/**
- * Extract client config from request
- * Can come from headers (X-Client-Config) or body
- */
+
 export function getClientConfig(req: {
   headers?: Record<string, string | string[] | undefined>;
   body?: Record<string, any>;
 }): ClientConfig {
   const config: ClientConfig = {};
 
-  // Try to get from headers first (if client sends as JSON header)
+  
   const headerConfig = req.headers?.['x-client-config'];
   if (headerConfig) {
     try {
@@ -51,7 +40,7 @@ export function getClientConfig(req: {
     }
   }
 
-  // Fallback to body
+  
   if (req.body) {
     return normalizeConfig(req.body);
   }
@@ -59,9 +48,7 @@ export function getClientConfig(req: {
   return config;
 }
 
-/**
- * Normalize config values to proper types
- */
+
 function normalizeConfig(raw: any): ClientConfig {
   return {
     theme: raw.theme === 'light' ? 'light' : 'dark',
@@ -77,12 +64,9 @@ function normalizeConfig(raw: any): ClientConfig {
   };
 }
 
-/**
- * Get default client config (for when no config is provided)
- * Falls back to server-side config if available
- */
+
 export function getDefaultClientConfig(): ClientConfig {
-  // Try to get from server config first
+  
   const serverPrefs = configManager.getConfig('preferences', {});
   const serverPersonalization = configManager.getConfig('personalization', {});
 

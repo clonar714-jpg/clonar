@@ -1,8 +1,4 @@
-/**
- * ✅ Agent-Style Hotel Widget
- * Uses LLM to extract intent and fetches from multiple APIs (Google Maps, Booking.com, SerpAPI)
- * Merges all sources with deduplication - no fallback needed
- */
+
 
 import { Widget, WidgetResult } from '../widgetSystem';
 import { WidgetInput, WidgetInterface } from './executor';
@@ -10,7 +6,7 @@ import { search } from '../searchService';
 import axios from 'axios';
 import z from 'zod';
 
-// Intent extraction schema
+
 const hotelIntentSchema = z.object({
   location: z.string().nullable().describe('City or location name (e.g., "Houston, TX")'),
   checkIn: z.string().nullable().optional().describe('Check-in date in YYYY-MM-DD format'),
@@ -34,7 +30,7 @@ interface HotelIntent {
   amenities?: string[] | null;
 }
 
-// Geocode location using Google Maps Geocoding API
+
 async function geocodeLocation(location: string): Promise<{ lat: number; lng: number } | null> {
   const googleMapsKey = process.env.GOOGLE_MAPS_BACKEND_KEY;
   if (!googleMapsKey) {
@@ -66,7 +62,7 @@ async function geocodeLocation(location: string): Promise<{ lat: number; lng: nu
   }
 }
 
-// Fetch hotels from Google Maps Places API (Text Search)
+
 async function fetchFromGoogleMaps(
   location: string,
   intent: HotelIntent
@@ -80,18 +76,18 @@ async function fetchFromGoogleMaps(
   try {
     const axios = (await import('axios')).default;
     
-    // Build query: "hotels in {location}" with optional filters
+   
     let query = `hotels in ${location}`;
     if (intent.hotelType) {
       query = `${intent.hotelType} ${query}`;
     }
 
-    // Step 1: Text Search to find hotels
+    
     const textSearchResponse = await axios.get('https://maps.googleapis.com/maps/api/place/textsearch/json', {
       params: {
         query: query,
         key: googleMapsKey,
-        type: 'lodging', // Hotels only
+        type: 'lodging', 
       },
       timeout: 10000,
     });
@@ -100,9 +96,9 @@ async function fetchFromGoogleMaps(
       return [];
     }
 
-    const places = textSearchResponse.data.results.slice(0, 10); // Limit to 10
+    const places = textSearchResponse.data.results.slice(0, 10); 
 
-    // Step 2: Get detailed info for each place (photos, reviews, etc.)
+    
     const detailedPlaces = await Promise.all(
       places.map(async (place: any) => {
         try {
@@ -112,15 +108,15 @@ async function fetchFromGoogleMaps(
               key: googleMapsKey,
               fields: 'name,formatted_address,geometry,rating,user_ratings_total,photos,reviews,website,formatted_phone_number,types',
             },
-            timeout: 10000, // Increased from 5000 to 10000 for better reliability
+            timeout: 10000, 
           });
 
           const details = detailsResponse.data.result;
           
-          // Build photos array
+          
           const photos: string[] = [];
           if (details.photos && details.photos.length > 0) {
-            // Get first 5 photos
+            
             details.photos.slice(0, 5).forEach((photo: any) => {
               if (photo.photo_reference) {
                 photos.push(`https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photo.photo_reference}&key=${googleMapsKey}`);
@@ -128,7 +124,7 @@ async function fetchFromGoogleMaps(
             });
           }
           
-          // Debug logging
+          
           if (photos.length === 0 && details.photos) {
             console.warn(`⚠️ Hotel ${details.name} has photos field but no photo_reference found`);
           } else if (photos.length > 0) {
@@ -153,8 +149,7 @@ async function fetchFromGoogleMaps(
           };
         } catch (error: any) {
           console.warn(`⚠️ Failed to get details for place ${place.place_id}:`, error.message);
-          // Return basic info if details fail
-          // Note: Text Search results may not always have photos in the same format
+          
           const fallbackPhotos: string[] = [];
           if (place.photos && Array.isArray(place.photos)) {
             place.photos.slice(0, 5).forEach((p: any) => {
@@ -197,19 +192,16 @@ async function fetchFromGoogleMaps(
   }
 }
 
-// Fetch hotels from Booking.com API (requires dates)
+
 async function fetchFromBookingCom(
   intent: HotelIntent
 ): Promise<any[]> {
-  // TODO: Implement Booking.com API call
-  // - Requires checkIn, checkOut, guests
-  // - Returns real-time prices and availability
-  // - Note: Booking.com API requires partnership/affiliate program
+  
   console.warn('⚠️ Booking.com API not implemented - will use other sources');
   return [];
 }
 
-// Fetch hotels from SerpAPI using google_hotels engine
+
 async function fetchFromSerpAPI(
   location: string,
   intent: HotelIntent
@@ -221,28 +213,28 @@ async function fetchFromSerpAPI(
       return [];
     }
 
-    // Build search query
+    
     let query = `hotels in ${location}`;
     if (intent.hotelType) {
       query = `${intent.hotelType} ${query}`;
     }
 
-    // Prepare SerpAPI parameters for google_hotels engine
+    
     const params: any = {
       engine: 'google_hotels',
       q: query,
       api_key: serpKey,
       hl: 'en',
       gl: 'us',
-      num: 20, // Get more results for better selection
+      num: 20, 
     };
 
-    // Add dates if provided
+    
     if (intent.checkIn && intent.checkOut) {
       params.check_in_date = intent.checkIn;
       params.check_out_date = intent.checkOut;
     } else {
-      // Default to 7 days from now, 1 night stay
+      
       const today = new Date();
       const checkIn = new Date(today);
       checkIn.setDate(today.getDate() + 7);
@@ -252,22 +244,22 @@ async function fetchFromSerpAPI(
       params.check_out_date = checkOut.toISOString().split('T')[0];
     }
 
-    // Add guests if provided
+   
     if (intent.guests) {
       params.adults = intent.guests.toString();
     } else {
-      params.adults = '2'; // Default
+      params.adults = '2'; 
     }
 
     params.currency = 'USD';
 
-    // Make direct API call to SerpAPI google_hotels engine
+    
     const response = await axios.get('https://serpapi.com/search.json', {
       params,
       timeout: 10000,
     });
 
-    // Extract hotel data from properties array (google_hotels engine returns this)
+    
     const hotelResults = response.data.properties || [];
 
     if (hotelResults.length === 0) {
@@ -275,9 +267,9 @@ async function fetchFromSerpAPI(
       return [];
     }
 
-    // Transform to consistent format
+    
     return hotelResults.map((hotel: any) => {
-      // Extract images properly from SerpAPI hotel response
+      
       const images: string[] = [];
       if (hotel.images && Array.isArray(hotel.images)) {
         hotel.images.forEach((img: any) => {
@@ -289,13 +281,13 @@ async function fetchFromSerpAPI(
         });
       }
       
-      // Get thumbnail (first image or dedicated thumbnail field)
+      
       const thumbnail = hotel.thumbnail || 
                        (images.length > 0 ? images[0] : undefined) ||
                        hotel.image ||
                        hotel.photo;
 
-      // Extract price from rate_per_night object if available
+      
       let price: string | undefined;
       if (hotel.rate_per_night) {
         if (typeof hotel.rate_per_night === 'object') {
@@ -334,7 +326,7 @@ async function fetchFromSerpAPI(
   }
 }
 
-// Decide which data sources to use based on intent
+
 function decideDataSources(intent: HotelIntent): {
   useGoogleMaps: boolean;
   useBookingCom: boolean;
@@ -343,13 +335,13 @@ function decideDataSources(intent: HotelIntent): {
   const hasDates = !!(intent.checkIn && intent.checkOut);
   
   return {
-    useGoogleMaps: !!intent.location, // Always use if location provided
-    useBookingCom: hasDates, // Only if dates provided
-    useSerpAPI: true, // Always use SerpAPI as one of the sources
+    useGoogleMaps: !!intent.location, 
+    useBookingCom: hasDates, 
+    useSerpAPI: true, 
   };
 }
 
-// Merge hotel data from multiple sources, deduplicating by name + location
+
 function mergeHotelData(
   googleMapsData: any[],
   bookingData: any[],
@@ -358,14 +350,14 @@ function mergeHotelData(
   const merged: any[] = [];
   const seen = new Set<string>();
   
-  // Helper to generate unique key for deduplication
+  
   const getKey = (hotel: any): string => {
     const name = (hotel.name || hotel.title || '').toLowerCase().trim();
     const address = (hotel.address || hotel.location || '').toLowerCase().trim();
     return `${name}::${address}`;
   };
   
-  // Priority 1: Google Maps data (most authoritative - coordinates, photos, reviews)
+  
   googleMapsData.forEach(hotel => {
     const key = getKey(hotel);
     if (!seen.has(key)) {
@@ -377,11 +369,11 @@ function mergeHotelData(
     }
   });
   
-  // Priority 2: Booking.com data (real-time prices, availability)
+  
   bookingData.forEach(hotel => {
     const key = getKey(hotel);
     if (seen.has(key)) {
-      // Merge with existing hotel
+      
       const existing = merged.find(h => getKey(h) === key);
       if (existing) {
         existing.bookingComLink = hotel.bookingLink;
@@ -398,14 +390,14 @@ function mergeHotelData(
     }
   });
   
-  // Priority 3: SerpAPI data (supplement with additional info)
+  
   serpAPIData.forEach(hotel => {
     const key = getKey(hotel);
     if (seen.has(key)) {
-      // Merge with existing hotel
+      
       const existing = merged.find(h => getKey(h) === key);
       if (existing) {
-        // Only add missing fields (don't overwrite authoritative sources)
+        
         if (!existing.description && hotel.description) existing.description = hotel.description;
         if (!existing.thumbnail && hotel.thumbnail) existing.thumbnail = hotel.thumbnail;
         if (!existing.link && hotel.link) existing.link = hotel.link;
@@ -424,10 +416,10 @@ function mergeHotelData(
   return merged;
 }
 
-// Separate evidence (factual) from commerce (booking) data
+
 function formatHotelCards(hotels: any[]): any[] {
   return hotels.map(hotel => ({
-    // Evidence (factual, non-commercial)
+   
     id: hotel.place_id || hotel.hotel_id || hotel.property_id || hotel.id || hotel.link,
     name: hotel.name || hotel.title || 'Unknown Hotel',
     address: hotel.address || hotel.location || hotel.address_lines?.join(', '),
@@ -445,7 +437,7 @@ function formatHotelCards(hotels: any[]): any[] {
     description: hotel.description || hotel.snippet,
     thumbnail: hotel.thumbnail || hotel.image || hotel.photo || '',
     
-    // Commerce (booking-related)
+    
     link: hotel.link || hotel.website,
     bookingLinks: {
       bookingCom: hotel.bookingComLink || hotel.booking_link,
@@ -464,17 +456,17 @@ const hotelWidget: WidgetInterface = {
   type: 'hotel',
 
   shouldExecute(classification?: any): boolean {
-    // ✅ Check structured classification flags (from Zod classifier)
+   
     if (classification?.classification?.showHotelWidget) {
       return true;
     }
     
-    // Check if hotel widget should execute based on classification
+    
     if (classification?.widgetTypes?.includes('hotel')) {
       return true;
     }
     
-    // Fallback: check intent/domains
+    
     const detectedDomains = classification?.detectedDomains || [];
     const intent = classification?.intent || '';
     return detectedDomains.includes('hotel') || intent === 'hotel';
@@ -483,7 +475,7 @@ const hotelWidget: WidgetInterface = {
   async execute(input: WidgetInput): Promise<WidgetResult | null> {
     const { widget, classification, rawResponse, followUp, llm } = input;
     
-    // ✅ CRITICAL: LLM is required for agent-style widget (intent extraction)
+    
     if (!llm) {
       return {
         type: 'hotel',
@@ -494,7 +486,7 @@ const hotelWidget: WidgetInterface = {
     }
 
     try {
-      // Step 1: Extract structured intent using LLM
+      
       const query = followUp || classification?.query || classification?.queryRefinement || '';
       
       if (!query) {
@@ -508,7 +500,7 @@ const hotelWidget: WidgetInterface = {
 
       console.log('🔍 Extracting hotel intent from query:', query);
       
-      // Use generateObject if available, otherwise fall back to generateText + JSON parsing
+      
       let intentOutput: { object: HotelIntent };
       
       if (typeof llm.generateObject === 'function') {
@@ -526,7 +518,7 @@ const hotelWidget: WidgetInterface = {
           schema: hotelIntentSchema,
         });
       } else {
-        // Fallback: use generateText and parse JSON
+        
         const response = await llm.generateText({
           messages: [
             {
@@ -551,14 +543,14 @@ const hotelWidget: WidgetInterface = {
 
       const intent: HotelIntent = intentOutput.object;
       
-      // ✅ Normalize null arrays to empty arrays for easier handling
+      
       if (intent.amenities === null) {
         intent.amenities = [];
       }
       
       console.log('✅ Extracted hotel intent:', intent);
 
-      // Step 2: Validate location
+     
       if (!intent.location) {
         return {
           type: 'hotel',
@@ -568,20 +560,20 @@ const hotelWidget: WidgetInterface = {
         };
       }
 
-      // Step 3: Geocode location (optional - for better accuracy)
+      
       let coordinates: { lat: number; lng: number } | null = null;
       try {
         coordinates = await geocodeLocation(intent.location);
       } catch (error: any) {
         console.warn('⚠️ Geocoding failed:', error.message);
-        // Continue without coordinates
+       
       }
 
-      // Step 4: Decide which data sources to use
+      
       const sources = decideDataSources(intent);
       console.log('📊 Data sources decision:', sources);
 
-      // Step 5: Fetch from ALL sources in parallel (no fallback - all are data sources)
+      
       const fetchPromises: Promise<any[]>[] = [];
       
       if (sources.useGoogleMaps) {
@@ -589,7 +581,7 @@ const hotelWidget: WidgetInterface = {
           fetchFromGoogleMaps(intent.location, intent)
             .catch(error => {
               console.warn('⚠️ Google Maps API failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -601,7 +593,7 @@ const hotelWidget: WidgetInterface = {
           fetchFromBookingCom(intent)
             .catch(error => {
               console.warn('⚠️ Booking.com API failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -613,7 +605,7 @@ const hotelWidget: WidgetInterface = {
           fetchFromSerpAPI(intent.location, intent)
             .catch(error => {
               console.warn('⚠️ SerpAPI failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -622,11 +614,11 @@ const hotelWidget: WidgetInterface = {
 
       const [googleMapsData, bookingData, serpAPIData] = await Promise.all(fetchPromises);
 
-      // Step 6: Merge data from all sources
+      
       const mergedHotels = mergeHotelData(googleMapsData, bookingData, serpAPIData);
       console.log(`✅ Merged ${mergedHotels.length} hotels from ${googleMapsData.length} Google Maps, ${bookingData.length} Booking.com, ${serpAPIData.length} SerpAPI`);
 
-      // Step 8: Format hotel cards with evidence/commerce separation
+      
       const hotelCards = formatHotelCards(mergedHotels);
 
       if (hotelCards.length === 0) {
@@ -647,7 +639,7 @@ const hotelWidget: WidgetInterface = {
     } catch (error: any) {
       console.error('❌ Agent-style hotel widget error:', error);
       
-      // No fallback - return error (all sources are already included in the widget)
+      
       return {
         type: 'hotel',
         data: [],

@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Action Registration
- * Registers all research actions with the ActionRegistry
- */
+
 
 import ActionRegistry from './registry';
 import academicSearchAction from './academicSearchAction';
@@ -12,7 +9,7 @@ import socialSearchAction from './socialSearchAction';
 import uploadsSearchAction from './uploadsSearchAction';
 import webSearchAction from './webSearchAction';
 
-// Register all actions
+
 ActionRegistry.register(doneAction);
 ActionRegistry.register(academicSearchAction);
 ActionRegistry.register(reasoningPreambleAction);

@@ -1,7 +1,4 @@
-/**
- * TMDB (The Movie Database) Service
- * Handles movie-related API calls using TMDB API
- */
+
 
 /**
  * Get TMDB API key from environment variables
@@ -15,9 +12,7 @@ export function getTMDBApiKey(): string {
   return apiKey;
 }
 
-/**
- * TMDB API base URL
- */
+
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
 /**
@@ -185,17 +180,17 @@ export async function getMovieReviews(movieId: number, page: number = 1): Promis
     }
     const data = await response.json();
     
-    // Log review count for debugging
+   
     const reviewCount = data?.results?.length ?? 0;
     const totalPages = data?.total_pages ?? 0;
     console.log(`📝 Movie ${movieId} reviews: ${reviewCount} reviews on page ${page} (total pages: ${totalPages})`);
     
-    // If no reviews on first page, try fetching multiple pages (up to 3) to get more reviews
+    
     if (reviewCount === 0 && page === 1 && totalPages > 1) {
       console.log(`📝 No reviews on page 1, trying to fetch from multiple pages...`);
       const allReviews: any[] = [];
       
-      // Fetch up to 3 pages to get more reviews
+     
       for (let p = 1; p <= Math.min(3, totalPages); p++) {
         try {
           const pageUrl = `${TMDB_BASE_URL}/movie/${movieId}/reviews?api_key=${apiKey}&page=${p}`;

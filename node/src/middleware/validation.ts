@@ -1,6 +1,6 @@
 import Joi from 'joi';
 
-// Login validation schema
+
 export const loginSchema = Joi.object({
   email: Joi.string().email().required().messages({
     'string.email': 'Please enter a valid email address',
@@ -12,7 +12,7 @@ export const loginSchema = Joi.object({
   }),
 });
 
-// Registration validation schema
+
 export const registerSchema = Joi.object({
   email: Joi.string().email().required().messages({
     'string.email': 'Please enter a valid email address',

@@ -1,11 +1,8 @@
-// src/memory/SessionStore.ts
+
 
 import { SessionState } from "./sessionMemory";
 
-/**
- * SessionStore interface for abstracting session storage
- * Supports both in-memory and persistent (Redis) storage
- */
+
 export interface SessionStore {
   /**
    * Get session state for a given session ID

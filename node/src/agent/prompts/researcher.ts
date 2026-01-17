@@ -1,31 +1,15 @@
-/**
- * Researcher prompts for different optimization modes
- * Supports speed, balanced, and quality modes with tool-based research
- * 
- * NOTE: This prompt is designed for a tool-based research architecture (ReAct-style)
- * where the LLM calls tools like web_search, __reasoning_preamble, done, etc.
- * 
- * CURRENT STATUS: The Researcher class in APISearchAgent.ts uses a simpler
- * direct search approach. This prompt is available for future enhancement if
- * we want to implement tool-based iterative research.
- * 
- * To use this prompt, the Researcher class would need to:
- * 1. Use the LLM with tools (web_search, file_search, etc.)
- * 2. Implement the reasoning preamble pattern
- * 3. Handle tool calls and iterate based on results
- */
+
 
 import { db } from '../../services/database';
 
-// Helper function to get file data from file IDs
+
 async function getFileData(fileIds: string[]): Promise<Array<{ fileName: string; initialContent: string }>> {
   if (!fileIds || fileIds.length === 0) {
     return [];
   }
 
   try {
-    // Get file records from database
-    // Note: Supabase .in() syntax - check if this works, otherwise use .or() with multiple .eq()
+    
     const { data: files, error } = await db.userFiles()
       .select('id, file_name')
       .in('id', fileIds);
@@ -34,7 +18,7 @@ async function getFileData(fileIds: string[]): Promise<Array<{ fileName: string;
       return [];
     }
 
-    // Get file chunks to reconstruct content
+    
     const fileDataPromises = files.map(async (file) => {
       const { data: chunks, error: chunksError } = await db.userFileChunks()
         .select('content, chunk_index')
@@ -48,7 +32,7 @@ async function getFileData(fileIds: string[]): Promise<Array<{ fileName: string;
         };
       }
 
-      // Reconstruct file content from chunks
+      
       const initialContent = chunks.map((chunk) => chunk.content).join('\n\n');
 
       return {

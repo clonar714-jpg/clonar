@@ -1,15 +1,11 @@
-/**
- * ✅ Agent-Style Place Widget
- * Uses LLM to extract intent and fetches from multiple APIs (Google Maps Places, SerpAPI)
- * Merges all sources with deduplication - no fallback needed
- */
+
 
 import { Widget, WidgetResult } from '../widgetSystem';
 import { WidgetInput, WidgetInterface } from './executor';
 import { search } from '../searchService';
 import z from 'zod';
 
-// Intent extraction schema
+
 const placeIntentSchema = z.object({
   placeName: z.string().nullable().describe('Place name or type (e.g., "restaurants", "museums", "coffee shops")'),
   location: z.string().nullable().describe('City or location name (e.g., "Houston, TX")'),
@@ -28,7 +24,7 @@ interface PlaceIntent {
   priceRange?: '$' | '$$' | '$$$' | '$$$$' | null;
 }
 
-// Geocode location using Google Maps Geocoding API
+
 async function geocodeLocation(location: string): Promise<{ lat: number; lng: number } | null> {
   const googleMapsKey = process.env.GOOGLE_MAPS_BACKEND_KEY;
   if (!googleMapsKey) {
@@ -60,7 +56,7 @@ async function geocodeLocation(location: string): Promise<{ lat: number; lng: nu
   }
 }
 
-// Fetch places from Google Maps Places API (Text Search)
+
 async function fetchFromGoogleMaps(
   location: string,
   intent: PlaceIntent
@@ -74,7 +70,7 @@ async function fetchFromGoogleMaps(
   try {
     const axios = (await import('axios')).default;
     
-    // Build query: "{placeName} in {location}" or "{type} in {location}"
+    
     let query = '';
     if (intent.placeName) {
       query = `${intent.placeName} in ${location}`;
@@ -84,7 +80,7 @@ async function fetchFromGoogleMaps(
       query = `places in ${location}`;
     }
 
-    // Determine place type for Google Maps API
+    
     let placeType: string | undefined;
     if (intent.type || intent.category) {
       const typeMap: { [key: string]: string } = {
@@ -110,12 +106,12 @@ async function fetchFromGoogleMaps(
       placeType = typeMap[normalizedType];
     }
 
-    // Step 1: Text Search to find places
+  
     const textSearchResponse = await axios.get('https://maps.googleapis.com/maps/api/place/textsearch/json', {
       params: {
         query: query,
         key: googleMapsKey,
-        type: placeType, // Optional: filter by place type
+        type: placeType, 
       },
       timeout: 10000,
     });
@@ -124,14 +120,14 @@ async function fetchFromGoogleMaps(
       return [];
     }
 
-    let places = textSearchResponse.data.results.slice(0, 15); // Limit to 15
+    let places = textSearchResponse.data.results.slice(0, 15); 
 
-    // Filter by rating if specified
+    
     if (intent.rating) {
       places = places.filter((place: any) => place.rating && place.rating >= intent.rating!);
     }
 
-    // Step 2: Get detailed info for each place (photos, reviews, etc.)
+    
     const detailedPlaces = await Promise.all(
       places.map(async (place: any) => {
         try {
@@ -146,10 +142,10 @@ async function fetchFromGoogleMaps(
 
           const details = detailsResponse.data.result;
           
-          // Build photos array
+          
           const photos: string[] = [];
           if (details.photos && details.photos.length > 0) {
-            // Get first 5 photos
+            
             details.photos.slice(0, 5).forEach((photo: any) => {
               photos.push(`https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photo.photo_reference}&key=${googleMapsKey}`);
             });
@@ -170,13 +166,13 @@ async function fetchFromGoogleMaps(
             phone: details.formatted_phone_number,
             place_id: place.place_id,
             types: details.types || [],
-            priceLevel: details.price_level, // 0-4 for restaurants
+            priceLevel: details.price_level, 
             openingHours: details.opening_hours?.weekday_text,
             source: 'google_maps',
           };
         } catch (error: any) {
           console.warn(`⚠️ Failed to get details for place ${place.place_id}:`, error.message);
-          // Return basic info if details fail
+          
           return {
             name: place.name,
             address: place.formatted_address,
@@ -207,13 +203,13 @@ async function fetchFromGoogleMaps(
   }
 }
 
-// Fetch places from SerpAPI
+
 async function fetchFromSerpAPI(
   location: string,
   intent: PlaceIntent
 ): Promise<any[]> {
   try {
-    // Build search query
+ 
     let query = '';
     if (intent.placeName) {
       query = `${intent.placeName} in ${location}`;
@@ -223,20 +219,20 @@ async function fetchFromSerpAPI(
       query = `places in ${location}`;
     }
 
-    // Use the search service to get SerpAPI results
+   
     const searchResult = await search(query.trim(), [], {
       maxResults: 15,
       searchType: 'web',
     });
 
-    // Extract place data from SerpAPI rawResponse
+    
     const placeResults = searchResult.rawResponse?.places_results || 
                         searchResult.rawResponse?.local_results ||
                         searchResult.rawResponse?.organic_results?.filter((r: any) => 
                           r.type === 'place' || r.type === 'local' || r.gps_coordinates
                         ) || [];
 
-    // Transform to consistent format
+    
     return placeResults.map((place: any) => ({
       name: place.title || place.name,
       address: place.address || (place.address_lines ? (Array.isArray(place.address_lines) ? place.address_lines.join(', ') : place.address_lines) : undefined),
@@ -264,18 +260,18 @@ async function fetchFromSerpAPI(
   }
 }
 
-// Decide which data sources to use based on intent
+
 function decideDataSources(intent: PlaceIntent): {
   useGoogleMaps: boolean;
   useSerpAPI: boolean;
 } {
   return {
-    useGoogleMaps: !!intent.location, // Always use if location provided
-    useSerpAPI: true, // Always use SerpAPI as one of the sources
+    useGoogleMaps: !!intent.location, 
+    useSerpAPI: true, 
   };
 }
 
-// Merge place data from multiple sources, deduplicating by name + location
+
 function mergePlaceData(
   googleMapsData: any[],
   serpAPIData: any[]
@@ -283,14 +279,14 @@ function mergePlaceData(
   const merged: any[] = [];
   const seen = new Set<string>();
   
-  // Helper to generate unique key for deduplication
+  
   const getKey = (place: any): string => {
     const name = (place.name || place.title || '').toLowerCase().trim();
     const address = (place.address || place.formatted_address || '').toLowerCase().trim();
     return `${name}::${address}`;
   };
   
-  // Priority 1: Google Maps data (most authoritative - coordinates, photos, reviews)
+  
   googleMapsData.forEach(place => {
     const key = getKey(place);
     if (!seen.has(key)) {
@@ -302,14 +298,14 @@ function mergePlaceData(
     }
   });
   
-  // Priority 2: SerpAPI data (supplement with additional info)
+  
   serpAPIData.forEach(place => {
     const key = getKey(place);
     if (seen.has(key)) {
-      // Merge with existing place
+      
       const existing = merged.find(p => getKey(p) === key);
       if (existing) {
-        // Only add missing fields (don't overwrite authoritative sources)
+        
         if (!existing.description && place.description) existing.description = place.description;
         if (!existing.thumbnail && place.thumbnail) existing.thumbnail = place.thumbnail;
         if (!existing.link && place.link) existing.link = place.link;
@@ -329,10 +325,10 @@ function mergePlaceData(
   return merged;
 }
 
-// Separate evidence (factual) from commerce (booking/reservation) data
+
 function formatPlaceCards(places: any[]): any[] {
   return places.map(place => ({
-    // Evidence (factual, non-commercial)
+    
     id: place.place_id || place.id || (place.coordinates ? `${place.coordinates.lat}-${place.coordinates.lng}` : `place-${Math.random()}`),
     name: place.name || place.title || 'Unknown Place',
     address: place.address || place.formatted_address,
@@ -349,14 +345,14 @@ function formatPlaceCards(places: any[]): any[] {
     phone: place.phone || place.formatted_phone_number,
     openingHours: place.openingHours,
     
-    // Commerce (booking/reservation-related)
+    
     link: place.link || place.website,
     bookingLinks: {
       googleMaps: place.place_id ? `https://www.google.com/maps/place/?q=place_id:${place.place_id}` : undefined,
       website: place.website || place.link,
       reservation: place.reservation_link,
     },
-    priceLevel: place.priceLevel, // For restaurants: 0-4
+    priceLevel: place.priceLevel, 
   }));
 }
 
@@ -364,17 +360,17 @@ const placeWidget: WidgetInterface = {
   type: 'place',
 
   shouldExecute(classification?: any): boolean {
-    // ✅ Check structured classification flags (from Zod classifier)
+    
     if (classification?.classification?.showPlaceWidget) {
       return true;
     }
     
-    // Check if place widget should execute based on classification
+    
     if (classification?.widgetTypes?.includes('place')) {
       return true;
     }
     
-    // Fallback: check intent/domains
+    
     const detectedDomains = classification?.detectedDomains || [];
     const intent = classification?.intent || '';
     return detectedDomains.includes('place') || intent === 'place';
@@ -383,7 +379,7 @@ const placeWidget: WidgetInterface = {
   async execute(input: WidgetInput): Promise<WidgetResult | null> {
     const { widget, classification, rawResponse, followUp, llm } = input;
     
-    // ✅ CRITICAL: LLM is required for agent-style widget (intent extraction)
+    
     if (!llm) {
       return {
         type: 'place',
@@ -394,7 +390,7 @@ const placeWidget: WidgetInterface = {
     }
 
     try {
-      // Step 1: Extract structured intent using LLM
+      
       const query = followUp || classification?.query || classification?.queryRefinement || widget?.params?.query || '';
       
       if (!query) {
@@ -408,7 +404,7 @@ const placeWidget: WidgetInterface = {
 
       console.log('🔍 Extracting place intent from query:', query);
       
-      // Use generateObject if available, otherwise fall back to generateText + JSON parsing
+      
       let intentOutput: { object: PlaceIntent };
       
       if (typeof llm.generateObject === 'function') {
@@ -426,7 +422,7 @@ const placeWidget: WidgetInterface = {
           schema: placeIntentSchema,
         });
       } else {
-        // Fallback: use generateText and parse JSON
+        
         const response = await llm.generateText({
           messages: [
             {
@@ -451,12 +447,11 @@ const placeWidget: WidgetInterface = {
 
       const intent: PlaceIntent = intentOutput.object;
       
-      // ✅ Normalize null values (no arrays in place intent, scalars can stay null)
-      // No arrays to normalize in place intent
+      
       
       console.log('✅ Extracted place intent:', intent);
 
-      // Step 2: Validate location
+      
       if (!intent.location) {
         return {
           type: 'place',
@@ -466,20 +461,20 @@ const placeWidget: WidgetInterface = {
         };
       }
 
-      // Step 3: Geocode location (optional - for better accuracy)
+      
       let coordinates: { lat: number; lng: number } | null = null;
       try {
         coordinates = await geocodeLocation(intent.location);
       } catch (error: any) {
         console.warn('⚠️ Geocoding failed:', error.message);
-        // Continue without coordinates
+        
       }
 
-      // Step 4: Decide which data sources to use
+      
       const sources = decideDataSources(intent);
       console.log('📊 Data sources decision:', sources);
 
-      // Step 5: Fetch from ALL sources in parallel (no fallback - all are data sources)
+      
       const fetchPromises: Promise<any[]>[] = [];
       
       if (sources.useGoogleMaps) {
@@ -487,7 +482,7 @@ const placeWidget: WidgetInterface = {
           fetchFromGoogleMaps(intent.location, intent)
             .catch(error => {
               console.warn('⚠️ Google Maps API failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -499,7 +494,7 @@ const placeWidget: WidgetInterface = {
           fetchFromSerpAPI(intent.location, intent)
             .catch(error => {
               console.warn('⚠️ SerpAPI failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -508,11 +503,11 @@ const placeWidget: WidgetInterface = {
 
       const [googleMapsData, serpAPIData] = await Promise.all(fetchPromises);
 
-      // Step 6: Merge data from all sources
+      
       const mergedPlaces = mergePlaceData(googleMapsData, serpAPIData);
       console.log(`✅ Merged ${mergedPlaces.length} places from ${googleMapsData.length} Google Maps, ${serpAPIData.length} SerpAPI`);
 
-      // Step 7: Format place cards with evidence/commerce separation
+      
       const placeCards = formatPlaceCards(mergedPlaces);
 
       if (placeCards.length === 0) {
@@ -533,7 +528,7 @@ const placeWidget: WidgetInterface = {
     } catch (error: any) {
       console.error('❌ Agent-style place widget error:', error);
       
-      // No fallback - return error (all sources are already included in the widget)
+      
       return {
         type: 'place',
         data: [],

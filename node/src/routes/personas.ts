@@ -15,12 +15,12 @@ import {
 
 const router = express.Router();
 
-// 📁 Multer configuration for file uploads
+
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: 10 * 1024 * 1024, 
   },
   fileFilter: (req, file, cb) => {
     if (
@@ -35,7 +35,7 @@ const upload = multer({
   },
 });
 
-// 🧩 Validation schema
+
 const createPersonaSchema = Joi.object({
   name: Joi.string().min(1).max(100).required(),
   description: Joi.string().max(500).optional().allow(""),
@@ -45,7 +45,7 @@ const createPersonaSchema = Joi.object({
   extra_image_urls: Joi.array().items(Joi.string().uri()).max(10).optional(),
 });
 
-// ✅ GET all personas (with persona_items)
+
 router.get("/", skipAuthInDev, async (req, res) => {
   try {
     console.log("📡 [GET] /api/personas (dev override)");
@@ -76,7 +76,7 @@ router.get("/", skipAuthInDev, async (req, res) => {
   }
 });
 
-// ✅ GET single persona by ID (with dev mode placeholder)
+
 router.get('/:id', skipAuthInDev, async (req, res) => {
   try {
     const { id } = req.params;
@@ -122,7 +122,7 @@ router.get('/:id', skipAuthInDev, async (req, res) => {
       }
     }
 
-    // Normal case — persona found
+    
     console.log(`✅ Fetched persona: ${persona.name}`);
     return res.json({
       success: true,
@@ -137,7 +137,7 @@ router.get('/:id', skipAuthInDev, async (req, res) => {
   }
 });
 
-// ✅ CREATE persona (atomic insert)
+
 router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
   try {
     console.log("🟣 Persona create request:", req.body);
@@ -151,7 +151,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
     const { name, description, cover_image_url, tags, is_secret, extra_image_urls } = value;
 
     const isDev = process.env.NODE_ENV === "development";
-    // Force user_id in dev mode, use real user_id in production
+    
     const userId = isDev ? "00000000-0000-0000-0000-000000000000" : req.user?.id;
 
     if (!isDev && !userId) {
@@ -159,7 +159,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       return res.status(400).json({ success: false, error: "User not authenticated" });
     }
 
-    // 1️⃣ Check duplicate name (only in production)
+    
     if (!isDev) {
       const { data: existing } = await db.personas()
         .select("id")
@@ -172,7 +172,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
           .json({ success: false, error: "Persona with this name already exists" });
     }
 
-    // 2️⃣ Insert main persona
+   
     const personaId = uuidv4();
     const insertPayload = {
       id: personaId,
@@ -189,7 +189,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
     console.log(`🧩 Creating persona in ${isDev ? "DEV" : "PROD"} mode`);
     console.log("📦 Payload:", insertPayload);
 
-    // Use service role client for dev mode
+    
     const client = isDev ? db.personas() : supabase().from("personas");
 
     const { data: newPersona, error: createError } = await client
@@ -198,7 +198,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       .single();
     if (createError) throw createError;
 
-    // 3️⃣ Insert extra images into persona_items
+    
     if (extra_image_urls && Array.isArray(extra_image_urls) && extra_image_urls.length > 0) {
       console.log(`📸 Adding ${extra_image_urls.length} extra images to persona ${personaId}`);
       const items = extra_image_urls.map((url: string, i: number) => ({
@@ -210,7 +210,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
         created_at: new Date().toISOString(),
       }));
 
-      // Use appropriate client for persona_items
+      
       const itemsClient = isDev ? db.personaItems() : supabase().from("persona_items");
       const { error: itemsError } = await itemsClient.insert(items);
       if (itemsError) {
@@ -220,7 +220,7 @@ router.post("/", skipAuthInDev(), async (req: AuthenticatedRequest, res) => {
       }
     }
 
-    // 4️⃣ Return fresh persona with persona_items
+    
     const { data: freshPersona, error: fetchError } = await supabase()
       .from("personas")
       .select(`
@@ -262,7 +262,7 @@ router.put('/:id', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
     console.log('🔍 Is array:', Array.isArray(tags));
     console.log('🔍 Full request body:', req.body);
 
-    // Fetch existing record
+    
     const { data: persona, error: fetchError } = await db.personas()
       .select('*')
       .eq('id', id)
@@ -273,7 +273,7 @@ router.put('/:id', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
       return res.status(404).json({ success: false, error: 'Persona not found' });
     }
 
-    // ✅ Keep consistent JSON array format for tags
+    
     const updatePayload = {
       name: name ?? persona.name,
       description: description ?? persona.description,
@@ -301,13 +301,13 @@ router.put('/:id', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// ✅ DELETE persona
+
 router.delete('/:id', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     console.log('🗑️ Deleting persona:', id);
 
-    // Check if persona exists
+    
     const { data: persona, error: fetchError } = await db.personas()
       .select('id, name')
       .eq('id', id)
@@ -318,7 +318,7 @@ router.delete('/:id', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
       return res.status(404).json({ success: false, error: 'Persona not found' });
     }
 
-    // Delete persona items first (cascade delete)
+    
     const { error: itemsError } = await db.personaItems()
       .delete()
       .eq('persona_id', id);
@@ -346,13 +346,13 @@ router.delete('/:id', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// ✅ DELETE persona item (individual image)
+
 router.delete('/:id/items/:itemId', skipAuthInDev, async (req: AuthenticatedRequest, res) => {
   try {
     const { id, itemId } = req.params;
     console.log('🗑️ Deleting persona item:', itemId, 'from persona:', id);
 
-    // Check if persona exists
+    
     const { data: persona, error: personaError } = await db.personas()
       .select('id')
       .eq('id', id)
@@ -363,7 +363,7 @@ router.delete('/:id/items/:itemId', skipAuthInDev, async (req: AuthenticatedRequ
       return res.status(404).json({ success: false, error: 'Persona not found' });
     }
 
-    // Delete the persona item
+    
     const { error: deleteError } = await db.personaItems()
       .delete()
       .eq('id', itemId)
@@ -382,7 +382,7 @@ router.delete('/:id/items/:itemId', skipAuthInDev, async (req: AuthenticatedRequ
   }
 });
 
-// ✅ ADD image to persona (multipart/form-data upload)
+
 router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: AuthenticatedRequest, res) => {
   try {
     console.log("🟢 POST /api/personas/:id/items called");
@@ -394,7 +394,7 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
     const { title, description } = req.body;
     const isDev = process.env.NODE_ENV === "development";
 
-    // ✅ Allow direct URL insert when no file is uploaded (useful for dev mode / Flutter JSON)
+    
     if (!req.file) {
       if (req.body.image_url) {
         console.log("🧪 Dev mode: Using provided image_url instead of file upload");
@@ -423,14 +423,14 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
         return res.status(201).json({ success: true, data: data[0] });
       }
 
-      // If neither file nor image_url was provided
+      
       return res.status(400).json({
         success: false,
         error: "Either image file or image_url must be provided",
       });
     }
 
-    // ✅ Dev mode bypass for ownership check
+    
     let persona;
     if (isDev) {
       console.log("🧪 Dev mode: Skipping user_id ownership check ✅");
@@ -455,13 +455,13 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
       return res.status(404).json({ success: false, error: "Persona not found" });
     }
 
-    // Ensure uploads directory exists
+    
     const uploadsDir = path.join(process.cwd(), 'uploads');
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
-    // Process image with sharp
+    
     const filename = `${uuidv4()}.jpg`;
     const filepath = path.join(uploadsDir, filename);
     
@@ -471,7 +471,7 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
       .jpeg({ quality: 85 })
       .toFile(filepath);
 
-    // Generate full absolute URL for proper image display
+    
     const imageUrl = `${isDev
       ? "http://10.0.2.2:4000"
       : "https://your-production-domain.com"
@@ -479,7 +479,7 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
     
     console.log("🖼️ Final image URL:", imageUrl);
 
-    // Insert into persona_items
+    
     const { data, error } = await supabase()
       .from("persona_items")
       .insert([
@@ -494,14 +494,14 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
 
     if (error) {
       console.error("❌ Failed to insert persona item:", error.message);
-      // Clean up uploaded file if database insert fails
+      
       if (fs.existsSync(filepath)) {
         fs.unlinkSync(filepath);
       }
       return res.status(500).json({ success: false, error: error.message });
     }
 
-    // Return fresh persona with persona_items
+    
     const { data: freshPersona, error: fetchError } = await supabase()
       .from("personas")
       .select(`
@@ -528,7 +528,7 @@ router.post("/:id/items", skipAuthInDev, upload.single('image'), async (req: Aut
   } catch (err: any) {
     console.error("💥 Error in /api/personas/:id/items:", err);
     
-    // Clean up uploaded file if processing fails
+    
     if (req.file) {
       const uploadsDir = path.join(process.cwd(), 'uploads');
       const filename = `${uuidv4()}.jpg`;

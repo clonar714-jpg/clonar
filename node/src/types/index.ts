@@ -1,14 +1,8 @@
-/**
- * ✅ Shared Types
- * Common types used across the application
- */
+
 
 import { Request } from 'express';
 
-/**
- * Authenticated request with user information
- * Extends Express Request with optional user property
- */
+
 export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
@@ -18,9 +12,7 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-/**
- * Standard API response format
- */
+
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -29,9 +21,7 @@ export interface ApiResponse<T = any> {
   [key: string]: any;
 }
 
-/**
- * Auth response format
- */
+
 export interface AuthResponse {
   token: string;
   refreshToken?: string;
@@ -43,17 +33,13 @@ export interface AuthResponse {
   };
 }
 
-/**
- * Login request format
- */
+
 export interface LoginRequest {
   email: string;
   password: string;
 }
 
-/**
- * Register request format
- */
+
 export interface RegisterRequest {
   email: string;
   password: string;
@@ -61,9 +47,7 @@ export interface RegisterRequest {
   full_name?: string;
 }
 
-/**
- * User type
- */
+
 export interface User {
   id: string;
   email: string;
@@ -76,9 +60,7 @@ export interface User {
   [key: string]: any;
 }
 
-/**
- * Collage-related types
- */
+
 export interface CreateCollageRequest {
   title: string;
   description?: string;

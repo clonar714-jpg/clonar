@@ -41,7 +41,7 @@ class EmulatorDetector {
       return _isEmulator!;
     } catch (e) {
       if (kDebugMode) {
-        // Silent failure - assume not emulator
+        
       }
       _isEmulator = false;
       return false;

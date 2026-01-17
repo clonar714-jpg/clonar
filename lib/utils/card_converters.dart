@@ -1,14 +1,10 @@
-/**
- * ✅ PERPLEXITY-STYLE: Card conversion utilities
- * 
- * Converts backend card structures to Flutter models for detail screens
- */
+
 
 import '../models/Product.dart';
 
-/// Convert backend product card → Product model
+
 Product cardToProduct(Map<String, dynamic> card) {
-  // Parse price string (e.g., "$83.97" or "83.97") → double
+  
   final priceStr = card['price']?.toString() ?? '0';
   final price = double.tryParse(priceStr.replaceAll(RegExp(r'[^\d.]'), '')) ?? 0.0;
   
@@ -92,6 +88,5 @@ int cardToMovieId(Map<String, dynamic> card) {
   return (card['title']?.toString() ?? '').hashCode.abs();
 }
 
-/// Hotel and Place cards are already Map<String, dynamic>, no conversion needed
-/// Just pass them directly to HotelDetailScreen/PlaceDetailScreen
+
 

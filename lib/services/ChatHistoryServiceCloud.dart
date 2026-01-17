@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/ShopScreen.dart';
 import '../core/api_client.dart';
 
-// ✅ PRODUCTION: Top-level function for isolate (must be top-level for compute)
+
 List<ChatHistoryItem> _parseChatHistoryJson(String historyJson) {
   try {
     final List<dynamic> decoded = jsonDecode(historyJson);
@@ -14,14 +14,14 @@ List<ChatHistoryItem> _parseChatHistoryJson(String historyJson) {
         .toList();
     
     chats.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    return chats.take(50).toList(); // Max 50 chats
+    return chats.take(50).toList(); 
   } catch (e) {
-    // Can't use kDebugMode in isolate, so just return empty
+    
     return [];
   }
 }
 
-/// ✅ FIX #3: Cached messages entry with timestamp
+
 class _CachedMessages {
   final Set<String> queries;
   final DateTime timestamp;
@@ -32,30 +32,27 @@ class _CachedMessages {
   bool get isExpired => DateTime.now().difference(timestamp) > _cacheTTL;
 }
 
-/// ✅ Cloud-based chat history service with local cache
-/// Hybrid approach: Local cache for instant loading + Cloud database for persistence
-/// Similar to ChatGPT's architecture
+
 class ChatHistoryServiceCloud {
   static const String _localCacheKey = 'chat_history_local_cache_v1';
   static const String _lastSyncKey = 'chat_history_last_sync';
   static const int _maxChats = 50;
   
-  // ✅ FIX #3: Cache for existing messages to prevent multiple GET requests
+  
   static final Map<String, _CachedMessages> _messagesCache = {};
   
-  // ✅ FIX #4: Debouncing for saveChat calls to prevent multiple saves
+  
   static final Map<String, Timer> _pendingSaves = {};
   static final Map<String, ChatHistoryItem> _pendingChats = {};
   static const Duration _saveDebounceDelay = Duration(seconds: 2);
   
-  /// ✅ Load chats: Local cache first (instant), then sync with cloud
+  
   static Future<List<ChatHistoryItem>> loadChatHistory() async {
     try {
-      // 1. Load from local cache first (instant, 0ms latency)
+      
       final localChats = await _loadFromLocalCache();
       
-      // 2. Sync with cloud in background (non-blocking, deferred to prevent startup freeze)
-      // ✅ PRODUCTION: Defer cloud sync to prevent blocking startup
+      
       Future.delayed(const Duration(seconds: 3), () {
         _syncWithCloud().catchError((e) {
           if (kDebugMode) {
@@ -73,8 +70,7 @@ class ChatHistoryServiceCloud {
     }
   }
   
-  /// ✅ Load from local cache (instant)
-  /// ✅ PRODUCTION FIX: Move JSON decoding to microtask to prevent UI freeze
+  
   static Future<List<ChatHistoryItem>> _loadFromLocalCache() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -84,8 +80,7 @@ class ChatHistoryServiceCloud {
         return [];
       }
       
-      // ✅ PRODUCTION: Parse JSON in isolate for large datasets (31 chats with conversation history)
-      // This prevents blocking the UI thread during startup
+     
       return await compute(_parseChatHistoryJson, historyJson);
     } catch (e) {
       if (kDebugMode) {
@@ -95,7 +90,7 @@ class ChatHistoryServiceCloud {
     }
   }
   
-  /// ✅ Sync with cloud (background, non-blocking)
+  
   static Future<void> _syncWithCloud() async {
     try {
       final response = await ApiClient.get('/chats')
@@ -105,10 +100,10 @@ class ChatHistoryServiceCloud {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final conversations = data['conversations'] as List? ?? [];
         
-        // Convert cloud format to local format
+        
         final chats = conversations.map((conv) {
           final id = conv['id'] as String?;
-          // ✅ FIX: UUID is required - skip if missing (don't generate numeric ID)
+          
           if (id == null || id.isEmpty) {
             if (kDebugMode) {
               debugPrint('⚠️ Skipping conversation without UUID: ${conv['title']}');
@@ -117,7 +112,7 @@ class ChatHistoryServiceCloud {
           }
           
           return ChatHistoryItem(
-            id: id, // ✅ UUID from backend
+            id: id, 
             title: conv['title'] as String? ?? 'Untitled',
             query: conv['query'] as String? ?? '',
             timestamp: conv['created_at'] != null
@@ -126,12 +121,12 @@ class ChatHistoryServiceCloud {
             imageUrl: conv['image_url'] as String?,
             conversationHistory: null, // Will be loaded on demand
           );
-        }).whereType<ChatHistoryItem>().toList(); // ✅ Filter out null entries
+        }).whereType<ChatHistoryItem>().toList(); 
         
-        // Update local cache
+       
         await _saveToLocalCache(chats);
         
-        // Update last sync timestamp
+       
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(_lastSyncKey, DateTime.now().toIso8601String());
         
@@ -143,33 +138,32 @@ class ChatHistoryServiceCloud {
       if (kDebugMode) {
         debugPrint('⚠️ Cloud sync error: $e');
       }
-      // Don't throw - continue with local cache
+      
     }
   }
   
-  /// ✅ FIX #4: Save chat to both local cache and cloud with debouncing
-  /// Production-grade: Local cache saved immediately, cloud sync debounced to prevent multiple saves
+  
   static Future<void> saveChat(ChatHistoryItem chat) async {
     try {
-      // 1. Save to local cache immediately (instant, 0ms latency)
+      
       await _saveToLocalCache([chat]);
       
-      // ✅ FIX #4: Debounce cloud saves - cancel previous pending save for this chat
-      final chatId = chat.id;
-      _pendingChats[chatId] = chat; // Store latest chat data
       
-      // Cancel previous timer if exists
+      final chatId = chat.id;
+      _pendingChats[chatId] = chat; 
+      
+      
       _pendingSaves[chatId]?.cancel();
       
-      // Schedule new save (will execute after debounce delay)
+      
       _pendingSaves[chatId] = Timer(_saveDebounceDelay, () {
         final chatToSave = _pendingChats[chatId];
         if (chatToSave != null) {
-          // Remove from pending maps
+         
           _pendingSaves.remove(chatId);
           _pendingChats.remove(chatId);
           
-          // Sync with cloud (non-blocking)
+          
           _saveToCloud(chatToSave).catchError((e) {
             if (kDebugMode) {
               debugPrint('⚠️ Cloud save failed (using local cache): $e');
@@ -192,21 +186,21 @@ class ChatHistoryServiceCloud {
     }
   }
   
-  /// ✅ Save to local cache
+  
   static Future<void> _saveToLocalCache(List<ChatHistoryItem> newChats) async {
     try {
       final existingChats = await _loadFromLocalCache();
       
-      // Merge: Remove old versions, add new ones
+      
       for (final newChat in newChats) {
         existingChats.removeWhere((item) => item.id == newChat.id);
         existingChats.insert(0, newChat);
       }
       
-      // Limit to max chats
+      
       final chatsToSave = existingChats.take(_maxChats).toList();
       
-      // ✅ PRODUCTION FIX: Move JSON encoding to microtask to prevent UI freeze
+      
       final prefs = await SharedPreferences.getInstance();
       final historyJson = await Future.microtask(() => jsonEncode(
         chatsToSave.map((chat) => chat.toJson()).toList(),
@@ -220,29 +214,27 @@ class ChatHistoryServiceCloud {
     }
   }
   
-  /// ✅ Save to cloud (background, non-blocking)
-  /// Production-grade: Handles errors gracefully, ensures conversation exists before saving messages
+
   static Future<void> _saveToCloud(ChatHistoryItem chat) async {
     try {
-      // ✅ Step 1: Ensure conversation exists in cloud
-      // Try to get existing conversation first
+      
       final existingResponse = await ApiClient.get('/chats/${chat.id}')
           .timeout(const Duration(seconds: 5));
       
       if (existingResponse.statusCode == 200) {
-        // Conversation exists, just update title if needed
+        
         try {
           await ApiClient.put('/chats/${chat.id}', {
             'title': chat.title,
           }).timeout(const Duration(seconds: 5));
         } catch (e) {
-          // Title update failed, but conversation exists - continue
+          
           if (kDebugMode) {
             debugPrint('⚠️ Failed to update conversation title: $e');
           }
         }
       } else {
-        // Conversation doesn't exist, create it
+        
         try {
           final createResponse = await ApiClient.post('/chats', {
             'title': chat.title,
@@ -270,14 +262,14 @@ class ChatHistoryServiceCloud {
         }
       }
       
-      // Step 2: Save conversation history (messages)
+      
       String actualConversationId = chat.id;
       
       if (chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty) {
-        // ✅ FIX #3: Use cached messages if available, otherwise fetch and cache
+        
         Set<String> existingQueries = {};
         
-        // Check cache first
+        
         final cached = _messagesCache[actualConversationId];
         if (cached != null && !cached.isExpired) {
           existingQueries = cached.queries;
@@ -285,7 +277,7 @@ class ChatHistoryServiceCloud {
             debugPrint('📋 Using cached messages (${existingQueries.length} queries) for conversation: $actualConversationId');
           }
         } else {
-          // Cache miss or expired - fetch from backend
+          
           try {
             final existingMessagesResponse = await ApiClient.get('/chats/$actualConversationId')
                 .timeout(const Duration(seconds: 5));
@@ -306,8 +298,7 @@ class ChatHistoryServiceCloud {
               }
             }
           } catch (e) {
-            // If fetching existing messages fails, continue anyway (will try to save all)
-            // This is safe because backend will handle duplicates
+           
             if (kDebugMode) {
               debugPrint('⚠️ Could not fetch existing messages, will save all: $e');
             }
@@ -323,18 +314,16 @@ class ChatHistoryServiceCloud {
             final sessionQuery = (session['query'] as String? ?? '').trim();
             final sessionQueryLower = sessionQuery.toLowerCase();
             
-            // ✅ CRITICAL FIX: Skip messages that already exist in database
-            // This prevents duplicate inserts and ensures only NEW messages are saved
+            
             if (sessionQuery.isNotEmpty && existingQueries.contains(sessionQueryLower)) {
               skippedCount++;
               if (kDebugMode) {
                 debugPrint('⏭️ Skipping duplicate message: "${sessionQuery.substring(0, 50)}..."');
               }
-              continue; // Skip this message - it already exists
+              continue; 
             }
             
-            // ✅ CRITICAL: Include sources and followUpSuggestions when saving messages
-            // These are required for old chats to display correctly
+            
             final messageResponse = await ApiClient.post('/chats/$actualConversationId/messages', {
               'query': session['query'] as String? ?? '',
               'summary': session['summary'] as String?,
@@ -344,7 +333,7 @@ class ChatHistoryServiceCloud {
               'results': session['results'],
               'sections': session['sections'],
               'answer': session['answer'],
-              'sources': session['sources'], // ✅ CRITICAL: Save sources for old chats
+              'sources': session['sources'], 
               'followUpSuggestions': session['followUpSuggestions'], // ✅ CRITICAL: Save follow-ups for old chats
               'imageUrl': session['imageUrl'] as String?,
               'destinationImages': session['destinationImages'], // ✅ NEW: Save images array for media tab
@@ -353,7 +342,7 @@ class ChatHistoryServiceCloud {
             if (messageResponse.statusCode == 201 || messageResponse.statusCode == 200) {
               successCount++;
               
-              // Update conversation ID if backend returned a different one
+              
               try {
                 final responseBody = jsonDecode(messageResponse.body);
                 if (responseBody is Map && responseBody.containsKey('conversationId')) {
@@ -366,7 +355,7 @@ class ChatHistoryServiceCloud {
                   }
                 }
               } catch (e) {
-                // Ignore JSON parse errors
+                
               }
             } else {
               failCount++;
@@ -379,7 +368,7 @@ class ChatHistoryServiceCloud {
             if (kDebugMode) {
               debugPrint('⚠️ Error saving message: $e');
             }
-            // Continue with next message (don't fail entire sync)
+            
           }
         }
         
@@ -413,7 +402,7 @@ class ChatHistoryServiceCloud {
       final existingChats = await _loadFromLocalCache();
       existingChats.removeWhere((item) => item.id == chatId);
       
-      // ✅ PRODUCTION FIX: Move JSON encoding to microtask
+      
       final prefs = await SharedPreferences.getInstance();
       final historyJson = await Future.microtask(() => jsonEncode(
         existingChats.map((chat) => chat.toJson()).toList(),

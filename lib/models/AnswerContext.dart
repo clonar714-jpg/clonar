@@ -1,13 +1,9 @@
-// ======================================================================
-// ANSWER CONTEXT - UI model for answer-first architecture
-// ======================================================================
-// This model represents the context of an answer to help the UI
-// render appropriately (clarification, evidence, confidence, etc.)
+
 
 class AnswerContext {
-  final String userGoal; // "learn" | "decide" | "compare" | "browse" | "locate" | "clarification"
-  final String confidenceBand; // "high" | "medium" | "low"
-  final String ambiguity; // "none" | "soft" | "hard"
+  final String userGoal; 
+  final String confidenceBand; 
+  final String ambiguity; 
   final bool hasCards;
   final bool isClarificationOnly;
 
@@ -19,7 +15,7 @@ class AnswerContext {
     this.isClarificationOnly = false,
   });
 
-  // Helper to get intent header text
+  
   String get intentHeader {
     switch (userGoal) {
       case "learn":
@@ -39,15 +35,15 @@ class AnswerContext {
     }
   }
 
-  // Helper to check if cards should be shown as evidence
+  
   bool get shouldShowEvidenceSection => hasCards && !isClarificationOnly;
 
-  // Helper to check if follow-ups should be shown
+  
   bool get shouldShowFollowUps => !isClarificationOnly;
 
-  // Factory method to create from QuerySession
+  
   factory AnswerContext.fromSession(dynamic session, Map<String, dynamic>? responseData) {
-    // Extract from response metadata if available
+    
     final metadata = responseData?['_metadata'] as Map<String, dynamic>?;
     final query = session.query?.toString() ?? '';
     final userGoal = metadata?['userGoal']?.toString() ?? 
@@ -64,7 +60,7 @@ class AnswerContext {
       confidenceBand = "low";
     }
     
-    // Extract ambiguity from metadata
+    
     final ambiguity = metadata?['ambiguity']?.toString() ?? 
                      metadata?['answerPlan']?['ambiguity']?.toString() ??
                      "none";
@@ -72,9 +68,7 @@ class AnswerContext {
     final hasCards = (session.cards != null && (session.cards as List).isNotEmpty) || 
                      (session.results != null && (session.results as List).isNotEmpty);
     
-    // Check if this is a clarification-only response
-    // Clarification responses typically have no cards and a question-like summary
-    // OR ambiguity === "hard"
+    
     final summary = session.summary?.toString() ?? '';
     final isClarificationOnly = (ambiguity == "hard") ||
                                 (!hasCards && 
@@ -93,7 +87,7 @@ class AnswerContext {
     );
   }
 
-  // Infer user goal from query text (fallback if not in metadata)
+  
   static String? _inferUserGoal(String query) {
     final lower = query.toLowerCase();
     
@@ -102,13 +96,13 @@ class AnswerContext {
       return "learn";
     }
     
-    // ✅ FIX: Check "compare" BEFORE "decide" to catch "difference between" correctly
+    
     final comparePattern = RegExp(r'\b(vs|versus|compare|comparison|difference between|which is better)\b');
     if (comparePattern.hasMatch(lower)) {
       return "compare";
     }
     
-    // ✅ FIX: Removed "difference between" from decide pattern (it's in compare now)
+    
     final decidePattern = RegExp(r'\b(best|top|worth it|should i|is.*worth|is.*good|recommend|suggest|better than)\b');
     if (decidePattern.hasMatch(lower)) {
       return "decide";
@@ -119,7 +113,7 @@ class AnswerContext {
       return "locate";
     }
     
-    return null; // Default to "browse"
+    return null; 
   }
 }
 

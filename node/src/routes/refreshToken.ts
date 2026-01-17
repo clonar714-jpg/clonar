@@ -6,10 +6,10 @@ const router = express.Router();
 const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || 'refresh-secret-fallback';
 const ACCESS_TOKEN_SECRET = process.env.JWT_SECRET || 'default-secret';
 
-// In-memory store for now (replace with Supabase table later)
+
 const refreshTokens: string[] = [];
 
-// 🔁 Issue a new token pair
+
 router.post('/refresh', async (req, res) => {
   try {
     console.log('🔄 Refresh token request received');
@@ -45,7 +45,7 @@ router.post('/refresh', async (req, res) => {
         { expiresIn: '7d' }
       );
 
-      // Replace old refresh token
+      
       const index = refreshTokens.indexOf(refreshToken);
       if (index !== -1) refreshTokens.splice(index, 1);
       refreshTokens.push(newRefreshToken);
@@ -65,7 +65,7 @@ router.post('/refresh', async (req, res) => {
   }
 });
 
-// 🗑️ Revoke refresh token (logout)
+
 router.post('/revoke', async (req, res) => {
   try {
     const { refreshToken } = req.body;
@@ -87,7 +87,7 @@ router.post('/revoke', async (req, res) => {
   }
 });
 
-// 📊 Get refresh token stats (for debugging)
+
 router.get('/stats', (req, res) => {
   res.json({
     success: true,

@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Done Action
- * Signals completion of research and readiness to provide final answer
- */
+
 
 import z from 'zod';
 import { ResearchAction, DoneActionOutput } from '../types';
@@ -20,7 +17,7 @@ const doneAction: ResearchAction<any> = {
   getDescription: (config) => actionDescription,
   enabled: (_) => true,
   execute: async (params, additionalConfig) => {
-    // ✅ Check for abort signal
+    
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Done action aborted');
     }

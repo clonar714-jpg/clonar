@@ -1,19 +1,11 @@
-// lib/widgets/room_card.dart
+
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/room.dart';
 import '../theme/AppColors.dart';
 import '../theme/Typography.dart';
 
-/// 🏨 Perplexity-style Room Card Widget
-/// 
-/// Displays:
-/// - Carousel slider for room photos
-/// - Room name
-/// - Price per night
-/// - Price including taxes + fees
-/// - Amenity chips (e.g., "1 King Bed", "Alarm clock", "Bathrobe")
-/// - Large "Reserve" button
+
 class RoomCard extends StatefulWidget {
   final Room room;
   final VoidCallback? onReserve;
@@ -96,7 +88,6 @@ class _RoomCardState extends State<RoomCard> {
                 ),
                 const SizedBox(height: 12),
 
-                // ✅ AMENITY CHIPS (Perplexity-style)
                 if (widget.room.amenities.isNotEmpty || widget.room.bedType.isNotEmpty)
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
@@ -111,7 +102,7 @@ class _RoomCardState extends State<RoomCard> {
                   ),
                 const SizedBox(height: 16),
 
-                // ✅ RESERVE BUTTON (Perplexity-style large teal button)
+                
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
@@ -246,7 +237,7 @@ class _RoomCardState extends State<RoomCard> {
     );
   }
 
-  // ✅ Amenity chip widget (Perplexity-style)
+  
   Widget _buildAmenityChip(String label) {
     return Container(
       margin: const EdgeInsets.only(right: 8),

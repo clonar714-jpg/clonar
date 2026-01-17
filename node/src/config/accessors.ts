@@ -1,7 +1,4 @@
-/**
- * ✅ Config Accessors
- * Helper functions to access configuration values
- */
+
 
 import configManager from './configManager';
 import { ConfigModelProvider } from './types';

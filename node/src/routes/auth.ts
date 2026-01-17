@@ -8,16 +8,16 @@ import skipAuthInDev from '@/middleware/skipAuthInDev';
 
 const router = express.Router();
 
-// In-memory store for refresh tokens (replace with Supabase table later)
+
 const refreshTokens: string[] = [];
 
-// Register route
+
 router.post('/register', async (req, res) => {
   try {
     console.log('🔐 Register: Starting registration process...');
     console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
 
-    // Validate request body
+    
     const { error, value } = registerSchema.validate(req.body);
     if (error) {
       console.log('❌ Register: Validation error:', error.details[0].message);
@@ -34,7 +34,7 @@ router.post('/register', async (req, res) => {
     console.log('👤 Register: Username:', username);
     console.log('🔑 Register: Password provided:', !!password);
 
-    // Check if username already exists
+    
     console.log('🔍 Register: Checking if username exists...');
     const { data: existingUser, error: userError } = await db.users()
       .select('username')
@@ -50,7 +50,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json(response);
     }
 
-    // Use Supabase auth signUp
+    
     console.log('🔐 Register: Calling Supabase auth.signUp...');
     const { data: authData, error: authError } = await supabase().auth.signUp({
       email,
@@ -104,7 +104,7 @@ router.post('/register', async (req, res) => {
       email_confirmed_at: authData.user.email_confirmed_at
     });
 
-    // Insert user profile into our custom users table
+    
     console.log('💾 Register: Inserting user profile...');
     const { data: newUser, error: insertError } = await db.users()
       .insert({
@@ -114,7 +114,7 @@ router.post('/register', async (req, res) => {
         full_name: full_name || null,
         avatar_url: null,
         bio: 'Welcome to Clonar!',
-        password: 'supabase_auth_user', // Placeholder since we use Supabase auth
+        password: 'supabase_auth_user', 
         is_verified: !!authData.user.email_confirmed_at,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -146,7 +146,7 @@ router.post('/register', async (req, res) => {
     console.log('✅ Register: User profile created successfully');
     console.log('👤 Register: New user data:', newUser);
 
-    // Generate JWT token
+    
     console.log('🔑 Register: Generating JWT tokens...');
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
@@ -160,7 +160,7 @@ router.post('/register', async (req, res) => {
       { expiresIn: '7d' } as jwt.SignOptions
     );
 
-    // Generate refresh token
+    
     const refreshToken = jwt.sign(
       { id: newUser.id },
       jwtSecret,
@@ -201,13 +201,13 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Login route
+
 router.post('/login', async (req, res) => {
   try {
     console.log('🔐 Login: Starting login process...');
     console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
 
-    // Validate request body
+    
     const { error, value } = loginSchema.validate(req.body);
     if (error) {
       console.log('❌ Login: Validation error:', error.details[0].message);
@@ -224,7 +224,7 @@ router.post('/login', async (req, res) => {
     console.log('🔑 Login: Password provided:', !!password);
     console.log('👤 Login attempt for email:', email);
 
-    // Find user in Supabase database
+    
     console.log('🔍 Login: Looking up user in Supabase database...');
     
     const { data: userProfile, error: profileError } = await db.users()
@@ -243,16 +243,16 @@ router.post('/login', async (req, res) => {
 
     console.log('✅ Login: User found in database:', userProfile);
     
-    // Check if this is a Supabase auth user (password is "supabase_auth_user")
+    
     if (userProfile.password === 'supabase_auth_user') {
       console.log('✅ Login: Supabase auth user - accepting any password for development');
-      // For development, accept any password for Supabase auth users
+      
     } else {
-      // For regular users, validate password (if you implement password hashing later)
+      
       console.log('✅ Login: Regular user - password validation would go here');
     }
     
-    // Generate JWT token for real user
+   
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       throw new Error('JWT_SECRET is not configured');
@@ -275,7 +275,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    // Store refresh token
+   
     refreshTokens.push(refreshToken);
     console.log('✅ Login: Refresh token stored, total active tokens:', refreshTokens.length);
 
@@ -311,10 +311,10 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Get user profile route
+
 router.get('/me', skipAuthInDev(), async (req, res) => {
   try {
-    // ✅ If fake dev user injected
+    
     if (process.env.NODE_ENV === 'development' && req.user) {
       return res.json({
         success: true,
@@ -326,14 +326,14 @@ router.get('/me', skipAuthInDev(), async (req, res) => {
       });
     }
 
-    // 🧾 Real auth logic (if needed later)
+    
     const authHeader = req.headers.authorization || '';
     const token = authHeader.split(' ')[1];
     if (!token) {
       return res.status(401).json({ success: false, error: 'Missing token' });
     }
 
-    // decode JWT logic here if you want production login
+    
     return res.json({
       success: true,
       data: { id: 'real-user-id', email: 'real@user.com' },
@@ -345,7 +345,7 @@ router.get('/me', skipAuthInDev(), async (req, res) => {
   }
 });
 
-// Refresh token route
+
 router.post('/refresh', async (req, res) => {
   try {
     const { refresh_token } = req.body;
@@ -366,7 +366,7 @@ router.post('/refresh', async (req, res) => {
     const decoded = jwt.verify(refresh_token, jwtSecret) as any;
     const userId = decoded.id;
 
-    // Generate new access token
+    
     const newToken = jwt.sign(
       { id: userId },
       jwtSecret,

@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Academic Search Action
- * Performs academic searches for scholarly articles, papers, and research studies
- */
+
 
 import { randomUUID } from 'crypto';
 import z from 'zod';
@@ -38,10 +35,10 @@ const academicSearchAction: ResearchAction<typeof schema> = {
     );
   },
   execute: async (input, additionalConfig) => {
-    // Limit to 3 queries
+    
     input.queries = input.queries.slice(0, 3);
 
-    // ✅ Check for abort signal
+    
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Academic search aborted');
     }
@@ -49,7 +46,7 @@ const academicSearchAction: ResearchAction<typeof schema> = {
     let results: Chunk[] = [];
 
     const search = async (q: string) => {
-      // ✅ Check for abort signal before each search
+     
       if (additionalConfig.abortSignal?.aborted) {
         throw new Error('Academic search aborted');
       }
@@ -71,11 +68,10 @@ const academicSearchAction: ResearchAction<typeof schema> = {
       results.push(...resultChunks);
     };
 
-    // Execute all searches in parallel
+   
     await Promise.all(input.queries.map(search));
 
-    // ✅ Emit source block for all academic results (matches current codebase pattern)
-    // This matches how Researcher class emits SourceBlock directly
+    
     if (results.length > 0) {
       additionalConfig.session.emitBlock({
         id: randomUUID(),
@@ -88,7 +84,7 @@ const academicSearchAction: ResearchAction<typeof schema> = {
       });
     }
 
-    // Return search results as ActionOutput
+   
     const output: SearchActionOutput = {
       type: 'search_results',
       results,

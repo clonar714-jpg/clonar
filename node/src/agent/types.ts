@@ -1,11 +1,8 @@
-/**
- * ✅ Types for APISearchAgent
- * Matches the provided pattern with structured types
- */
+
 
 import z from 'zod';
 
-// Type aliases for compatibility (adjust based on your actual types)
+
 export type ChatTurnMessage = {
   role: 'user' | 'assistant';
   content: string;
@@ -20,39 +17,39 @@ export type Chunk = {
   };
 };
 
-// Search sources
+
 export type SearchSources = 'web' | 'discussions' | 'academic';
 
-// Import base classes for proper typing
+
 import BaseEmbedding from '../models/base/embedding';
 import BaseLLM from '../models/base/llm';
 
-// Search agent configuration
+
 export type SearchAgentConfig = {
   sources: SearchSources[];
   fileIds: string[];
-  llm: BaseLLM<any>; // BaseLLM instance
-  embedding: BaseEmbedding<any> | null; // BaseEmbedding instance or null if not needed
+  llm: BaseLLM<any>; 
+  embedding: BaseEmbedding<any> | null; 
   mode: 'speed' | 'balanced' | 'quality';
   systemInstructions: string;
 };
 
-// Search agent input
+
 export type SearchAgentInput = {
   chatHistory: ChatTurnMessage[];
   followUp: string;
   config: SearchAgentConfig;
   chatId: string;
   messageId: string;
-  abortSignal?: AbortSignal; // ✅ CRITICAL: For cancellation support
+  abortSignal?: AbortSignal; 
 };
 
-// Widget types
+
 export type WidgetInput = {
   chatHistory: ChatTurnMessage[];
   followUp: string;
   classification: ClassifierOutput;
-  llm: BaseLLM<any>; // BaseLLM instance
+  llm: BaseLLM<any>; 
 };
 
 export type Widget = {
@@ -67,9 +64,9 @@ export type WidgetOutput = {
   data: any;
 };
 
-// Classifier types
+
 export type ClassifierInput = {
-  llm: BaseLLM<any>; // BaseLLM instance
+  llm: BaseLLM<any>; 
   enabledSources: SearchSources[];
   query: string;
   chatHistory: ChatTurnMessage[];
@@ -92,15 +89,15 @@ export type ClassifierOutput = {
   standaloneFollowUp: string;
 };
 
-// Additional config for research actions
+
 export type AdditionalConfig = {
-  llm: BaseLLM<any>; // BaseLLM instance
-  embedding: BaseEmbedding<any> | null; // BaseEmbedding instance or null
-  session: any; // SessionManager
-  abortSignal?: AbortSignal; // ✅ CRITICAL: For cancellation support
+  llm: BaseLLM<any>; 
+  embedding: BaseEmbedding<any> | null; 
+  session: any; 
+  abortSignal?: AbortSignal; 
 };
 
-// Researcher types
+
 export type ResearcherInput = {
   chatHistory: ChatTurnMessage[];
   followUp: string;
@@ -113,7 +110,7 @@ export type ResearcherOutput = {
   searchFindings: Chunk[];
 };
 
-// Action output types
+
 export type SearchActionOutput = {
   type: 'search_results';
   results: Chunk[];
@@ -133,7 +130,7 @@ export type ActionOutput =
   | DoneActionOutput
   | ReasoningResearchAction;
 
-// Research action interface
+
 export interface ResearchAction<
   TSchema extends z.ZodObject<any> = z.ZodObject<any>,
 > {
@@ -156,7 +153,7 @@ export interface ResearchAction<
   ) => Promise<ActionOutput>;
 }
 
-// Block types for session management
+
 export interface TextBlock {
   id: string;
   type: 'text';

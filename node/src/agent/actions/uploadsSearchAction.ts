@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Uploads Search Action
- * Searches user uploaded files using semantic search
- */
+
 
 import { randomUUID } from 'crypto';
 import z from 'zod';
@@ -37,16 +34,15 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
     );
   },
   execute: async (input, additionalConfig) => {
-    // Limit to 3 queries
+    
     input.queries = input.queries.slice(0, 3);
 
-    // ✅ Check for abort signal
+   
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Uploads search aborted');
     }
 
-    // ✅ Get userId from fileIds (first file's user_id)
-    // If fileIds are provided, get the user_id from the first file
+    
     let userId: string | null = null;
     
     if (additionalConfig.fileIds.length > 0) {
@@ -64,7 +60,7 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
       }
     }
 
-    // If no userId found, return empty results
+    
     if (!userId) {
       console.warn('⚠️ No userId found for uploads search');
       return {
@@ -73,27 +69,27 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
       };
     }
 
-    // ✅ Check for abort signal before searching
+    
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Uploads search aborted');
     }
 
-    // Search all queries and combine results
+    
     const allResults: Chunk[] = [];
     const seenUrls = new Map<string, number>();
 
     await Promise.all(
       input.queries.map(async (query) => {
-        // ✅ Check for abort signal before each search
+        
         if (additionalConfig.abortSignal?.aborted) {
           return;
         }
 
         try {
-          // Search user files (returns Document[])
+          
           const documents = await searchUserFiles(userId, query, 10);
 
-          // Convert Documents to Chunks and deduplicate by URL
+          
           documents.forEach((doc) => {
             const url = doc.url || '';
             
@@ -107,12 +103,12 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
                 },
               });
             } else if (url && seenUrls.has(url)) {
-              // Merge content for duplicate URLs
+              
               const existingIndex = seenUrls.get(url)!;
               const existingResult = allResults[existingIndex];
               existingResult.content += `\n\n${doc.content || doc.summary || ''}`;
             } else if (!url) {
-              // Add even if no URL (shouldn't happen, but handle gracefully)
+              
               allResults.push({
                 content: doc.content || doc.summary || '',
                 metadata: {
@@ -127,7 +123,7 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
       }),
     );
 
-    // ✅ Emit source block for file search results (matches current codebase pattern)
+    
     if (allResults.length > 0) {
       additionalConfig.session.emitBlock({
         id: randomUUID(),
@@ -140,7 +136,7 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
       });
     }
 
-    // Return search results as ActionOutput
+    
     const output: SearchActionOutput = {
       type: 'search_results',
       results: allResults,

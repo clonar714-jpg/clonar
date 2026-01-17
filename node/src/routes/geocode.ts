@@ -2,16 +2,12 @@ import express, { Request, Response } from "express";
 
 const router = express.Router();
 
-// Test route to verify registration
+
 router.get("/", (req: Request, res: Response) => {
   res.json({ message: "Geocode route is working!", method: "GET" });
 });
 
-/**
- * Geocode an address to get coordinates
- * POST /api/geocode
- * Body: { address: string }
- */
+
 router.post("/", async (req: Request, res: Response) => {
   console.log('📍 Geocode POST route hit!', { body: req.body, url: req.url, method: req.method });
   try {
@@ -33,7 +29,7 @@ router.post("/", async (req: Request, res: Response) => {
     
     console.log(`🔑 Using GOOGLE_MAPS_BACKEND_KEY (length: ${apiKey.length}, starts with: ${apiKey.substring(0, 10)}...)`);
 
-    // Use Google Maps Geocoding API
+    
     const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`;
     console.log(`🌍 Geocoding URL: ${geocodeUrl.substring(0, 100)}...`);
 
@@ -57,7 +53,7 @@ router.post("/", async (req: Request, res: Response) => {
       });
     } else {
       console.warn(`⚠️ Geocoding failed - Status: ${data.status}, Error: ${data.error_message || 'Unknown error'}`);
-      // ✅ FIX: Return 200 with null instead of 404, so frontend can handle gracefully
+      
       res.status(200).json({ 
         error: "Address not found",
         status: data.status,

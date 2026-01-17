@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { db } from '@/services/database';
 
-// In-memory cache to avoid re-querying each request
+
 let cachedDevUser: any = null;
 
 export default function skipAuthInDev() {
@@ -11,14 +11,14 @@ export default function skipAuthInDev() {
     }
 
     try {
-      // ✅ Use cached dev user if already loaded
+      
       if (cachedDevUser) {
         req.user = cachedDevUser;
         console.log(`🧪 Dev mode: Authentication bypassed ✅ (cached user ${cachedDevUser.id})`);
         return next();
       }
 
-      // 🔍 Try finding an existing user
+      
       const { data: existingUsers, error: listError } = await db.users().select('*').limit(1);
       if (listError) throw listError;
 
@@ -47,7 +47,7 @@ export default function skipAuthInDev() {
         console.log(`✅ Dev user created: ${devUser.email} (${devUser.id})`);
       }
 
-      // Cache and attach to request
+      
       cachedDevUser = {
         id: devUser.id,
         email: devUser.email,

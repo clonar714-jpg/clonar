@@ -1,4 +1,4 @@
-// lib/services/rooms_service.dart
+
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/room.dart';
@@ -7,15 +7,7 @@ import 'AgentService.dart';
 class RoomsService {
   static String get baseUrl => AgentService.baseUrl;
 
-  /// Fetch available rooms for a hotel
-  /// 
-  /// Parameters:
-  /// - hotelId: The hotel identifier
-  /// - checkIn: Check-in date (ISO format: YYYY-MM-DD)
-  /// - checkOut: Check-out date (ISO format: YYYY-MM-DD)
-  /// - guests: Number of guests (default: 2)
-  /// - adults: Number of adults (optional)
-  /// - children: Number of children (optional)
+
   static Future<List<Room>> fetchRooms({
     required String hotelId,
     required String checkIn,

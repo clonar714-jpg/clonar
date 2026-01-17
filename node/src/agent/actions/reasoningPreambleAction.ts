@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Reasoning Preamble Action
- * States the plan in natural language before any other action
- */
+
 
 import z from 'zod';
 import { ResearchAction, ReasoningResearchAction } from '../types';
@@ -35,7 +32,7 @@ const reasoningPreambleAction: ResearchAction<typeof schema> = {
   getDescription: (config) => actionDescription,
   enabled: (config) => config.mode !== 'speed',
   execute: async (input, additionalConfig) => {
-    // ✅ Check for abort signal
+  
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Reasoning preamble action aborted');
     }

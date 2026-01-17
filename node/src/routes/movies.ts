@@ -13,7 +13,7 @@ import {
   getPersonDetails
 } from "../services/tmdbService.js";
 
-// Lazy-load OpenAI client
+
 let clientInstance: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
@@ -31,10 +31,7 @@ function getOpenAIClient(): OpenAI {
 
 const router = express.Router();
 
-/**
- * Search for movies
- * GET /api/movies/search?q=query&page=1
- */
+
 router.get("/search", async (req: Request, res: Response) => {
   try {
     const query = req.query.q as string;
@@ -55,10 +52,7 @@ router.get("/search", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get movie details by ID
- * GET /api/movies/:id
- */
+
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const movieId = parseInt(req.params.id);
@@ -69,7 +63,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 
     const movie = await getMovieDetails(movieId);
     
-    // Check if movie is currently in theaters
+    
     let isInTheaters = false;
     try {
       const { getNowPlayingMovies } = await import("@/services/tmdbService");
@@ -82,7 +76,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       const nowPlayingMovieIds = new Set(allNowPlaying.map((m: any) => m.id));
       isInTheaters = nowPlayingMovieIds.has(movieId);
     } catch (err: any) {
-      // Fallback: check release date
+      
       if (movie.release_date) {
         try {
           const release = new Date(movie.release_date);
@@ -91,12 +85,12 @@ router.get("/:id", async (req: Request, res: Response) => {
           const daysUntilRelease = -daysSinceRelease;
           isInTheaters = (daysSinceRelease >= 0 && daysSinceRelease <= 120) || (daysUntilRelease > 0 && daysUntilRelease <= 30);
         } catch (e) {
-          // Invalid date format
+          
         }
       }
     }
     
-    // Add isInTheaters flag to movie details
+    
     const movieWithTheaterStatus = { ...movie, isInTheaters };
     res.json(movieWithTheaterStatus);
   } catch (error: any) {
@@ -108,10 +102,7 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get popular movies
- * GET /api/movies/popular?page=1
- */
+
 router.get("/popular", async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -126,10 +117,7 @@ router.get("/popular", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get trending movies
- * GET /api/movies/trending?timeWindow=day
- */
+
 router.get("/trending", async (req: Request, res: Response) => {
   try {
     const timeWindow = (req.query.timeWindow as 'day' | 'week') || 'day';
@@ -144,10 +132,7 @@ router.get("/trending", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get movie credits (cast and crew)
- * GET /api/movies/:id/credits
- */
+
 router.get("/:id/credits", async (req: Request, res: Response) => {
   try {
     const movieId = parseInt(req.params.id);
@@ -167,10 +152,7 @@ router.get("/:id/credits", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get movie videos (trailers, teasers)
- * GET /api/movies/:id/videos
- */
+
 router.get("/:id/videos", async (req: Request, res: Response) => {
   try {
     const movieId = parseInt(req.params.id);
@@ -190,10 +172,7 @@ router.get("/:id/videos", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get movie images (posters, backdrops)
- * GET /api/movies/:id/images
- */
+
 router.get("/:id/images", async (req: Request, res: Response) => {
   try {
     const movieId = parseInt(req.params.id);
@@ -213,10 +192,7 @@ router.get("/:id/images", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get movie reviews
- * GET /api/movies/:id/reviews?page=1
- */
+
 router.get("/:id/reviews", async (req: Request, res: Response) => {
   try {
     const movieId = parseInt(req.params.id);
@@ -237,11 +213,7 @@ router.get("/:id/reviews", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get movie reviews summary
- * POST /api/movies/:id/reviews/summary
- * Body: { reviews: Array<Review> }
- */
+
 router.post("/:id/reviews/summary", async (req: Request, res: Response) => {
   try {
     const movieId = parseInt(req.params.id);
@@ -255,7 +227,7 @@ router.post("/:id/reviews/summary", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Reviews array is required and must not be empty" });
     }
 
-    // Extract review content and ratings
+    
     const reviewTexts = reviews
       .map((review: any) => {
         const content = review.content || review.text || '';
@@ -264,7 +236,7 @@ router.post("/:id/reviews/summary", async (req: Request, res: Response) => {
         return rating ? `[${rating}/10] ${author}: ${content}` : `${author}: ${content}`;
       })
       .filter((text: string) => text.length > 0)
-      .slice(0, 20); // Limit to first 20 reviews to avoid token limits
+      .slice(0, 20); 
 
     const reviewsContext = reviewTexts.join('\n\n');
 
@@ -309,10 +281,7 @@ Write the summary in a natural, engaging tone. Do not use bullet points or lists
   }
 });
 
-/**
- * Get person details (biography, etc.)
- * GET /api/movies/person/:id
- */
+
 router.get("/person/:id", async (req: Request, res: Response) => {
   try {
     const personId = parseInt(req.params.id);

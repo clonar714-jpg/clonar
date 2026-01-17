@@ -1,7 +1,4 @@
-/**
- * Preference Storage Service
- * Handles storing and retrieving user preferences
- */
+
 
 import { db } from "../database";
 
@@ -32,12 +29,10 @@ export interface PreferenceSignal {
   user_interaction?: Record<string, any>;
 }
 
-/**
- * Store preference signal (non-blocking, async)
- */
+
 export async function storePreferenceSignal(signal: PreferenceSignal): Promise<void> {
   try {
-    // Use admin client to bypass RLS (signals are stored server-side)
+    
     const { error } = await db.preferenceSignals()
       .insert({
         user_id: signal.user_id,
@@ -54,19 +49,17 @@ export async function storePreferenceSignal(signal: PreferenceSignal): Promise<v
 
     if (error) {
       console.error("❌ Error storing preference signal:", error);
-      // Don't throw - this is non-critical
+      
     } else {
       console.log(`✅ Stored preference signal for user ${signal.user_id}`);
     }
   } catch (err: any) {
     console.error("❌ Unexpected error storing preference signal:", err.message);
-    // Don't throw - this is non-critical
+   
   }
 }
 
-/**
- * Get user preferences (cached in production)
- */
+
 export async function getUserPreferences(userId: string): Promise<UserPreferences | null> {
   try {
     const { data, error } = await db.userPreferences()
@@ -76,7 +69,7 @@ export async function getUserPreferences(userId: string): Promise<UserPreference
 
     if (error) {
       if (error.code === 'PGRST116') {
-        // No preferences found (not an error)
+        
         return null;
       }
       console.error("❌ Error fetching user preferences:", error);
@@ -90,19 +83,17 @@ export async function getUserPreferences(userId: string): Promise<UserPreference
   }
 }
 
-/**
- * Update user preferences
- */
+
 export async function updateUserPreferences(
   userId: string,
   preferences: Partial<UserPreferences>
 ): Promise<UserPreferences | null> {
   try {
-    // Check if preferences exist
+    
     const existing = await getUserPreferences(userId);
 
     if (existing) {
-      // Update existing
+      
       const { data, error } = await db.userPreferences()
         .update({
           ...preferences,
@@ -119,7 +110,7 @@ export async function updateUserPreferences(
 
       return data as UserPreferences;
     } else {
-      // Create new
+      
       const { data, error } = await db.userPreferences()
         .insert({
           user_id: userId,
@@ -141,9 +132,7 @@ export async function updateUserPreferences(
   }
 }
 
-/**
- * Get recent preference signals for a user
- */
+
 export async function getRecentSignals(
   userId: string,
   limit: number = 50

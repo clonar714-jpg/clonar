@@ -1,8 +1,8 @@
-// src/services/hotelAmenitiesExtractor.ts
+
 import axios from "axios";
 import OpenAI from "openai";
 
-// Lazy-load OpenAI client
+
 let clientInstance: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
@@ -18,19 +18,7 @@ function getOpenAIClient(): OpenAI {
   return clientInstance;
 }
 
-/**
- * 🎯 Perplexity-Style Amenities Extraction Pipeline
- * 
- * 1. Fetch from Google Places Details API
- * 2. Fetch from Tripadvisor (when available)
- * 3. Extract from reviews using LLM
- * 4. Merge and clean
- * 5. Filter to 4-8 most important/differentiating amenities
- */
 
-/**
- * Step 1: Fetch amenities from Google Places Details API
- */
 async function fetchGooglePlacesAmenities(
   placeId: string | null,
   hotelName: string,
@@ -38,7 +26,7 @@ async function fetchGooglePlacesAmenities(
 ): Promise<string[]> {
   const apiKey = process.env.GOOGLE_MAPS_BACKEND_KEY;
   if (!apiKey || !placeId) {
-    // Try to find place_id using text search
+    
     try {
       const searchQuery = `${hotelName}, ${location}`;
       const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(searchQuery)}&key=${apiKey}`;
@@ -56,7 +44,7 @@ async function fetchGooglePlacesAmenities(
   }
 
   try {
-    // Use Places API (New) - requires place_id
+    
     const detailsUrl = `https://places.googleapis.com/v1/places/${placeId}?fields=hotelAmenities,roomFeatures,propertyHighlights,accessibilityOptions,foodAndDrink,wellness,parkingOptions&key=${apiKey}`;
     
     const response = await axios.get(detailsUrl, {
@@ -69,7 +57,7 @@ async function fetchGooglePlacesAmenities(
 
     const amenities: string[] = [];
     
-    // Extract from all relevant fields
+   
     if (response.data.hotelAmenities) {
       amenities.push(...(Array.isArray(response.data.hotelAmenities) ? response.data.hotelAmenities : []));
     }
@@ -92,13 +80,13 @@ async function fetchGooglePlacesAmenities(
       amenities.push(...(Array.isArray(response.data.parkingOptions) ? response.data.parkingOptions : []));
     }
 
-    // Clean and normalize
+   
     return amenities
       .map(a => typeof a === 'string' ? a : (a?.displayName || a?.name || String(a)))
       .filter(a => a && a.length > 0)
       .map(a => a.trim());
   } catch (err: any) {
-    // Fallback to Places API (Legacy) if new API fails
+    
     try {
       const legacyUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=amenities&key=${apiKey}`;
       const legacyResponse = await axios.get(legacyUrl, { timeout: 5000 });
@@ -115,25 +103,16 @@ async function fetchGooglePlacesAmenities(
   }
 }
 
-/**
- * Step 2: Fetch amenities from Tripadvisor (placeholder for future integration)
- */
+
 async function fetchTripadvisorAmenities(
   hotelName: string,
   location: string
 ): Promise<string[]> {
-  // TODO: Implement Tripadvisor API integration when available
-  // For now, return empty array
-  // When implemented, fetch:
-  // - topAmenities
-  // - propertyFeatures
-  // - roomFeatures
+  
   return [];
 }
 
-/**
- * Step 3: Extract amenities from reviews using LLM
- */
+
 async function extractAmenitiesFromReviews(
   reviews: string[],
   hotelName: string
@@ -143,7 +122,7 @@ async function extractAmenitiesFromReviews(
   }
 
   try {
-    // Take top 30-50 reviews
+    
     const reviewTexts = reviews
       .map((review: any) => {
         if (typeof review === 'string') return review;
@@ -158,7 +137,7 @@ async function extractAmenitiesFromReviews(
       .join('\n\n');
 
     if (reviewTexts.length < 50) {
-      return []; // Not enough review content
+      return []; 
     }
 
     const systemPrompt = `You are an amenity extraction system for a hotel search engine (similar to Perplexity).
@@ -226,16 +205,14 @@ Return ONLY a JSON array of amenity strings (4-8 items).`;
   return [];
 }
 
-/**
- * Step 4: Merge and clean amenities from all sources
- */
+
 function mergeAndCleanAmenities(
   googleAmenities: string[],
   tripadvisorAmenities: string[],
   reviewAmenities: string[],
   existingAmenities: string[]
 ): string[] {
-  // Combine all sources
+  
   const allAmenities = [
     ...googleAmenities,
     ...tripadvisorAmenities,
@@ -243,7 +220,7 @@ function mergeAndCleanAmenities(
     ...(Array.isArray(existingAmenities) ? existingAmenities : []),
   ];
 
-  // Normalize and clean
+  
   const normalized = allAmenities
     .map(a => {
       if (typeof a !== 'string') return String(a);
@@ -251,11 +228,11 @@ function mergeAndCleanAmenities(
     })
     .filter(a => a.length > 0 && a.length < 50) // Filter out too long/short
     .map(a => {
-      // Capitalize first letter
+     
       return a.charAt(0).toUpperCase() + a.slice(1).toLowerCase();
     });
 
-  // Remove duplicates (case-insensitive)
+  
   const seen = new Set<string>();
   const unique = normalized.filter(a => {
     const lower = a.toLowerCase();
@@ -267,9 +244,7 @@ function mergeAndCleanAmenities(
   return unique;
 }
 
-/**
- * Step 5: LLM-based selection of 4-8 most important amenities
- */
+
 async function selectTopAmenities(
   allAmenities: string[],
   reviews: string[],
@@ -279,7 +254,7 @@ async function selectTopAmenities(
     return [];
   }
 
-  // If we have 8 or fewer, return them all (already filtered)
+  
   if (allAmenities.length <= 8) {
     return allAmenities;
   }
@@ -347,7 +322,7 @@ Return ONLY a JSON array of selected amenity strings.`;
       if (jsonMatch) {
         const selected = JSON.parse(jsonMatch[0]);
         if (Array.isArray(selected) && selected.length > 0) {
-          // Ensure selected amenities exist in original list (case-insensitive)
+         
           const selectedLower = selected.map((s: any) => String(s).toLowerCase());
           const filtered = allAmenities.filter(a => 
             selectedLower.includes(a.toLowerCase())
@@ -362,15 +337,10 @@ Return ONLY a JSON array of selected amenity strings.`;
     console.error(`❌ Error selecting top amenities:`, err.message);
   }
   
-  // Fallback: Return first 8 amenities
+  
   return allAmenities.slice(0, 8);
 }
 
-/**
- * 🎯 Main Function: Extract Perplexity-style amenities
- * 
- * Returns 4-8 most important amenities for a hotel
- */
 export async function extractHotelAmenities(
   hotelData: any
 ): Promise<string[]> {
@@ -389,24 +359,24 @@ export async function extractHotelAmenities(
 
     console.log(`🏨 Extracting amenities for "${hotelName}"...`);
 
-    // Step 1: Fetch from Google Places (with timeout)
+   
     const googlePromise = fetchGooglePlacesAmenities(placeId, hotelName, location);
     const googleTimeout = new Promise<string[]>((resolve) => 
       setTimeout(() => resolve([]), 3000)
     );
     const googleAmenities = await Promise.race([googlePromise, googleTimeout]);
   
-    // Step 2: Fetch from Tripadvisor (placeholder)
+    
     const tripadvisorAmenities = await fetchTripadvisorAmenities(hotelName, location);
 
-    // Step 3: Extract from reviews (with timeout)
+    
     const reviewPromise = extractAmenitiesFromReviews(reviews, hotelName);
     const reviewTimeout = new Promise<string[]>((resolve) => 
       setTimeout(() => resolve([]), 4000)
     );
     const reviewAmenities = await Promise.race([reviewPromise, reviewTimeout]);
 
-    // Step 4: Merge and clean
+    
     const mergedAmenities = mergeAndCleanAmenities(
       googleAmenities,
       tripadvisorAmenities,
@@ -415,13 +385,13 @@ export async function extractHotelAmenities(
     );
 
     if (mergedAmenities.length === 0) {
-      // Fallback to existing amenities if available
+      
       return Array.isArray(existingAmenities) 
         ? existingAmenities.slice(0, 8).map(a => String(a).trim()).filter(Boolean)
         : [];
     }
 
-    // Step 5: Select top 4-8 amenities
+    
     const topAmenities = await selectTopAmenities(mergedAmenities, reviews, hotelMetadata);
 
     console.log(`✅ Extracted ${topAmenities.length} amenities for "${hotelName}"`);
@@ -429,7 +399,7 @@ export async function extractHotelAmenities(
     return topAmenities.length > 0 ? topAmenities : mergedAmenities.slice(0, 8);
   } catch (err: any) {
     console.error(`❌ Error extracting amenities:`, err.message);
-    // Fallback to existing amenities
+    
     const existing = hotelData.amenities || [];
     return Array.isArray(existing) 
       ? existing.slice(0, 8).map(a => String(a).trim()).filter(Boolean)

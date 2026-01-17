@@ -3,8 +3,7 @@ import 'package:http/http.dart' as http;
 import '../services/AgentService.dart';
 
 class GeocodingService {
-  /// Geocode an address to get coordinates
-  /// Uses the backend API to geocode addresses
+  
   static Future<Map<String, double>?> geocodeAddress(String address) async {
     if (address.isEmpty) return null;
 
@@ -32,7 +31,7 @@ class GeocodingService {
     return null;
   }
 
-  /// Extract coordinates from hotel/place data
+  
   static Map<String, double>? extractCoordinates(Map<String, dynamic> data) {
     // Try gps_coordinates first
     final gpsCoordinates = data['gps_coordinates'];
@@ -60,7 +59,7 @@ class GeocodingService {
       }
     }
 
-    // Try direct latitude/longitude fields
+  
     final lat = data['latitude'] ?? data['lat'];
     final lng = data['longitude'] ?? data['lng'];
     if (lat != null && lng != null) {

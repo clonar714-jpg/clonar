@@ -1,7 +1,4 @@
-/**
- * ✅ BaseLLM: Abstract base class for LLM models
- * Matches the provided pattern for extensibility
- */
+
 
 import z from 'zod';
 import {
@@ -14,10 +11,7 @@ import {
   StreamTextOutput,
 } from '../types';
 
-/**
- * Abstract base class for LLM models
- * Provides a consistent interface for different LLM providers
- */
+
 abstract class BaseLLM<CONFIG = any> {
   constructor(protected config: CONFIG) {}
 

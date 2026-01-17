@@ -1,19 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Dedicated Video Search Endpoint
- * POST /api/videos
- * 
- * Request body:
- * {
- *   query: string,
- *   conversationHistory?: any[],
- *   maxResults?: number (default: 10)
- * }
- * 
- * Response:
- * {
- *   videos: Array<{url, thumbnail, title}>
- * }
- */
+
 import express from "express";
 import { Request, Response } from "express";
 import { searchVideos } from "../services/searchService";

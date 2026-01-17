@@ -1,4 +1,4 @@
-// ✅ PHASE 11: Slow Routes Logger - Logs Operations >200ms
+
 
 interface OperationTiming {
   operation: string;
@@ -11,9 +11,7 @@ class SlowRoutesLogger {
   private slowOperations: OperationTiming[] = [];
   private threshold: number = 200; // 200ms threshold
 
-  /**
-   * Log operation timing
-   */
+  
   logOperation(operation: string, duration: number, metadata?: Record<string, any>): void {
     if (duration > this.threshold) {
       this.slowOperations.push({
@@ -27,32 +25,24 @@ class SlowRoutesLogger {
     }
   }
 
-  /**
-   * Get slow operations summary
-   */
+  
   getSlowOperations(): OperationTiming[] {
     return this.slowOperations;
   }
 
-  /**
-   * Get top N slowest operations
-   */
+  
   getTopSlowOperations(n: number = 10): OperationTiming[] {
     return [...this.slowOperations]
       .sort((a, b) => b.duration - a.duration)
       .slice(0, n);
   }
 
-  /**
-   * Clear logged operations
-   */
+  
   clear(): void {
     this.slowOperations = [];
   }
 
-  /**
-   * Get statistics
-   */
+  
   getStats(): {
     totalSlowOps: number;
     avgDuration: number;
@@ -78,12 +68,10 @@ class SlowRoutesLogger {
   }
 }
 
-// ✅ PHASE 11: Global slow routes logger
+
 export const slowRoutesLogger = new SlowRoutesLogger();
 
-/**
- * Decorator to measure function execution time
- */
+
 export function measureTime(operationName: string) {
   return function (target: any, propertyName: string, descriptor: PropertyDescriptor) {
     const method = descriptor.value;
@@ -106,9 +94,7 @@ export function measureTime(operationName: string) {
   };
 }
 
-/**
- * Helper function to measure async operations
- */
+
 export async function measureAsync<T>(
   operationName: string,
   fn: () => Promise<T>,

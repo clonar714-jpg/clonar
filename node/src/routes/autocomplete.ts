@@ -19,10 +19,7 @@ function getOpenAIClient(): OpenAI {
 
 const router = express.Router();
 
-/**
- * Autocomplete/Search Suggestions Endpoint
- * Generates intelligent search suggestions based on partial query
- */
+
 router.post("/", async (req: Request, res: Response) => {
   try {
     const { query } = req.body;
@@ -33,7 +30,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     const trimmedQuery = query.trim();
 
-    // Don't generate suggestions for very short queries (less than 2 characters)
+    
     if (trimmedQuery.length < 2) {
       return res.json({ suggestions: [] });
     }
@@ -82,7 +79,7 @@ Example format: ["suggestion 1", "suggestion 2", "suggestion 3", "suggestion 4"]
 
     try {
       const parsed = JSON.parse(content);
-      // Handle both {suggestions: [...]} and [...] formats
+      
       if (Array.isArray(parsed)) {
         suggestions = parsed.slice(0, 5);
       } else if (parsed.suggestions && Array.isArray(parsed.suggestions)) {
@@ -91,7 +88,7 @@ Example format: ["suggestion 1", "suggestion 2", "suggestion 3", "suggestion 4"]
         suggestions = parsed.array.slice(0, 5);
       }
     } catch (parseError) {
-      // Fallback: try to extract suggestions from text
+      
       const lines = content
         .split("\n")
         .map((line) => line.trim())
@@ -103,7 +100,7 @@ Example format: ["suggestion 1", "suggestion 2", "suggestion 3", "suggestion 4"]
         .slice(0, 5);
     }
 
-    // Fallback to simple template-based suggestions if LLM fails
+    
     if (suggestions.length === 0) {
       suggestions = generateFallbackSuggestions(trimmedQuery);
     }
@@ -111,7 +108,7 @@ Example format: ["suggestion 1", "suggestion 2", "suggestion 3", "suggestion 4"]
     res.json({ suggestions });
   } catch (err: any) {
     console.error("❌ Error generating autocomplete suggestions:", err);
-    // Return fallback suggestions on error
+    
     const { query } = req.body;
     const trimmedQuery = query?.trim() || "";
     res.json({
@@ -120,14 +117,11 @@ Example format: ["suggestion 1", "suggestion 2", "suggestion 3", "suggestion 4"]
   }
 });
 
-/**
- * Fallback suggestion generator using simple templates
- */
+
 function generateFallbackSuggestions(query: string): string[] {
   const lowerQuery = query.toLowerCase();
   const suggestions: string[] = [];
 
-  // Shopping-related patterns
   if (lowerQuery.includes("shoe") || lowerQuery.includes("sneaker")) {
     suggestions.push(`${query} for men`, `${query} for women`, `${query} sale`, `${query} for kids`);
   } else if (lowerQuery.includes("nike")) {
@@ -137,7 +131,7 @@ function generateFallbackSuggestions(query: string): string[] {
   } else if (lowerQuery.includes("iphone")) {
     suggestions.push("iphone 15", "iphone 15 pro", "iphone case", "iphone charger");
   } else {
-    // Generic suggestions
+    
     suggestions.push(
       `${query} near me`,
       `${query} sale`,
@@ -149,12 +143,7 @@ function generateFallbackSuggestions(query: string): string[] {
   return suggestions.slice(0, 5);
 }
 
-/**
- * Location Autocomplete Endpoint
- * Uses Google Places Autocomplete API for location suggestions
- * POST /api/autocomplete/location
- * Body: { query: string }
- */
+
 router.post("/location", async (req: Request, res: Response) => {
   try {
     const { query } = req.body;
@@ -165,7 +154,7 @@ router.post("/location", async (req: Request, res: Response) => {
 
     const trimmedQuery = query.trim();
 
-    // Don't search for very short queries (less than 2 characters)
+    
     if (trimmedQuery.length < 2) {
       return res.json({ predictions: [] });
     }
@@ -177,7 +166,7 @@ router.post("/location", async (req: Request, res: Response) => {
       return res.json({ predictions: [] });
     }
 
-    // Use Google Places Autocomplete API
+    
     const autocompleteUrl = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(trimmedQuery)}&key=${apiKey}&types=(cities)`;
     
     const response = await fetch(autocompleteUrl);

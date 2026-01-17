@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
-// Lazy-load environment variables to ensure dotenv.config() has run
+
 const getSupabaseUrl = () => {
   const url = process.env.SUPABASE_URL;
   if (!url) {
@@ -25,11 +25,11 @@ const getServiceKey = () => {
   return key;
 };
 
-// ✅ Fresh clients (no global cache)
+
 export const supabase = () => createClient(getSupabaseUrl(), getSupabaseKey());
 export const supabaseAdmin = () => createClient(getSupabaseUrl(), getServiceKey());
 
-// ✅ Always return a new connection
+
 export const db = {
   users: () => supabaseAdmin().from("users"),
   personas: () => supabaseAdmin().from("personas"),
@@ -47,19 +47,19 @@ export const db = {
 
 export const connectDatabase = async () => {
   try {
-    // Get env vars (will throw if missing)
+    
     const supabaseUrl = getSupabaseUrl();
     const serviceKey = getServiceKey();
     
-    // First, test basic connectivity to Supabase URL
+    
     console.log(`🔍 Testing connection to: ${supabaseUrl}`);
     
-    // Add timeout and better error handling
+   
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
     
     try {
-      // Test basic connectivity first
+      
       const healthCheck = await fetch(`${supabaseUrl}/rest/v1/`, {
         method: 'HEAD',
         signal: controller.signal,
@@ -79,7 +79,7 @@ export const connectDatabase = async () => {
     } catch (fetchErr: any) {
       clearTimeout(timeoutId);
       
-      // Log full error details for debugging
+      
       console.error("   Raw error details:", {
         name: fetchErr.name,
         message: fetchErr.message,
@@ -95,7 +95,7 @@ export const connectDatabase = async () => {
         throw new Error('Connection timeout: Supabase URL did not respond within 10 seconds. Check if your Supabase project is paused or your network connection.');
       }
       
-      // Check various error codes and causes
+      
       const errorCode = fetchErr.code || fetchErr.cause?.code || fetchErr.errno;
       const errorMessage = fetchErr.message || fetchErr.cause?.message || 'Unknown error';
       
@@ -115,11 +115,11 @@ export const connectDatabase = async () => {
         throw new Error(`SSL/TLS certificate error: ${errorMessage}\n\nThis might be a proxy or firewall issue.`);
       }
       
-      // Generic error with all available info
+     
       throw new Error(`Network error connecting to Supabase.\n\nError: ${errorMessage}\nCode: ${errorCode || 'unknown'}\n\nPossible causes:\n  - Supabase project is paused (check dashboard)\n  - Network connectivity issues\n  - Firewall/proxy blocking connection\n  - Incorrect SUPABASE_URL`);
     }
     
-    // Now test the actual database query
+    
     const { error } = await supabaseAdmin().from("users").select("id").limit(1);
     if (error) {
       throw new Error(`Database query failed: ${error.message} (Code: ${error.code || 'unknown'})`);

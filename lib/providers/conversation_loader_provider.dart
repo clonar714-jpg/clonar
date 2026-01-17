@@ -5,8 +5,7 @@ import '../core/api_client.dart';
 import '../models/query_session_model.dart';
 import '../services/conversation_hydration.dart';
 
-/// Provider to load conversation messages from backend
-/// ✅ CHATGPT/PERPLEXITY-STYLE: Fetches messages and hydrates into QuerySession list
+
 final conversationLoaderProvider = FutureProvider.family<List<QuerySession>, String>(
   (ref, conversationId) async {
     if (kDebugMode) {
@@ -14,7 +13,7 @@ final conversationLoaderProvider = FutureProvider.family<List<QuerySession>, Str
     }
     
     try {
-      // ✅ Fetch messages from backend
+      
       final response = await ApiClient.get('/chats/$conversationId')
           .timeout(const Duration(seconds: 10));
       
@@ -32,13 +31,12 @@ final conversationLoaderProvider = FutureProvider.family<List<QuerySession>, Str
         debugPrint('✅ ConversationLoader: Loaded ${messagesJson.length} messages from backend');
       }
       
-      // ✅ Convert JSON messages to Message objects
+      
       final messages = messagesJson
           .map((msg) => Message.fromJson(msg as Map<String, dynamic>))
           .toList();
       
-      // ✅ CHATGPT/PERPLEXITY-STYLE: Hydrate messages into QuerySession list
-      // Each message = one complete turn (user query + assistant response)
+      
       final sessions = hydrateSessionsFromMessages(messages);
       
       if (kDebugMode) {

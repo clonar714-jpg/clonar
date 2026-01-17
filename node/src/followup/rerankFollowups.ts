@@ -1,6 +1,4 @@
-/**
- * ✅ Follow-up Reranker: Embedding-based semantic reranking
- */
+
 
 import { getEmbedding, cosine } from '../embeddings/embeddingClient';
 
@@ -9,9 +7,7 @@ export interface RankedFollowUp {
   score: number;
 }
 
-/**
- * Rerank follow-ups using embedding similarity
- */
+
 export async function rerankFollowUps(
   query: string,
   candidates: string[],
@@ -24,11 +20,11 @@ export async function rerankFollowUps(
   }
 
   try {
-    // Create context embedding (query + answer summary)
+    
     const context = `${query} ${answerSummary}`;
     const contextEmbedding = await getEmbedding(context);
 
-    // Score each candidate
+    
     const scored: RankedFollowUp[] = [];
     
     for (const candidate of candidates) {
@@ -36,7 +32,7 @@ export async function rerankFollowUps(
         const candidateEmbedding = await getEmbedding(candidate);
         const similarity = cosine(contextEmbedding, candidateEmbedding);
         
-        // Penalize if too similar to recent follow-ups
+        
         let noveltyPenalty = 0;
         for (const recent of recentFollowups.slice(-3)) {
           const recentEmbedding = await getEmbedding(recent);
@@ -52,7 +48,7 @@ export async function rerankFollowUps(
           score: finalScore,
         });
       } catch (error) {
-        // If embedding fails, assign default score
+        
         scored.push({
           candidate,
           score: 0.5,
@@ -60,13 +56,13 @@ export async function rerankFollowUps(
       }
     }
 
-    // Sort by score and return top K
+    
     return scored
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
   } catch (error) {
     console.warn('⚠️ Reranking failed, using default scores:', error);
-    // Fallback: return candidates with default scores
+    
     return candidates.map((candidate) => ({
       candidate,
       score: 0.5,

@@ -1,7 +1,4 @@
-/**
- * ✅ Drizzle Schema
- * Database schema definitions for SQLite
- */
+
 
 import { sql } from 'drizzle-orm';
 import { text, integer, sqliteTable, index } from 'drizzle-orm/sqlite-core';

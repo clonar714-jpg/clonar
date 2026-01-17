@@ -1,6 +1,4 @@
-/**
- * ✅ Slot Extraction: Extract brand, category, price, city from query
- */
+
 
 export interface SlotExtraction {
   brand: string | null;
@@ -9,13 +7,11 @@ export interface SlotExtraction {
   city: string | null;
 }
 
-/**
- * Analyze query to extract slots (brand, category, price, city)
- */
+
 export function analyzeCardNeed(query: string): SlotExtraction {
   const lower = query.toLowerCase();
   
-  // Extract brand (common brands)
+ 
   const brands = [
     'nike', 'adidas', 'apple', 'samsung', 'sony', 'canon', 'nikon',
     'dell', 'hp', 'lenovo', 'asus', 'msi', 'lg', 'panasonic',
@@ -31,7 +27,7 @@ export function analyzeCardNeed(query: string): SlotExtraction {
     }
   }
 
-  // Extract category
+  
   let category: string | null = null;
   const categories = [
     'shoes', 'sneakers', 'boots', 'sandals',
@@ -49,7 +45,7 @@ export function analyzeCardNeed(query: string): SlotExtraction {
     }
   }
 
-  // Extract price
+  
   let price: string | null = null;
   const priceMatch = lower.match(/\$?(\d+)\s*(k|thousand|hundred)?/i);
   if (priceMatch) {
@@ -65,9 +61,9 @@ export function analyzeCardNeed(query: string): SlotExtraction {
     }
   }
 
-  // Extract city
+  
   let city: string | null = null;
-  // Common city patterns (simplified - could use NER in production)
+  
   const cityPatterns = [
     /\b(new york|nyc|manhattan)\b/i,
     /\b(los angeles|la)\b/i,

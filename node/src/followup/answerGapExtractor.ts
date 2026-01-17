@@ -1,6 +1,4 @@
-/**
- * ✅ Answer Gap Extractor: Extract reasoning gaps from answer using LLM
- */
+
 
 import OpenAI from 'openai';
 
@@ -21,9 +19,7 @@ export interface AnswerGaps {
   potentialFollowUps: string[];
 }
 
-/**
- * Extract reasoning gaps from answer to generate contextual follow-ups
- */
+
 export async function extractAnswerGaps(
   query: string,
   answer: string,
@@ -54,7 +50,7 @@ Return ONLY a JSON array of 2-3 follow-up questions that explore gaps or missing
 
     const content = response.choices[0]?.message?.content?.trim() || '[]';
     
-    // Extract JSON array
+    
     let jsonStr = content;
     const jsonMatch = content.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
     if (jsonMatch) {

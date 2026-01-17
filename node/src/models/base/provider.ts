@@ -1,17 +1,11 @@
-/**
- * ✅ BaseModelProvider: Abstract base class for model providers
- * Matches the provided pattern for extensibility
- */
+
 
 import { ModelList, ProviderMetadata } from '../types';
 import { UIConfigField } from '../../config/types';
 import BaseLLM from './llm';
 import BaseEmbedding from './embedding';
 
-/**
- * Abstract base class for model providers
- * Provides a consistent interface for different LLM/embedding providers
- */
+
 abstract class BaseModelProvider<CONFIG = any> {
   constructor(
     protected id: string,
@@ -45,36 +39,23 @@ abstract class BaseModelProvider<CONFIG = any> {
    */
   abstract loadEmbeddingModel(modelName: string): Promise<BaseEmbedding<any>>;
 
-  /**
-   * Get UI configuration fields for this provider
-   * Static method - must be implemented by subclasses
-   */
+ 
   static getProviderConfigFields(): UIConfigField[] {
     throw new Error('Method not implemented.');
   }
 
-  /**
-   * Get provider metadata
-   * Static method - must be implemented by subclasses
-   * Note: Returns ProviderMetadata with name/key (not id/name)
-   */
+ 
   static getProviderMetadata(): ProviderMetadata {
     throw new Error('Method not Implemented.');
   }
 
-  /**
-   * Parse and validate raw configuration
-   * Static method - must be implemented by subclasses
-   */
+ 
   static parseAndValidate(raw: any): any {
     throw new Error('Method not Implemented.');
   }
 }
 
-/**
- * Provider constructor type
- * Ensures static methods are available on the constructor
- */
+
 export type ProviderConstructor<CONFIG = any> = {
   new (id: string, name: string, config: CONFIG): BaseModelProvider<CONFIG>;
   parseAndValidate(raw: any): CONFIG;

@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: Web Search Action
- * Performs web searches using SerpAPI (PRIMARY source)
- */
+
 
 import { randomUUID } from 'crypto';
 import z from 'zod';
@@ -90,8 +87,7 @@ const webSearchAction: ResearchAction<typeof actionSchema> = {
     config.sources.includes('web') &&
     config.classification.classification.skipSearch === false,
   execute: async (input, additionalConfig) => {
-    // ✅ FIX: Validate and parse input - LLM only passes queries, not type
-    // The schema includes 'type' but LLM arguments don't, so we omit it for validation
+    
     const queriesSchema = z.object({
       queries: z.array(z.string()).describe('An array of search queries to perform web searches for.'),
     });
@@ -105,10 +101,10 @@ const webSearchAction: ResearchAction<typeof actionSchema> = {
       throw new Error(`Invalid web_search arguments: ${error instanceof Error ? error.message : String(error)}`);
     }
     
-    // Limit to 3 queries
+   
     const queries = parsedInput.queries.slice(0, 3);
 
-    // ✅ Check for abort signal
+    
     if (additionalConfig.abortSignal?.aborted) {
       throw new Error('Web search aborted');
     }
@@ -116,12 +112,12 @@ const webSearchAction: ResearchAction<typeof actionSchema> = {
     let results: Chunk[] = [];
 
     const performSearch = async (q: string) => {
-      // ✅ Check for abort signal before each search
+      
       if (additionalConfig.abortSignal?.aborted) {
         throw new Error('Web search aborted');
       }
 
-      // ✅ PRIMARY: Use SerpAPI for web search
+      
       try {
         const serpRes = await searchWebSerpAPI(q, {
           maxResults: 5,
@@ -135,36 +131,36 @@ const webSearchAction: ResearchAction<typeof actionSchema> = {
             url: r.url,
             author: r.author,
             thumbnail: r.thumbnail,
-            images: r.images, // ✅ Include images for media tab
+            images: r.images, 
           },
         }));
 
         results.push(...resultChunks);
       } catch (error: any) {
         if (error.message === 'Web search aborted') {
-          throw error; // Re-throw abort errors
+          throw error; 
         }
         console.error(`❌ SerpAPI search failed for "${q}":`, error.message);
-        // Continue with empty results for this query
+        
       }
     };
 
-    // Execute all searches in parallel
+    
     await Promise.all(queries.map(performSearch));
 
-    // ✅ Emit source block for web search results (matches current codebase pattern)
+    
     if (results.length > 0) {
       additionalConfig.session.emitBlock({
         id: randomUUID(),
         type: 'source',
         data: results.map((chunk) => ({
           url: chunk.metadata.url,
-          ...chunk.metadata, // This already includes title
+          ...chunk.metadata, 
         })),
       });
     }
 
-    // Return search results as ActionOutput
+    
     const output: SearchActionOutput = {
       type: 'search_results',
       results,

@@ -1,6 +1,4 @@
-// No imports needed - this is a pure Dart isolate function
 
-// Helper class used for fast matching
 class _Hit {
   final int start;
   final int end;
@@ -10,19 +8,19 @@ class _Hit {
   _Hit(this.start, this.end, this.card, this.length);
 }
 
-// FAST, NON-BLOCKING version (runs fully in isolate)
+
 List<Map<String, dynamic>> fastParseTextWithLocations(
     String text,
     List<Map<String, dynamic>> locationCards,
 ) {
-  // If nothing to parse, return plain text
+  
   if (locationCards.isEmpty) {
     return [{'text': text, 'location': null}];
   }
 
   final lowerText = text.toLowerCase();
 
-  // Prepare lookup table: key → card
+  
   final Map<String, Map<String, dynamic>> lookup = <String, Map<String, dynamic>>{};
 
   for (final card in locationCards) {
@@ -31,7 +29,7 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
 
     lookup[title] = card;
 
-    // Each significant word
+    
     for (final word in title.split(' ')) {
       if (word.length >= 4) {
         if (!lookup.containsKey(word)) {
@@ -41,7 +39,7 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
     }
   }
 
-  // Now detect mentions (very fast: single scan)
+  
   final List<_Hit> hits = [];
   lookup.forEach((keyword, card) {
     int index = 0;
@@ -54,7 +52,7 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
   });
 
   if (hits.isEmpty) {
-    // Show plain text + all cards (Perplexity behavior)
+    
     final List<Map<String, dynamic>> segments = <Map<String, dynamic>>[
       {'text': text, 'location': null}
     ];
@@ -66,14 +64,14 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
     return segments;
   }
 
-  // Sort by starting position / longest keyword wins
+  
   hits.sort((a, b) {
     final cmp = a.start.compareTo(b.start);
     if (cmp != 0) return cmp;
     return b.length.compareTo(a.length);
   });
 
-  // Deduplicate overlaps
+  
   final List<_Hit> cleaned = [];
   for (final h in hits) {
     bool overlaps = false;
@@ -86,7 +84,7 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
     if (!overlaps) cleaned.add(h);
   }
 
-  // Build final segments
+  
   final List<Map<String, dynamic>> segments = <Map<String, dynamic>>[];
   final Set<String> shown = <String>{};
 
@@ -99,7 +97,7 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
       });
     }
 
-    // Add card only once
+    
     final id = (h.card['title'] ?? '').toString();
     if (!shown.contains(id)) {
       shown.add(id);
@@ -109,12 +107,12 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
     last = h.end;
   }
 
-  // Remaining text
+  
   if (last < text.length) {
     segments.add({'text': text.substring(last), 'location': null});
   }
 
-  // Add all remaining cards
+  
   for (final c in locationCards) {
     final id = (c['title'] ?? '').toString();
     if (!shown.contains(id)) {
@@ -126,7 +124,7 @@ List<Map<String, dynamic>> fastParseTextWithLocations(
   return segments;
 }
 
-/// Data sent into the isolate
+
 class ParsingInput {
   final String answerText;
   final List<Map<String, dynamic>> locationCards;
@@ -151,7 +149,7 @@ class ParsingInput {
     );
   }
 
-/// Output (parsed text + segment cards)
+
 class ParsedContent {
   final String briefingText;
   final String placeNamesText;
@@ -176,7 +174,7 @@ class ParsedContent {
       );
 }
 
-// ✅ PATCH SET A: Helper functions for preprocessing (isolate-safe)
+
 String cleanDescription(String? desc) {
   if (desc == null || desc.isEmpty) return '';
   return desc
@@ -276,7 +274,7 @@ List<Map<String, dynamic>> preprocessSections(List<dynamic> sections) {
   }).toList();
 }
 
-/// ✅ PATCH 2: Comprehensive parse function for entire agent response
+
 Map<String, dynamic> parseAgentResponseIsolate(Map<String, dynamic> input) {
   final rawAnswer = input['rawAnswer'] ?? <String, dynamic>{};
   final rawResults = input['rawResults'] ?? <String, dynamic>{};
@@ -284,17 +282,17 @@ Map<String, dynamic> parseAgentResponseIsolate(Map<String, dynamic> input) {
   final intent = input['intent']?.toString() ?? 'unknown';
   final cardType = input['cardType']?.toString() ?? 'unknown';
 
-  // Heavy summary generation moved here
+ 
   final summary = generateSummary(rawAnswer);
 
-  // Heavy hotel/place preprocessing moved here
+  
   final hotels = preprocessHotels(rawResults);
   final places = preprocessPlaces(rawResults);
   final products = preprocessProducts(rawResults);
   final movies = preprocessMovies(rawResults);
   final locations = preprocessLocations(rawResults);
 
-  // Process Perplexity-style sections
+ 
   final parsedSections = preprocessSections(rawSections is List ? rawSections : []);
 
   return {
@@ -309,17 +307,14 @@ Map<String, dynamic> parseAgentResponseIsolate(Map<String, dynamic> input) {
   };
 }
 
-/// ENTRY POINT — isolate function
-/// This runs in a separate isolate, off the UI thread
+
 ParsedContent parseAnswerIsolate(Map<String, dynamic> map) {
   final input = ParsingInput.fromMap(map);
 
   final answerText = input.answerText;
   final cards = input.locationCards;
 
-  // -----------------------------
-  // 1. Extract briefing
-  // -----------------------------
+  
   String briefing = "";
   String placeNames = "";
 
@@ -346,7 +341,7 @@ ParsedContent parseAnswerIsolate(Map<String, dynamic> map) {
     }
   }
 
-  // Clean briefing - remove duplicates
+  
   final lines = briefing.split(RegExp(r'[.!?]\s+'));
   final seenLines = <String>{};
   final uniqueLines = <String>[];
@@ -361,9 +356,7 @@ ParsedContent parseAnswerIsolate(Map<String, dynamic> map) {
 
   briefing = uniqueLines.join('. ').trim();
 
-  // -----------------------------
-  // 2. Match cards with text
-  // -----------------------------
+  
   final cardTitles = cards
       .map((e) => (e['title'] ?? '').toString().toLowerCase().trim())
       .where((t) => t.isNotEmpty)
@@ -375,7 +368,7 @@ ParsedContent parseAnswerIsolate(Map<String, dynamic> map) {
       final cleaned = p.trim().toLowerCase();
       if (cleaned.isEmpty) continue;
   
-      // Check if this place name matches any card title
+      
       final hasMatch = cardTitles.any((t) => 
         t == cleaned || 
         t.contains(cleaned) || 
@@ -391,10 +384,7 @@ ParsedContent parseAnswerIsolate(Map<String, dynamic> map) {
 
   placeNames = validNames.join(', ');
 
-  // -----------------------------
-  // 3. Segment builder using fast parsing
-  // -----------------------------
-  // Use fastParseTextWithLocations for efficient text parsing in isolate
+  
   final segments = fastParseTextWithLocations(answerText, cards);
   
   return ParsedContent(

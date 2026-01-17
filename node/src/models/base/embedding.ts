@@ -1,14 +1,8 @@
-/**
- * ✅ BaseEmbedding: Abstract base class for embedding models
- * Matches the provided pattern for extensibility
- */
+
 
 import { Chunk } from '../../agent/types';
 
-/**
- * Abstract base class for embedding models
- * Provides a consistent interface for different embedding providers
- */
+
 abstract class BaseEmbedding<CONFIG = any> {
   constructor(protected config: CONFIG) {}
 

@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 
-// Singleton HTTP client for memory efficiency
+
 class _HttpClientSingleton {
   static final _HttpClientSingleton _instance = _HttpClientSingleton._internal();
   factory _HttpClientSingleton() => _instance;
@@ -24,7 +24,7 @@ class _HttpClientSingleton {
 
 final _httpClient = _HttpClientSingleton();
 
-/// Safe HTTP request wrapper that adds timeouts and error handling
+
 Future<http.Response> safeRequest(Future<http.Response> future) async {
   try {
     return await future.timeout(const Duration(seconds: 8));
@@ -44,22 +44,22 @@ Future<http.Response> safeRequest(Future<http.Response> future) async {
   }
 }
 
-/// API service class for making HTTP requests with optimized memory usage
+
 class ApiService {
-  static const String baseUrl = 'http://10.0.0.127:8001';  // Python API running on port 8001
-  static const String apiUrl = baseUrl;  // Python API doesn't use /api prefix
+  static const String baseUrl = 'http://10.0.0.127:8001';  
+  static const String apiUrl = baseUrl;  
   
-  // Initialize the singleton HTTP client
+  
   static void initialize() {
     _httpClient.initialize();
   }
   
-  // Dispose the singleton HTTP client
+  
   static void dispose() {
     _httpClient.dispose();
   }
 
-  /// Make a GET request with timeout and error handling
+ 
   static Future<http.Response> get(String endpoint, {Map<String, String>? headers}) async {
     return safeRequest(
       http.get(
@@ -69,7 +69,7 @@ class ApiService {
     );
   }
 
-  /// Make a POST request with timeout and error handling
+  
   static Future<http.Response> post(String endpoint, {
     Map<String, String>? headers,
     Object? body,
@@ -83,7 +83,7 @@ class ApiService {
     );
   }
 
-  /// Make a PUT request with timeout and error handling
+ 
   static Future<http.Response> put(String endpoint, {
     Map<String, String>? headers,
     Object? body,
@@ -97,7 +97,7 @@ class ApiService {
     );
   }
 
-  /// Make a DELETE request with timeout and error handling
+ 
   static Future<http.Response> delete(String endpoint, {
     Map<String, String>? headers,
   }) async {
@@ -109,7 +109,7 @@ class ApiService {
     );
   }
 
-  /// Upload a file with timeout and error handling
+  
   static Future<http.Response> uploadFile(String endpoint, {
     Map<String, String>? headers,
     required http.MultipartRequest request,
@@ -119,7 +119,7 @@ class ApiService {
     );
   }
 
-  /// Search method for shopping and hotel results
+  
   static Future<http.Response> search(String query) async {
     return safeRequest(
       http.post(
@@ -133,7 +133,7 @@ class ApiService {
     );
   }
 
-  /// Image-based search method for shopping and hotel results
+  
   static Future<http.Response> searchWithImage(String query, String imageUrl) async {
     return safeRequest(
       http.post(

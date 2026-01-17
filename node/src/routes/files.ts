@@ -1,5 +1,4 @@
-// src/routes/files.ts
-// ✅ PERPLEXICA-STYLE: API endpoints for user file upload and management
+
 
 import express from 'express';
 import multer from 'multer';
@@ -15,14 +14,14 @@ import { ApiResponse, AuthenticatedRequest } from '@/types';
 
 const router = express.Router();
 
-// Configure multer for file uploads
+
 const upload = multer({
   dest: './uploads/files',
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB max
+    fileSize: 50 * 1024 * 1024, 
   },
   fileFilter: (req, file, cb) => {
-    // Allow text, PDF, and Word documents
+    
     const allowedMimes = [
       'text/plain',
       'text/markdown',
@@ -39,10 +38,7 @@ const upload = multer({
   },
 });
 
-/**
- * POST /api/files/upload
- * Upload a file and process it for semantic search
- */
+
 router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: AuthenticatedRequest, res: express.Response) => {
   try {
     if (!req.file) {
@@ -60,11 +56,11 @@ router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: Authe
 
     console.log(`📁 Processing file upload: ${fileName} (${mimeType})`);
 
-    // Extract text from file
+    
     const text = await extractTextFromFile(filePath, mimeType, fileName);
     
     if (!text || text.trim().length === 0) {
-      // Clean up file
+      
       fs.unlinkSync(filePath);
       const response: ApiResponse = {
         success: false,
@@ -73,7 +69,7 @@ router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: Authe
       return res.status(400).json(response);
     }
 
-    // Upload to Supabase Storage
+    
     const fileBuffer = fs.readFileSync(filePath);
     const storageFileName = `${userId}/${uuidv4()}_${fileName}`;
     
@@ -90,15 +86,15 @@ router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: Authe
       throw uploadError;
     }
 
-    // Get public URL
+    
     const { data: urlData } = db.storage()
       .from('files')
       .getPublicUrl(storageFileName);
 
-    // Get file metadata
+    
     const metadata = getFileMetadata(filePath, fileName, mimeType);
 
-    // Create file record in database
+    
     const { data: fileRecord, error: fileError } = await db.userFiles()
       .insert({
         user_id: userId,
@@ -113,21 +109,21 @@ router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: Authe
 
     if (fileError) {
       console.error('❌ Database error:', fileError);
-      // Clean up storage
+      
       await db.storage().from('files').remove([storageFileName]);
       fs.unlinkSync(filePath);
       throw fileError;
     }
 
-    // Chunk text for embedding
+    
     const chunks = chunkText(text);
     console.log(`📄 Extracted ${chunks.length} chunks from file`);
 
-    // Generate embeddings for chunks
+    
     const embeddings = await getEmbeddings(chunks);
     console.log(`✅ Generated ${embeddings.length} embeddings`);
 
-    // Store chunks with embeddings
+    
     const chunkRecords = chunks.map((chunk, index) => ({
       file_id: fileRecord.id,
       chunk_index: index,
@@ -140,14 +136,14 @@ router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: Authe
 
     if (chunksError) {
       console.error('❌ Error storing chunks:', chunksError);
-      // Clean up file record
+      
       await db.userFiles().delete().eq('id', fileRecord.id);
       await db.storage().from('files').remove([storageFileName]);
       fs.unlinkSync(filePath);
       throw chunksError;
     }
 
-    // Clean up local file
+    
     fs.unlinkSync(filePath);
 
     console.log(`✅ File processed successfully: ${fileName} (${chunks.length} chunks)`);
@@ -179,10 +175,7 @@ router.post('/upload', skipAuthInDev(), upload.single('file'), async (req: Authe
   }
 });
 
-/**
- * GET /api/files
- * List all user's uploaded files
- */
+
 router.get('/', skipAuthInDev(), async (req: AuthenticatedRequest, res: express.Response) => {
   try {
     const userId = req.user?.id || 'anonymous';
@@ -215,16 +208,13 @@ router.get('/', skipAuthInDev(), async (req: AuthenticatedRequest, res: express.
   }
 });
 
-/**
- * DELETE /api/files/:id
- * Delete a file and its chunks
- */
+
 router.delete('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res: express.Response) => {
   try {
     const userId = req.user?.id || 'anonymous';
     const fileId = req.params.id;
 
-    // Get file record
+    
     const { data: file, error: fileError } = await db.userFiles()
       .select('storage_path')
       .eq('id', fileId)
@@ -239,13 +229,13 @@ router.delete('/:id', skipAuthInDev(), async (req: AuthenticatedRequest, res: ex
       return res.status(404).json(response);
     }
 
-    // Delete chunks
+    
     await db.userFileChunks().delete().eq('file_id', fileId);
 
-    // Delete file record
+    
     await db.userFiles().delete().eq('id', fileId);
 
-    // Delete from storage
+    
     if (file.storage_path) {
       await db.storage().from('files').remove([file.storage_path]);
     }

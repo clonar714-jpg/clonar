@@ -1,7 +1,4 @@
-/**
- * ✅ Database Migration System
- * Runs SQL migrations from drizzle folder
- */
+
 
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -14,7 +11,7 @@ const db = new Database(dbPath);
 
 const migrationsFolder = path.join(DATA_DIR, 'drizzle');
 
-// Create migrations tracking table
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS ran_migrations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,11 +35,9 @@ function sanitizeSql(content: string) {
   return statements;
 }
 
-/**
- * Run all pending migrations
- */
+
 export function runMigrations() {
-  // Ensure migrations folder exists
+ 
   if (!fs.existsSync(migrationsFolder)) {
     console.log(`⚠️ Migrations folder not found: ${migrationsFolder}`);
     return;
@@ -176,7 +171,7 @@ export function runMigrations() {
         db.exec('DROP TABLE chats;');
         db.exec('ALTER TABLE chats_new RENAME TO chats;');
 
-        /* Migrate messages */
+        
 
         db.exec(`
           CREATE TABLE IF NOT EXISTS messages_new (
@@ -258,7 +253,7 @@ export function runMigrations() {
 
             lastCompleted = true;
           } else if (msg.type === 'user' && !lastCompleted) {
-            /* Message wasn't completed so we'll just create the record with empty response */
+            
             insertMessage.run(
               currentMessageData.messageId,
               currentMessageData.chatId,
@@ -292,7 +287,7 @@ export function runMigrations() {
         db.exec('DROP TABLE messages;');
         db.exec('ALTER TABLE messages_new RENAME TO messages;');
       } else {
-        // Execute each statement separately
+        
         statements.forEach((stmt) => {
           if (stmt.trim()) {
             db.exec(stmt);
@@ -313,6 +308,5 @@ export function runMigrations() {
   console.log('✅ All migrations completed');
 }
 
-// Auto-run migrations on import (optional - you can call runMigrations() manually)
-// runMigrations();
+
 

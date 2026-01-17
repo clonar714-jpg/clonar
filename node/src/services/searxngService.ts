@@ -1,7 +1,4 @@
-/**
- * ✅ PERPLEXICA-STYLE: SearXNG Search Service
- * Provides academic search functionality using SearXNG
- */
+
 
 import { getSearxngURL } from '../config/serverRegistry';
 

@@ -1,28 +1,17 @@
-/**
- * ✅ IMPROVEMENT: Widget Executor with Registry Pattern
- * 
- * Benefits:
- * - Extensible: Add new widgets without modifying executor
- * - Self-contained: Each widget manages its own logic
- * - Testable: Easy to test individual widgets
- * - Maintainable: Better code organization
- */
+
 
 import { Widget, WidgetResult } from '../widgetSystem';
 
 export interface WidgetInput {
-  widget?: Widget; // Optional - for executeWidget/executeWidgets
-  classification?: any; // Classification data for shouldExecute check
-  rawResponse?: any; // SerpAPI raw response for product/hotel/place widgets
-  chatHistory?: any[]; // Chat history (for executeAll pattern)
-  followUp?: string; // Query/follow-up (for executeAll pattern)
-  llm?: any; // LLM instance (for executeAll pattern)
+  widget?: Widget; 
+  classification?: any; 
+  rawResponse?: any; 
+  chatHistory?: any[]; 
+  followUp?: string; 
+  llm?: any; 
 }
 
-/**
- * ✅ Generate LLM context string from widget result
- * Used in executeAll pattern to format widget output for LLM
- */
+
 function generateLLMContext(result: WidgetResult): string {
   if (!result.success || !result.data) {
     return '';
@@ -98,21 +87,18 @@ class WidgetExecutor {
     return this.widgets.get(type);
   }
 
-  /**
-   * ✅ IMPROVEMENT: Execute all widgets that shouldExecute() returns true
-   * Used when widgets self-select based on classification
-   */
+ 
   static async executeAll(input: {
     classification?: any;
     chatHistory?: any[];
     followUp?: string;
     llm?: any;
     rawResponse?: any;
-    abortSignal?: AbortSignal; // ✅ CRITICAL: For cancellation support
+    abortSignal?: AbortSignal; 
   }): Promise<WidgetResult[]> {
     const results: WidgetResult[] = [];
 
-    // ✅ CRITICAL: Check if aborted before starting
+    
     if (input.abortSignal?.aborted) {
       return results;
     }
@@ -120,14 +106,14 @@ class WidgetExecutor {
     await Promise.all(
       Array.from(this.widgets.values()).map(async (widget) => {
         try {
-          // ✅ CRITICAL: Check if aborted before each widget
+          
           if (input.abortSignal?.aborted) {
             return;
           }
           
-          // Check if widget should execute based on classification
+          
           if (widget.shouldExecute(input.classification)) {
-            // Create a widget object from classification if needed
+            
             const widgetObj: Widget = {
               type: widget.type as any,
               params: input.classification?.entities || {},
@@ -144,7 +130,7 @@ class WidgetExecutor {
             });
             
             if (output) {
-              // ✅ Add llmContext for executeAll pattern compatibility
+              
               if (!output.llmContext) {
                 output.llmContext = generateLLMContext(output);
               }
@@ -160,15 +146,12 @@ class WidgetExecutor {
     return results;
   }
 
-  /**
-   * Execute a specific widget by type
-   * (Widget is already detected, so we skip shouldExecute check)
-   */
+  
   static async executeWidget(
     widget: Widget,
     classification?: any,
     rawResponse?: any,
-    llm?: any // ✅ NEW: LLM instance for agent-style widgets
+    llm?: any 
   ): Promise<WidgetResult> {
     const widgetImpl = this.widgets.get(widget.type);
     
@@ -186,7 +169,7 @@ class WidgetExecutor {
         widget,
         classification,
         rawResponse,
-        llm, // ✅ NEW: Pass LLM to widget
+        llm, 
       } as WidgetInput);
       
       return result || {
@@ -206,21 +189,19 @@ class WidgetExecutor {
     }
   }
 
-  /**
-   * Execute multiple widgets in parallel
-   */
+  
   static async executeWidgets(
     widgets: Widget[],
     classification?: any,
     rawResponse?: any,
-    llm?: any // ✅ NEW: LLM instance for agent-style widgets
+    llm?: any 
   ): Promise<WidgetResult[]> {
     if (widgets.length === 0) {
       return [];
     }
 
     const widgetPromises = widgets.map(widget =>
-      this.executeWidget(widget, classification, rawResponse, llm) // ✅ NEW: Pass LLM to each widget
+      this.executeWidget(widget, classification, rawResponse, llm) 
     );
 
     return Promise.all(widgetPromises);

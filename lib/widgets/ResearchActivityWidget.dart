@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import '../theme/AppColors.dart';
 
-/// ✅ PERPLEXITY-STYLE: Research activity widget with animated steps
-/// Self-animated (no provider watching), purely phase-driven
+
 class ResearchActivityWidget extends StatefulWidget {
   final String query;
 
@@ -20,7 +19,7 @@ class _ResearchActivityWidgetState extends State<ResearchActivityWidget> {
   int _index = 0;
   Timer? _stepTimer;
 
-  // ✅ PERPLEXITY-STYLE: Context-aware steps based on query
+  
   List<String> get _steps {
     final queryLower = widget.query.toLowerCase();
     
@@ -137,7 +136,7 @@ class _ResearchActivityWidgetState extends State<ResearchActivityWidget> {
   }
 }
 
-/// ✅ PERPLEXITY-STYLE: Animated "Searching..." header with dots
+
 class _SearchingHeader extends StatefulWidget {
   @override
   State<_SearchingHeader> createState() => _SearchingHeaderState();
@@ -196,7 +195,7 @@ class _SearchingHeaderState extends State<_SearchingHeader> {
   }
 }
 
-/// ✅ PERPLEXITY-STYLE: Very subtle shimmer (not flashy)
+
 class _SubtleShimmer extends StatefulWidget {
   @override
   State<_SubtleShimmer> createState() => _SubtleShimmerState();

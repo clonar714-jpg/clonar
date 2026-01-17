@@ -1585,8 +1585,21 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
           final verifySessions = ref.read(sessionHistoryProvider);
           debugPrint('✅ HISTORY_MODE: Sessions set in provider');
           debugPrint('   - State after replace: ${verifySessions.length} sessions');
+          for (int i = 0; i < verifySessions.length; i++) {
+            final s = verifySessions[i];
+            debugPrint('   - Session $i: "${s.query}" (finalized: ${s.isFinalized}, summary: ${s.summary?.length ?? 0} chars)');
+          }
           debugPrint('   - Ready for navigation and rendering');
-    }
+        }
+        
+        // ✅ CRITICAL: Wait one frame to ensure provider state is propagated before navigation
+        await Future.delayed(const Duration(milliseconds: 50));
+        
+        // ✅ Verify sessions are still in provider before navigation
+        final finalCheck = ref.read(sessionHistoryProvider);
+        if (kDebugMode) {
+          debugPrint('🔍 Final check before navigation: ${finalCheck.length} sessions');
+        }
       } else {
         // If no messages found, check if we have local history as fallback
         if (chat.conversationHistory != null && chat.conversationHistory!.isNotEmpty) {
@@ -1605,12 +1618,17 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
               sections: (sessionData['sections'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
               sources: (sessionData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
               followUpSuggestions: (sessionData['followUpSuggestions'] as List?)?.map((e) => e.toString()).toList() ?? [],
+              phase: QueryPhase.done, // ✅ HISTORY MODE: Set to done - these are completed sessions
               isStreaming: false,
               isParsing: false,
+              isFinalized: true, // ✅ CRITICAL FIX: Mark as finalized to prevent re-execution
               imageUrl: sessionData['imageUrl'] as String?,
             );
           }).toList();
           ref.read(sessionHistoryProvider.notifier).replaceAllSessions(localSessions);
+          
+          // ✅ CRITICAL: Wait one frame to ensure provider state is propagated
+          await Future.delayed(const Duration(milliseconds: 50));
         }
       }
       
@@ -1697,17 +1715,29 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
             sessionId: sessionData['sessionId'] as String?, // ✅ Preserve sessionId if available
             query: sessionData['query'] as String? ?? '',
             summary: sessionData['summary'] as String?,
+            answer: sessionData['answer'] as String?, // ✅ CRITICAL: Include full answer text
             intent: sessionData['intent'] as String?,
             cardType: sessionData['cardType'] as String?,
             sections: (sessionData['sections'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
             sources: (sessionData['sources'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
             followUpSuggestions: (sessionData['followUpSuggestions'] as List?)?.map((e) => e.toString()).toList() ?? [],
+            phase: QueryPhase.done, // ✅ HISTORY MODE: Set to done - these are completed sessions
             isStreaming: false,
             isParsing: false,
+            isFinalized: true, // ✅ CRITICAL FIX: Mark as finalized to prevent re-execution
             imageUrl: sessionData['imageUrl'] as String?,
           );
         }).toList();
         ref.read(sessionHistoryProvider.notifier).replaceAllSessions(localSessions);
+        
+        // ✅ CRITICAL: Wait one frame to ensure provider state is propagated
+        await Future.delayed(const Duration(milliseconds: 50));
+        
+        if (kDebugMode) {
+          final verifySessions = ref.read(sessionHistoryProvider);
+          debugPrint('✅ Fallback: Sessions set in provider before navigation');
+          debugPrint('   - State: ${verifySessions.length} sessions');
+        }
         
         Navigator.push(
           context,

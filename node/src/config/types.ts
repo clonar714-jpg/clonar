@@ -1,9 +1,4 @@
-/**
- * ✅ Config Types
- * Type definitions for configuration management
- */
 
-// Model type - adjust based on your actual Model type
 export type Model = {
   key: string;
   name: string;

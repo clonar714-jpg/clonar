@@ -1,19 +1,17 @@
-// ✅ PHASE 7: Isolate for content normalization and markdown cleaning
 
-/// Clean markdown and remove HTML artifacts (isolate-safe)
 String cleanMarkdownIsolate(String text) {
   if (text.isEmpty) return '';
   
   return text
-      .replaceAll(RegExp(r'<[^>]*>'), '') // Remove HTML tags
-      .replaceAll(RegExp(r'\*\*'), '') // Remove bold markdown
-      .replaceAll(RegExp(r'[_~>`#-]'), '') // Remove markdown symbols
-      .replaceAll(RegExp(r'[0-9]+\.\s*'), '') // Remove list numbers
-      .replaceAll(RegExp(r'\s{2,}'), ' ') // Normalize spaces
+      .replaceAll(RegExp(r'<[^>]*>'), '') 
+      .replaceAll(RegExp(r'\*\*'), '') 
+      .replaceAll(RegExp(r'[_~>`#-]'), '') 
+      .replaceAll(RegExp(r'[0-9]+\.\s*'), '') 
+      .replaceAll(RegExp(r'\s{2,}'), ' ') 
       .trim();
 }
 
-/// Normalize location card structure (isolate-safe)
+
 Map<String, dynamic> normalizeLocationCardIsolate(Map<String, dynamic> card) {
   return {
     'title': card['title']?.toString() ?? card['name']?.toString() ?? 'Unknown Location',
@@ -29,7 +27,7 @@ Map<String, dynamic> normalizeLocationCardIsolate(Map<String, dynamic> card) {
   };
 }
 
-/// Normalize hotel card structure (isolate-safe)
+
 Map<String, dynamic> normalizeHotelCardIsolate(Map<String, dynamic> card) {
   return {
     'id': card['id']?.toString() ?? '',
@@ -46,7 +44,7 @@ Map<String, dynamic> normalizeHotelCardIsolate(Map<String, dynamic> card) {
   };
 }
 
-/// Normalize flight card structure (isolate-safe)
+
 Map<String, dynamic> normalizeFlightCardIsolate(Map<String, dynamic> card) {
   return {
     'id': card['id']?.toString() ?? '',
@@ -58,7 +56,7 @@ Map<String, dynamic> normalizeFlightCardIsolate(Map<String, dynamic> card) {
   };
 }
 
-/// Normalize restaurant card structure (isolate-safe)
+
 Map<String, dynamic> normalizeRestaurantCardIsolate(Map<String, dynamic> card) {
   return {
     'id': card['id']?.toString() ?? '',
@@ -73,27 +71,27 @@ Map<String, dynamic> normalizeRestaurantCardIsolate(Map<String, dynamic> card) {
   };
 }
 
-/// Batch normalize multiple location cards (isolate-safe)
+
 List<Map<String, dynamic>> normalizeLocationCardsIsolate(List<Map<String, dynamic>> cards) {
   return cards.map((card) => normalizeLocationCardIsolate(card)).toList();
 }
 
-/// Batch normalize multiple hotel cards (isolate-safe)
+
 List<Map<String, dynamic>> normalizeHotelCardsIsolate(List<Map<String, dynamic>> cards) {
   return cards.map((card) => normalizeHotelCardIsolate(card)).toList();
 }
 
-/// Batch normalize multiple flight cards (isolate-safe)
+
 List<Map<String, dynamic>> normalizeFlightCardsIsolate(List<Map<String, dynamic>> cards) {
   return cards.map((card) => normalizeFlightCardIsolate(card)).toList();
 }
 
-/// Batch normalize multiple restaurant cards (isolate-safe)
+
 List<Map<String, dynamic>> normalizeRestaurantCardsIsolate(List<Map<String, dynamic>> cards) {
   return cards.map((card) => normalizeRestaurantCardIsolate(card)).toList();
 }
 
-/// ✅ FIX A: Batched normalization input model
+
 class DisplayContentInput {
   final String? summary;
   final List<Map<String, dynamic>> locations;
@@ -130,7 +128,7 @@ class DisplayContentInput {
   }
 }
 
-/// ✅ FIX A: Batched normalization output model
+
 class DisplayContentOutput {
   final String summary;
   final List<Map<String, dynamic>> locations;
@@ -167,24 +165,22 @@ class DisplayContentOutput {
   }
 }
 
-/// ✅ FIX A: Batched normalization - ONE isolate call for all content types
-/// This avoids isolate thrashing on older Android phones
-/// Returns Map for compute() serialization
+
 Map<String, dynamic> normalizeDisplayContentIsolate(Map<String, dynamic> input) {
   final data = DisplayContentInput.fromMap(input);
   
-  // Normalize summary (clean markdown)
+  
   final summary = data.summary != null && data.summary!.isNotEmpty
       ? cleanMarkdownIsolate(data.summary!)
       : '';
   
-  // Normalize all card types in parallel (within same isolate)
+  
   final locations = normalizeLocationCardsIsolate(data.locations);
   final hotels = normalizeHotelCardsIsolate(data.hotels);
   final flights = normalizeFlightCardsIsolate(data.flights);
   final restaurants = normalizeRestaurantCardsIsolate(data.restaurants);
   
-  // Return as Map for compute() serialization
+  
   return {
     'summary': summary,
     'locations': locations,

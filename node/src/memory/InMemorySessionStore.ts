@@ -1,4 +1,4 @@
-// src/memory/InMemorySessionStore.ts
+
 
 import { SessionStore } from "./SessionStore";
 import { SessionState } from "./sessionMemory";
@@ -8,10 +8,7 @@ interface SessionEntry {
   timestamp: number;
 }
 
-/**
- * In-memory session store (default implementation)
- * Non-persistent, lost on server restart
- */
+
 export class InMemorySessionStore implements SessionStore {
   private memory: Record<string, SessionEntry> = {};
   private readonly ttl: number;
@@ -24,26 +21,22 @@ export class InMemorySessionStore implements SessionStore {
     this.startCleanupInterval();
   }
 
-  /**
-   * Start periodic cleanup of expired sessions
-   */
+  
   private startCleanupInterval(): void {
     if (typeof setInterval !== 'undefined') {
       this.cleanupInterval = setInterval(() => {
         this.cleanupExpiredSessions();
-      }, 5 * 60 * 1000); // Every 5 minutes
+      }, 5 * 60 * 1000); 
     }
   }
 
-  /**
-   * Cleanup expired sessions and enforce max capacity
-   */
+  
   private cleanupExpiredSessions(): void {
     const now = Date.now();
     const sessionIds = Object.keys(this.memory);
     let cleaned = 0;
 
-    // Remove expired sessions
+    
     for (const sessionId of sessionIds) {
       const entry = this.memory[sessionId];
       if (entry && (now - entry.timestamp) > this.ttl) {
@@ -52,14 +45,14 @@ export class InMemorySessionStore implements SessionStore {
       }
     }
 
-    // If at max capacity, remove oldest sessions
+    
     const remainingIds = Object.keys(this.memory);
     if (remainingIds.length >= this.maxSessions) {
       const sorted = remainingIds
         .map(id => ({ id, timestamp: this.memory[id]?.timestamp || 0 }))
         .sort((a, b) => a.timestamp - b.timestamp);
 
-      // Remove oldest 20% of sessions
+      
       const toRemove = Math.floor(sorted.length * 0.2);
       for (let i = 0; i < toRemove; i++) {
         delete this.memory[sorted[i].id];
@@ -76,20 +69,20 @@ export class InMemorySessionStore implements SessionStore {
     const entry = this.memory[sessionId];
     if (!entry) return null;
 
-    // Check if session expired
+    
     const now = Date.now();
     if ((now - entry.timestamp) > this.ttl) {
       delete this.memory[sessionId];
       return null;
     }
 
-    // Refresh TTL on access
+    
     entry.timestamp = now;
     return entry.state;
   }
 
   async set(sessionId: string, state: SessionState): Promise<void> {
-    // Cleanup before saving to prevent memory issues
+    
     this.cleanupExpiredSessions();
 
     this.memory[sessionId] = {
@@ -118,12 +111,10 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   isAvailable(): boolean {
-    return true; // In-memory store is always available
+    return true; 
   }
 
-  /**
-   * Cleanup interval on shutdown
-   */
+  
   destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);

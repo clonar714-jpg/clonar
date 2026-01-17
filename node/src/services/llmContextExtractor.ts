@@ -1,7 +1,4 @@
-// src/services/llmContextExtractor.ts
-// 🚀 Production-Grade LLM-Based Context Understanding
-// Replaces brittle keyword/regex matching with intelligent semantic understanding
-// Similar to how ChatGPT, Perplexity, and Cursor handle context
+
 
 import OpenAI from "openai";
 
@@ -23,25 +20,20 @@ export interface ExtractedContext {
   category: string | null;
   price: string | null;
   city: string | null;
-  location: string | null; // General location (city, area, etc.)
-  intent: string | null; // What the user is looking for
-  modifiers: string[]; // Additional modifiers (luxury, cheap, 5-star, etc.)
-  isRefinement: boolean; // Is this a refinement of previous query?
-  needsParentContext: boolean; // Does this query need context from parent?
+  location: string | null; 
+  intent: string | null; 
+  modifiers: string[]; 
+  isRefinement: boolean; 
+  needsParentContext: boolean; 
 }
 
 export interface ContextExtractionResult {
   context: ExtractedContext;
-  confidence: number; // 0.0 to 1.0
+  confidence: number; 
   method: 'rules' | 'llm' | 'fallback';
 }
 
-/**
- * 🎯 LLM-Based Context Extraction with Confidence
- * Intelligently extracts all context from a query using LLM understanding
- * Handles: case sensitivity, typos, variations, implicit context
- * Returns confidence score (0.7-0.9 for LLM, lower for fallback)
- */
+
 export async function extractContextWithLLM(
   query: string,
   parentQuery?: string | null,
@@ -50,10 +42,10 @@ export async function extractContextWithLLM(
   try {
     const client = getClient();
     
-    // Build conversation context for LLM
+    
     let conversationContext = "";
     if (conversationHistory && conversationHistory.length > 0) {
-      const recentTurns = conversationHistory.slice(-3); // Last 3 turns
+      const recentTurns = conversationHistory.slice(-3); 
       conversationContext = recentTurns
         .map((turn: any) => `User: ${turn.query || ""}\nAssistant: ${turn.summary || turn.answer || ""}`)
         .join("\n\n");
@@ -103,7 +95,7 @@ Return ONLY the JSON object, no other text.`;
     const result = await client.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.1, // Low temperature for consistent extraction
+      temperature: 0.1, 
       max_tokens: 300,
       response_format: { type: "json_object" },
     });
@@ -111,7 +103,7 @@ Return ONLY the JSON object, no other text.`;
     const content = result.choices[0]?.message?.content?.trim() || "{}";
     const extracted = JSON.parse(content) as ExtractedContext;
     
-    // Normalize extracted values
+    
     if (extracted.city) {
       extracted.city = normalizeCityName(extracted.city);
     }
@@ -122,7 +114,7 @@ Return ONLY the JSON object, no other text.`;
       extracted.brand = normalizeBrandName(extracted.brand);
     }
     
-    // LLM confidence: 0.7-0.9 (higher if query is clear, lower if ambiguous)
+    
     const confidence = extracted.isRefinement && extracted.needsParentContext ? 0.75 : 0.85;
     
     if (process.env.NODE_ENV === 'development') {
@@ -136,22 +128,17 @@ Return ONLY the JSON object, no other text.`;
     };
   } catch (err: any) {
     console.error("❌ LLM context extraction error:", err.message);
-    // Fallback to basic extraction
+    
     const fallback = fallbackExtraction(query, parentQuery);
     return {
       context: fallback,
-      confidence: 0.5, // Low confidence for fallback
+      confidence: 0.5, 
       method: 'fallback',
     };
   }
 }
 
-/**
- * 🎯 LLM-Based Query Merging
- * Intelligently merges parent query context with current query
- * Handles all edge cases: case sensitivity, typos, implicit context
- * Only called when LLM extraction was used (not for rule-based)
- */
+
 export async function mergeQueryContextWithLLM(
   currentQuery: string,
   parentQuery: string,
@@ -159,25 +146,25 @@ export async function mergeQueryContextWithLLM(
   intent: string
 ): Promise<string> {
   try {
-    // ✅ PRODUCTION FIX: If current query has explicit location, NEVER merge with parent location
+    
     const currentQueryLower = currentQuery.toLowerCase();
     const hasExplicitLocation = /\b(in|at|near|from|to)\s+[a-zA-Z][a-zA-Z\s]{2,}/i.test(currentQuery);
     
-    // Extract location from current query if present
+    
     const currentLocationMatch = currentQuery.match(/\b(in|at|near|from|to)\s+([a-zA-Z][a-zA-Z\s]{2,})/i);
     const currentLocation = currentLocationMatch ? currentLocationMatch[2].toLowerCase().trim() : null;
     
-    // Extract location from parent query if present
+    
     const parentLocationMatch = parentQuery.match(/\b(in|at|near|from|to)\s+([a-zA-Z][a-zA-Z\s]{2,})/i);
     const parentLocation = parentLocationMatch ? parentLocationMatch[2].toLowerCase().trim() : null;
     
-    // If current query has explicit location and it's different from parent, return as-is
+    
     if (hasExplicitLocation && currentLocation && parentLocation && currentLocation !== parentLocation) {
       console.log(`🔒 Location conflict detected: current="${currentLocation}", parent="${parentLocation}" - skipping merge`);
       return currentQuery;
     }
     
-    // If query doesn't need parent context, return as-is
+    
     if (!extractedContext.needsParentContext && !extractedContext.isRefinement) {
       return currentQuery;
     }
@@ -222,7 +209,7 @@ Return ONLY the merged query, no explanation.`;
 
     const merged = result.choices[0]?.message?.content?.trim() || currentQuery;
     
-    // Remove quotes if LLM added them
+    
     const cleaned = merged.replace(/^["']|["']$/g, "");
     
     if (cleaned !== currentQuery) {
@@ -232,18 +219,16 @@ Return ONLY the merged query, no explanation.`;
     return cleaned;
   } catch (err: any) {
     console.error("❌ LLM query merging error:", err.message);
-    // Fallback to rule-based merging
+    
     return fallbackMerge(currentQuery, parentQuery, extractedContext, intent);
   }
 }
 
-/**
- * Fallback extraction (when LLM fails)
- */
+
 function fallbackExtraction(query: string, parentQuery?: string | null): ExtractedContext {
   const lower = query.toLowerCase();
   
-  // Basic extraction
+ 
   const cityMatch = lower.match(/\b(in|at|near|from)\s+([a-zA-Z][a-zA-Z\s]{2,})/);
   const city = cityMatch ? normalizeCityName(cityMatch[2].trim()) : null;
   
@@ -266,9 +251,7 @@ function fallbackExtraction(query: string, parentQuery?: string | null): Extract
   };
 }
 
-/**
- * Fallback merging (when LLM fails)
- */
+
 function fallbackMerge(
   currentQuery: string,
   parentQuery: string,
@@ -277,7 +260,7 @@ function fallbackMerge(
 ): string {
   let merged = currentQuery;
   
-  // Extract city from parent if current doesn't have it
+  
   if (extractedContext.needsParentContext || extractedContext.isRefinement) {
     const parentCityMatch = parentQuery.match(/\b(in|at|near|from)\s+([a-zA-Z][a-zA-Z\s]{2,})/i);
     if (parentCityMatch && !extractedContext.city) {
@@ -289,26 +272,21 @@ function fallbackMerge(
   return merged;
 }
 
-/**
- * Normalize city names (handle case variations)
- */
+
 function normalizeCityName(city: string): string {
   if (!city) return city;
   
-  // Capitalize first letter of each word
+
   return city
     .split(/\s+/)
     .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
 }
 
-/**
- * Normalize brand names
- */
 function normalizeBrandName(brand: string): string {
   if (!brand) return brand;
   
-  // Handle common brand variations
+  
   const brandMap: Record<string, string> = {
     'rayban': 'Ray-Ban',
     'ray-ban': 'Ray-Ban',

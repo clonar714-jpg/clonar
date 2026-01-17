@@ -1,6 +1,4 @@
-/**
- * ✅ Slot Filler: Replace {slot} placeholders in templates
- */
+
 
 export interface SlotValues {
   brand?: string | null;
@@ -11,9 +9,7 @@ export interface SlotValues {
   gender?: string | null;
 }
 
-/**
- * Fill slots in template string
- */
+
 export function fillSlots(template: string, values: SlotValues): string {
   let result = template;
   
@@ -36,7 +32,7 @@ export function fillSlots(template: string, values: SlotValues): string {
     result = result.replace(/{gender}/g, values.gender);
   }
   
-  // Remove unfilled slots (optional - could keep them or remove)
+  
   result = result.replace(/{[^}]+}/g, '');
   
   return result.trim();

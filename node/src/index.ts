@@ -1,6 +1,6 @@
 /// <reference path="./types/express/index.d.ts" />
 
-// Load environment variables FIRST
+
 import dotenv from 'dotenv';
 import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
@@ -22,13 +22,11 @@ import userRoutes from '@/routes/users';
 import uploadRoutes from '@/routes/upload';
 import chatRoutes from '@/routes/chat';
 import reconnectRoutes from '@/routes/reconnect';
-import generateSuggestionsRoutes from '@/routes/generateSuggestions';
 import productDetailsRoutes from '@/routes/productDetails';
 import hotelDetailsRoutes from '@/routes/hotelDetails';
 import autocompleteRoutes from '@/routes/autocomplete';
 import moviesRoutes from '@/routes/movies';
 import geocodeRoutes from '@/routes/geocode';
-import hotelRoomsRoutes from '@/routes/hotelRooms';
 import chatsRoutes from '@/routes/chats';
 import searchRoutes from '@/routes/search';
 import imagesRoutes from '@/routes/images';
@@ -49,8 +47,7 @@ console.log("DEBUG: TMDB_API_KEY =", process.env.TMDB_API_KEY ? "Loaded ✅" : "
 const app = express();
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
-// ✅ CRITICAL: Log ALL incoming requests FIRST (before any middleware)
-// This helps diagnose if requests are reaching the server at all
+
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
   console.log(`\n🌐 [${timestamp}] ========== INCOMING REQUEST ==========`);
@@ -65,13 +62,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Security middleware
+
 app.use(helmet());
 
-// CORS configuration - ✅ FIX: Allow all origins in dev mode for Flutter app
+
 const corsOptions = {
   origin: process.env.NODE_ENV === 'development' 
-    ? '*' // Allow all origins in dev mode (Flutter app can come from any IP)
+    ? '*' 
     : (process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000']),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -80,7 +77,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 console.log(`🌐 CORS configured: ${process.env.NODE_ENV === 'development' ? 'ALLOWING ALL ORIGINS (dev mode)' : `Restricted to: ${corsOptions.origin}`}`);
 
-// ✅ FIX: Explicit OPTIONS handler for CORS preflight (Flutter might send preflight)
+
 app.options('*', (req, res) => {
   console.log(`🔄 OPTIONS preflight request for: ${req.url}`);
   res.header('Access-Control-Allow-Origin', '*');
@@ -89,45 +86,45 @@ app.options('*', (req, res) => {
   res.sendStatus(200);
 });
 
-// ✅ PHASE 10: Enhanced rate limiting - disabled in dev mode
+
 if (process.env.NODE_ENV !== "development") {
-  // ✅ Keep protection in production
+  
   app.use(
     rateLimit({
-      windowMs: 60 * 1000, // 1 minute window
-      max: 100, // limit to 100 requests per minute per IP
+      windowMs: 60 * 1000, 
+      max: 100, 
       standardHeaders: true,
       legacyHeaders: false,
     })
   );
   console.log("🚦 Production mode: rate limiting enabled");
 } else {
-  // ✅ Disable all rate limiting in dev
+  
   console.log("🧪 Dev mode: rate limiting disabled");
 }
 
-// ✅ PHASE 10: Request timeout middleware (15s default)
+
 app.use(requestTimeout(15000));
 
-// Body parsing middleware
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Serve static files from uploads directory
+
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 console.log("🗂️ Serving static uploads at /uploads");
 
-// Compression middleware
+
 app.use(compression());
 
-// Logging middleware
+
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 } else {
   app.use(morgan('combined'));
 }
 
-// Health check endpoint
+
 app.get('/health', (req, res) => {
   console.log(`🏥 Health check requested from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
   res.status(200).json({
@@ -138,7 +135,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ✅ PRODUCTION-GRADE: Test endpoint to verify connectivity from emulator
+
 app.get('/api/test', (req, res) => {
   console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
   console.log(`   Headers: ${JSON.stringify(req.headers)}`);
@@ -150,7 +147,7 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// ✅ PRODUCTION-GRADE: Test endpoint to verify connectivity
+
 app.get('/api/test', (req, res) => {
   console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
   console.log(`   Headers: ${JSON.stringify(req.headers)}`);
@@ -162,7 +159,7 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// Global multer error handler
+
 app.use((error: any, req: any, res: any, next: any) => {
   if (error && error.code === 'LIMIT_UNEXPECTED_FILE') {
     console.log('❌ Global Multer Error: Unexpected field name');
@@ -181,7 +178,7 @@ app.use((error: any, req: any, res: any, next: any) => {
   next(error);
 });
 
-// API routes
+
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', refreshTokenRoutes);
 app.use('/api/personas', personaRoutes);
@@ -189,16 +186,14 @@ app.use('/api/collages', collageRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/upload', uploadRoutes);
 
-// New APISearchAgent-based chat route
+
 app.use('/api/chat', chatRoutes);
 console.log('✅ Chat route registered at /api/chat');
 
-// Reconnect route for session recovery
+
 app.use('/api/reconnect', reconnectRoutes);
 console.log('✅ Reconnect route registered at /api/reconnect');
 
-app.use('/api/chat/generate-suggestions', generateSuggestionsRoutes);
-console.log('✅ Chat suggestions route registered at /api/chat/generate-suggestions');
 app.use('/api/product-details', productDetailsRoutes);
 app.use('/api/hotel-details', hotelDetailsRoutes);
 app.use('/api/autocomplete', autocompleteRoutes);
@@ -218,19 +213,19 @@ console.log('✅ Providers route registered at /api/providers');
 app.use('/api/files', filesRoutes);
 console.log('✅ Files route registered at /api/files');
 
-// Error handling middleware
+
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// ✅ PHASE 10: Setup global error handlers (before server start)
+
 setupUnhandledRejectionHandler();
 setupUncaughtExceptionHandler();
 setupGracefulShutdown();
 
-// Start server
+
 const startServer = async () => {
   try {
-    // Connect to database
+   
     await connectDatabase();
     
     const server = app.listen(PORT, '0.0.0.0', () => {
@@ -246,13 +241,13 @@ const startServer = async () => {
         console.log('⚙️  Dev Mode Active: Authentication checks are skipped for all routes');
       }
 
-      // ✅ PHASE 4: Start background aggregation job
+      
       startBackgroundJob();
       
-      // ✅ PHASE 10: Start memory flush scheduler
+      
       startMemoryFlushScheduler();
       
-      // ✅ PHASE 10: Set server instance for graceful shutdown
+      
       setServerInstance(server);
     });
   } catch (error) {

@@ -1,15 +1,11 @@
-/**
- * ✅ Agent-Style Product Widget
- * Uses LLM to extract intent and fetches from multiple APIs (SerpAPI Shopping, Google Shopping)
- * Merges all sources with deduplication - no fallback needed
- */
+
 
 import { Widget, WidgetResult } from '../widgetSystem';
 import { WidgetInput, WidgetInterface } from './executor';
 import { search } from '../searchService';
 import z from 'zod';
 
-// Intent extraction schema
+
 const productIntentSchema = z.object({
   productName: z.string().nullable().describe('Product name or title'),
   brand: z.string().nullable().optional().describe('Brand name (e.g., Nike, Apple, Samsung)'),
@@ -33,12 +29,12 @@ interface ProductIntent {
   features?: string[] | null;
 }
 
-// Fetch products from SerpAPI Shopping
+
 async function fetchFromSerpAPI(
   intent: ProductIntent
 ): Promise<any[]> {
   try {
-    // Build search query
+    
     let query = '';
     if (intent.productName) {
       query = intent.productName;
@@ -59,22 +55,22 @@ async function fetchFromSerpAPI(
       query = 'products';
     }
 
-    // Use the search service to get SerpAPI shopping results
+    
     const searchResult = await search(query.trim(), [], {
       maxResults: 20,
       searchType: 'web',
     });
 
-    // Extract shopping results from SerpAPI rawResponse
+   
     const shoppingResults = searchResult.rawResponse?.shopping_results || 
                            searchResult.rawResponse?.shopping?.results ||
                            searchResult.rawResponse?.organic_results?.filter((r: any) => 
                              r.type === 'shopping' || r.link?.includes('amazon') || r.link?.includes('ebay')
                            ) || [];
 
-    // Transform to consistent format
+    
     return shoppingResults.map((product: any) => {
-      // Extract price - handle both string and numeric formats
+      
       let price: string | number = 'Price not available';
       if (product.extracted_price) {
         price = product.extracted_price;
@@ -84,7 +80,7 @@ async function fetchFromSerpAPI(
         price = product.current_price;
       }
 
-      // Extract source/retailer name from link or use provided source
+      
       let source = product.source || 'Unknown Source';
       if (source === 'Unknown Source' && product.link) {
         try {
@@ -92,7 +88,7 @@ async function fetchFromSerpAPI(
           source = url.hostname.replace('www.', '').split('.')[0];
           source = source.charAt(0).toUpperCase() + source.slice(1);
         } catch (e) {
-          // If URL parsing fails, keep Unknown Source
+          
         }
       }
 
@@ -123,12 +119,12 @@ async function fetchFromSerpAPI(
   }
 }
 
-// Fetch products from Google Shopping (via SerpAPI with shopping parameter)
+
 async function fetchFromGoogleShopping(
   intent: ProductIntent
 ): Promise<any[]> {
   try {
-    // Build search query
+    
     let query = '';
     if (intent.productName) {
       query = intent.productName;
@@ -140,22 +136,20 @@ async function fetchFromGoogleShopping(
       query = `${query} ${intent.category}`.trim();
     }
     if (!query.trim()) {
-      return []; // Skip if no query
+      return []; 
     }
 
-    // Use SerpAPI with shopping-specific search
-    // Note: This would require SerpAPI shopping endpoint, which may need special handling
-    // For now, we'll use the regular search and filter for shopping results
+    
     const searchResult = await search(`buy ${query.trim()}`, [], {
       maxResults: 20,
       searchType: 'web',
     });
 
-    // Extract Google Shopping results
+    
     const shoppingResults = searchResult.rawResponse?.shopping_results || 
                            searchResult.rawResponse?.shopping?.results || [];
 
-    // Transform to consistent format (similar to SerpAPI)
+    
     return shoppingResults.map((product: any) => {
       let price: string | number = 'Price not available';
       if (product.extracted_price) {
@@ -171,7 +165,7 @@ async function fetchFromGoogleShopping(
           source = url.hostname.replace('www.', '').split('.')[0];
           source = source.charAt(0).toUpperCase() + source.slice(1);
         } catch (e) {
-          // Keep default source
+          
         }
       }
 
@@ -198,18 +192,18 @@ async function fetchFromGoogleShopping(
   }
 }
 
-// Decide which data sources to use based on intent
+
 function decideDataSources(intent: ProductIntent): {
   useSerpAPI: boolean;
   useGoogleShopping: boolean;
 } {
   return {
-    useSerpAPI: true, // Always use SerpAPI as primary source
-    useGoogleShopping: !!intent.productName || !!intent.brand, // Use if we have search criteria
+    useSerpAPI: true, 
+    useGoogleShopping: !!intent.productName || !!intent.brand, 
   };
 }
 
-// Filter products by price range if specified
+
 function filterByPriceRange(products: any[], priceRange?: { min?: number; max?: number } | null): any[] {
   if (!priceRange || (!priceRange.min && !priceRange.max)) {
     return products;
@@ -221,7 +215,7 @@ function filterByPriceRange(products: any[], priceRange?: { min?: number; max?: 
                   null;
     
     if (price === null || isNaN(price)) {
-      return true; // Keep products with unknown prices
+      return true; 
     }
 
     if (priceRange.min && price < priceRange.min) {
@@ -234,7 +228,7 @@ function filterByPriceRange(products: any[], priceRange?: { min?: number; max?: 
   });
 }
 
-// Merge product data from multiple sources, deduplicating by title + source
+
 function mergeProductData(
   serpAPIData: any[],
   googleShoppingData: any[]
@@ -242,15 +236,15 @@ function mergeProductData(
   const merged: any[] = [];
   const seen = new Set<string>();
   
-  // Helper to generate unique key for deduplication
+  
   const getKey = (product: any): string => {
     const title = (product.title || product.name || '').toLowerCase().trim();
     const source = (product.source || 'unknown').toLowerCase().trim();
-    // Use title + source to allow same product from different retailers
+    
     return `${title}::${source}`;
   };
   
-  // Priority 1: SerpAPI data (most comprehensive)
+  
   serpAPIData.forEach(product => {
     const key = getKey(product);
     if (!seen.has(key)) {
@@ -262,7 +256,7 @@ function mergeProductData(
     }
   });
   
-  // Priority 2: Google Shopping data (supplement with additional retailers)
+  
   googleShoppingData.forEach(product => {
     const key = getKey(product);
     if (!seen.has(key)) {
@@ -277,10 +271,10 @@ function mergeProductData(
   return merged;
 }
 
-// Separate evidence (factual) from commerce (purchase) data
+
 function formatProductCards(products: any[]): any[] {
   return products.map(product => ({
-    // Evidence (factual, non-commercial)
+    
     id: product.id || product.product_id || product.link || `product-${Math.random()}`,
     title: product.title || product.name || 'Unknown Product',
     description: product.description || product.snippet || '',
@@ -293,7 +287,7 @@ function formatProductCards(products: any[]): any[] {
     extensions: product.extensions || [],
     delivery: product.delivery,
     
-    // Commerce (purchase-related)
+    
     price: product.price,
     discountPrice: product.oldPrice && product.price && 
                    (typeof product.oldPrice === 'number' ? product.oldPrice : parseFloat(product.oldPrice.toString().replace(/[^\d.]/g, ''))) > 
@@ -314,17 +308,17 @@ const productWidget: WidgetInterface = {
   type: 'product',
 
   shouldExecute(classification?: any): boolean {
-    // ✅ Check structured classification flags (from Zod classifier)
+   
     if (classification?.classification?.showProductWidget) {
       return true;
     }
     
-    // Check if product widget should execute based on classification
+    
     if (classification?.widgetTypes?.includes('product')) {
       return true;
     }
     
-    // Fallback: check intent/domains
+   
     const detectedDomains = classification?.detectedDomains || [];
     const intent = classification?.intent || '';
     return detectedDomains.includes('product') || intent === 'product';
@@ -333,7 +327,7 @@ const productWidget: WidgetInterface = {
   async execute(input: WidgetInput): Promise<WidgetResult | null> {
     const { widget, classification, rawResponse, followUp, llm } = input;
     
-    // ✅ CRITICAL: LLM is required for agent-style widget (intent extraction)
+    
     if (!llm) {
       return {
         type: 'product',
@@ -344,7 +338,7 @@ const productWidget: WidgetInterface = {
     }
 
     try {
-      // Step 1: Extract structured intent using LLM
+      
       const query = followUp || classification?.query || classification?.queryRefinement || widget?.params?.query || '';
       
       if (!query) {
@@ -358,7 +352,7 @@ const productWidget: WidgetInterface = {
 
       console.log('🔍 Extracting product intent from query:', query);
       
-      // Use generateObject if available, otherwise fall back to generateText + JSON parsing
+      
       let intentOutput: { object: ProductIntent };
       
       if (typeof llm.generateObject === 'function') {
@@ -376,7 +370,7 @@ const productWidget: WidgetInterface = {
           schema: productIntentSchema,
         });
       } else {
-        // Fallback: use generateText and parse JSON
+        
         const response = await llm.generateText({
           messages: [
             {
@@ -401,14 +395,14 @@ const productWidget: WidgetInterface = {
 
       const intent: ProductIntent = intentOutput.object;
       
-      // ✅ Normalize null arrays to empty arrays for easier handling
+      
       if (intent.features === null) {
         intent.features = [];
       }
       
       console.log('✅ Extracted product intent:', intent);
 
-      // Step 2: Validate that we have at least some search criteria
+      
       if (!intent.productName && !intent.brand && !intent.category) {
         return {
           type: 'product',
@@ -418,11 +412,11 @@ const productWidget: WidgetInterface = {
         };
       }
 
-      // Step 3: Decide which data sources to use
+      
       const sources = decideDataSources(intent);
       console.log('📊 Data sources decision:', sources);
 
-      // Step 4: Fetch from ALL sources in parallel (no fallback - all are data sources)
+      
       const fetchPromises: Promise<any[]>[] = [];
       
       if (sources.useSerpAPI) {
@@ -430,7 +424,7 @@ const productWidget: WidgetInterface = {
           fetchFromSerpAPI(intent)
             .catch(error => {
               console.warn('⚠️ SerpAPI failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -442,7 +436,7 @@ const productWidget: WidgetInterface = {
           fetchFromGoogleShopping(intent)
             .catch(error => {
               console.warn('⚠️ Google Shopping failed:', error.message);
-              return []; // Return empty array, continue with other sources
+              return []; 
             })
         );
       } else {
@@ -451,14 +445,14 @@ const productWidget: WidgetInterface = {
 
       const [serpAPIData, googleShoppingData] = await Promise.all(fetchPromises);
 
-      // Step 5: Merge data from all sources
+      
       const mergedProducts = mergeProductData(serpAPIData, googleShoppingData);
       console.log(`✅ Merged ${mergedProducts.length} products from ${serpAPIData.length} SerpAPI, ${googleShoppingData.length} Google Shopping`);
 
-      // Step 6: Filter by price range if specified
+      
       const filteredProducts = filterByPriceRange(mergedProducts, intent.priceRange);
 
-      // Step 7: Format product cards with evidence/commerce separation
+      
       const productCards = formatProductCards(filteredProducts);
 
       if (productCards.length === 0) {
@@ -479,7 +473,7 @@ const productWidget: WidgetInterface = {
     } catch (error: any) {
       console.error('❌ Agent-style product widget error:', error);
       
-      // No fallback - return error (all sources are already included in the widget)
+      
       return {
         type: 'product',
         data: [],
