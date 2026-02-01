@@ -7,6 +7,9 @@ export interface Document {
   url: string;
   content: string;
   summary?: string;
+  /** Source freshness: date or last_updated from provider (e.g. Perplexity). */
+  date?: string;
+  last_updated?: string;
   images?: string[]; 
   thumbnail?: string; 
   video?: { url: string; thumbnail?: string; title?: string }; 
@@ -29,7 +32,7 @@ export interface SearchResult {
 }
 
 
-export interface SerpAPIWebSearchResult {
+export interface PerplexityWebSearchResult {
   title: string;
   url: string;
   content?: string;
@@ -38,23 +41,24 @@ export interface SerpAPIWebSearchResult {
   images?: string[]; 
 }
 
-export interface SerpAPIWebSearchResponse {
-  results: SerpAPIWebSearchResult[];
+export interface PerplexityWebSearchResponse {
+  results: PerplexityWebSearchResult[];
   suggestions: string[];
 }
 
 
-export async function searchWebSerpAPI(
-  query: string,
+export async function searchWebPerplexity(
+  query: string | string[],
   options?: {
     needsFreshness?: boolean;
     maxResults?: number;
     abortSignal?: AbortSignal;
   }
-): Promise<SerpAPIWebSearchResponse> {
+): Promise<PerplexityWebSearchResponse> {
   try {
-   
-    const searchResult = await search(query, [], {
+    // Perplexity supports both single query (string) and multi-query (string[])
+    // Type assertion needed because search() accepts string | string[]
+    const searchResult = await search(query as string | string[], [], {
       needsMultipleSources: (options?.maxResults || 5) > 5,
       needsFreshness: options?.needsFreshness,
       maxResults: options?.maxResults || 5,
@@ -63,7 +67,7 @@ export async function searchWebSerpAPI(
     });
 
     
-    const results: SerpAPIWebSearchResult[] = searchResult.documents.map((doc) => ({
+    const results: PerplexityWebSearchResult[] = searchResult.documents.map((doc) => ({
       title: doc.title,
       url: doc.url,
       content: doc.content,
@@ -73,61 +77,39 @@ export async function searchWebSerpAPI(
     }));
 
     
-    const suggestions: string[] = searchResult.rawResponse?.related_questions?.map((q: any) => q.question) || 
-                                   searchResult.rawResponse?.related_searches?.map((s: any) => s.query) || 
-                                   [];
+    // Perplexity API doesn't return suggestions in the standard response
+    // Suggestions would need to be generated separately if needed
+    const suggestions: string[] = [];
 
     return { results, suggestions };
   } catch (error: any) {
     if (error.name === 'AbortError' || error.message === 'Web search aborted' || error.message === 'Search aborted') {
       throw error; 
     }
-    console.error('❌ SerpAPI web search error:', error.message);
+    console.error('❌ Perplexity web search error:', error.message);
     return { results: [], suggestions: [] };
   }
 }
 
 
 export async function search(
-  query: string,
+  query: string | string[],
   conversationHistory: any[] = [],
   options: SearchOptions = {}
 ): Promise<SearchResult> {
-  const serpKey = process.env.SERPAPI_KEY;
-  if (!serpKey) {
-    console.warn("⚠️ SERPAPI_KEY not found, skipping search");
+  const perplexityKey = process.env.PERPLEXITY_API_KEY;
+  if (!perplexityKey) {
+    console.warn("⚠️ PERPLEXITY_API_KEY not found, skipping search");
     return { documents: [], rawResponse: null };
   }
 
   try {
-    
-    let searchQuery = query;
-    const { generateSearchQuery, shouldGenerateQuery } = await import("./queryGenerator");
-    if (shouldGenerateQuery(query, conversationHistory)) {
-      try {
-        searchQuery = await generateSearchQuery(query, conversationHistory);
-        console.log(`🔍 Query generation: "${query}" → "${searchQuery}"`);
-      } catch (err: any) {
-        console.warn("⚠️ Query generation failed, using original query:", err.message);
-      }
-    }
-
-    
+    // Perplexity Search API handles query optimization internally
+    // No need for manual query generation - trust Perplexity's intelligence
     const maxDocs = options.maxResults || (options.needsMultipleSources ? 7 : 5);
     const searchType = options.searchType || "web";
 
-    
-    const params: any = {
-      engine: searchType === "images" ? "google_images" : searchType === "videos" ? "youtube" : "google",
-      q: searchQuery,
-      api_key: serpKey,
-      num: maxDocs,
-      hl: "en",
-      gl: "us",
-      ...(options.needsFreshness ? { tbs: "qdr:d" } : {}),
-    };
-
-    console.log(`🔍 Searching ${searchType} for: "${query}"${searchQuery !== query ? ` → "${searchQuery}"` : ''}`);
+    console.log(`🔍 Searching ${searchType} for: "${query}"`);
     
    
     if (options.abortSignal?.aborted) {
@@ -143,8 +125,24 @@ export async function search(
       });
     }
     
-    const response = await axios.get("https://serpapi.com/search.json", { 
-      params, 
+    // Perplexity Search API endpoint
+    const perplexityEndpoint = "https://api.perplexity.ai/search";
+    
+    // Ensure max_results is within valid range (1-20)
+    const maxResults = Math.min(Math.max(maxDocs, 1), 20);
+    
+    // Perplexity API supports both string and string[] for query parameter
+    const requestBody: any = {
+      query: query, // Can be string or string[] - Perplexity handles optimization
+      max_results: maxResults,
+      ...(options.needsFreshness ? { search_recency_filter: "day" } : {}),
+    };
+
+    const response = await axios.post(perplexityEndpoint, requestBody, {
+      headers: {
+        'Authorization': `Bearer ${perplexityKey}`,
+        'Content-Type': 'application/json',
+      },
       timeout: 10000,
       signal: controller.signal,
     });
@@ -153,110 +151,33 @@ export async function search(
     const images: Array<{ url: string; title?: string; source?: string }> = [];
     const videos: Array<{ url: string; thumbnail?: string; title?: string }> = [];
 
-    if (searchType === "images") {
-      
-      const imageResults = response.data.images_results || [];
-      for (const img of imageResults.slice(0, maxDocs)) {
-        if (img.thumbnail || img.original) {
-          images.push({
-            url: img.original || img.thumbnail,
-            title: img.title,
-            source: img.link,
-          });
-        }
-      }
-    } else if (searchType === "videos") {
-      
-      const videoResults = response.data.video_results || [];
-      for (const video of videoResults.slice(0, maxDocs)) {
-        if (video.link) {
-          videos.push({
-            url: video.link,
-            thumbnail: video.thumbnail,
-            title: video.title,
-          });
-        }
-      }
-    } else {
-      
-      const organicResults = response.data.organic_results || [];
+    // Perplexity API returns results in the format: { "results": [{ "title", "url", "snippet", "date", "last_updated" }] }
+    const results = response.data?.results || [];
 
-      
-      for (const result of organicResults.slice(0, maxDocs)) {
-        if (result.title && result.link && result.snippet) {
-          
-          const resultImages: string[] = [];
-          if (result.thumbnail) resultImages.push(result.thumbnail);
-          if (result.images && Array.isArray(result.images)) {
-            resultImages.push(...result.images.slice(0, 3));
-          }
-          
-          
-          let video: { url: string; thumbnail?: string; title?: string } | undefined;
-          if (result.video) {
-            video = {
-              url: result.video.link || result.video.url || '',
-              thumbnail: result.video.thumbnail,
-              title: result.video.title || result.title,
-            };
-            videos.push(video);
-          }
-          
-          
-          let mapData: { latitude: number; longitude: number; title: string } | undefined;
-          if (result.gps_coordinates) {
-            mapData = {
-              latitude: result.gps_coordinates.latitude,
-              longitude: result.gps_coordinates.longitude,
-              title: result.title,
-            };
-          } else if (result.coordinates) {
-            mapData = {
-              latitude: result.coordinates.lat || result.coordinates.latitude,
-              longitude: result.coordinates.lng || result.coordinates.longitude,
-              title: result.title,
-            };
-          }
-          
+    if (searchType === "images") {
+      // Note: Perplexity Search API doesn't have separate image search
+      // Images would need to be extracted from web results or use a different endpoint
+      console.warn("⚠️ Image search not directly supported by Perplexity Search API");
+    } else if (searchType === "videos") {
+      // Note: Perplexity Search API doesn't have separate video search
+      // Videos would need to be extracted from web results or use a different endpoint
+      console.warn("⚠️ Video search not directly supported by Perplexity Search API");
+    } else {
+      // Handle web search results from Perplexity
+      // Perplexity API response format: { title, url, snippet, date, last_updated }
+      for (const result of results) {
+        if (result.title && result.url) {
           documents.push({
             title: result.title,
-            url: result.link,
-            content: result.snippet,
-            thumbnail: result.thumbnail,
-            images: resultImages.length > 0 ? resultImages : undefined,
-            video: video?.url ? video : undefined,
-            mapData: mapData,
+            url: result.url,
+            content: result.snippet || '',
+            summary: result.snippet, // Use snippet as summary
+            date: result.date,
+            last_updated: result.last_updated ?? result.date,
+            // Note: Perplexity API doesn't return thumbnail/images/video in standard response
           });
         }
       }
-
-     
-      const videoResults = response.data.video_results || [];
-      if (videoResults.length > 0) {
-        for (const video of videoResults.slice(0, 3)) {
-          if (video.title && video.link) {
-            videos.push({
-              url: video.link,
-              thumbnail: video.thumbnail,
-              title: video.title,
-            });
-            
-            documents.push({
-              title: video.title,
-              url: video.link,
-              content: video.snippet || video.description || video.title,
-              thumbnail: video.thumbnail,
-              video: {
-                url: video.link,
-                thumbnail: video.thumbnail,
-                title: video.title,
-              },
-            });
-          }
-        }
-      }
-      
-      
     }
 
     console.log(`✅ Found ${documents.length} search results, ${images.length} images, ${videos.length} videos`);
@@ -292,23 +213,21 @@ export async function searchImages(
   options?: { maxResults?: number }
 ): Promise<Array<{ url: string; title?: string; source?: string }>> {
   try {
-    
-    const { 
-      generateImageSearchQuery, 
-      shouldGenerateImageQuery 
-    } = await import("./imageSearchQueryGenerator");
-    
     let optimizedQuery = query;
     
-    
-    if (shouldGenerateImageQuery(query, conversationHistory)) {
-      try {
-        optimizedQuery = await generateImageSearchQuery(query, conversationHistory);
-        console.log(`🖼️ Image query optimized: "${query}" → "${optimizedQuery}"`);
-      } catch (error: any) {
-        console.warn("⚠️ Image query generation failed, using original:", error.message);
-       
+    // Try to optimize query if generator exists (optional)
+    try {
+      const imageQueryGen = await import("./imageSearchQueryGenerator");
+      if (imageQueryGen.shouldGenerateImageQuery && imageQueryGen.shouldGenerateImageQuery(query, conversationHistory)) {
+        try {
+          optimizedQuery = await imageQueryGen.generateImageSearchQuery(query, conversationHistory);
+          console.log(`🖼️ Image query optimized: "${query}" → "${optimizedQuery}"`);
+        } catch (error: any) {
+          console.warn("⚠️ Image query generation failed, using original:", error.message);
+        }
       }
+    } catch {
+      // Query generator not available, use original query
     }
     
     
@@ -341,23 +260,21 @@ export async function searchVideos(
   options?: { maxResults?: number }
 ): Promise<Array<{ url: string; thumbnail?: string; title?: string }>> {
   try {
-    
-    const { 
-      generateVideoSearchQuery, 
-      shouldGenerateVideoQuery 
-    } = await import("./videoSearchQueryGenerator");
-    
     let optimizedQuery = query;
     
-    
-    if (shouldGenerateVideoQuery(query, conversationHistory)) {
-      try {
-        optimizedQuery = await generateVideoSearchQuery(query, conversationHistory);
-        console.log(`🎥 Video query optimized: "${query}" → "${optimizedQuery}"`);
-      } catch (error: any) {
-        console.warn("⚠️ Video query generation failed, using original:", error.message);
-        
+    // Try to optimize query if generator exists (optional)
+    try {
+      const videoQueryGen = await import("./videoSearchQueryGenerator");
+      if (videoQueryGen.shouldGenerateVideoQuery && videoQueryGen.shouldGenerateVideoQuery(query, conversationHistory)) {
+        try {
+          optimizedQuery = await videoQueryGen.generateVideoSearchQuery(query, conversationHistory);
+          console.log(`🎥 Video query optimized: "${query}" → "${optimizedQuery}"`);
+        } catch (error: any) {
+          console.warn("⚠️ Video query generation failed, using original:", error.message);
+        }
       }
+    } catch {
+      // Query generator not available, use original query
     }
     
     

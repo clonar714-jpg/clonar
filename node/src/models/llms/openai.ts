@@ -332,8 +332,9 @@ class OpenAILLM extends BaseLLM<OpenAILLMConfig> {
     const result = input.schema.safeParse(parsed);
     if (!result.success) {
       console.warn('OpenAI response did not match schema:', result.error);
-      
-      parsed = input.schema.parse({});
+      // Re-parse with partial response so schema defaults fill missing fields
+      const fallback = input.schema.safeParse(parsed ?? {});
+      parsed = fallback.success ? fallback.data : input.schema.parse({});
     } else {
       parsed = result.data;
     }

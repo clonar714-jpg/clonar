@@ -1,7 +1,7 @@
 
-
 import z from 'zod';
-
+import BaseEmbedding from '../models/base/embedding';
+import BaseLLM from '../models/base/llm';
 
 export type ChatTurnMessage = {
   role: 'user' | 'assistant';
@@ -18,12 +18,122 @@ export type Chunk = {
 };
 
 
-export type SearchSources = 'web' | 'discussions' | 'academic';
+export type SearchSources = 'web';
 
 
-import BaseEmbedding from '../models/base/embedding';
-import BaseLLM from '../models/base/llm';
+export type UICandidate =
+  | 'hotel_list'
+  | 'flight_list'
+  | 'map'
+  | 'product_grid'
+  | 'place_cards'
+  | 'movie_cards';   
 
+
+export type WidgetType =
+  | 'product'
+  | 'hotel'
+  | 'place'
+  | 'movie'
+  | 'flight'
+  | 'calculator';
+
+
+export interface DomainEntityTypes {
+  location?: string;
+  city?: string;
+  place?: string;
+  date?: string;
+  rating?: number;
+
+  checkIn?: string;
+  checkOut?: string;
+  guests?: number;
+  hotelPriceRange?: { min?: number; max?: number };
+  hotelType?: string;
+  amenities?: string[];
+
+  origin?: string;
+  destination?: string;
+  departureDate?: string;
+  returnDate?: string;
+  passengers?: number;
+  flightClass?: string;
+
+  placeName?: string;
+  placeCategory?: string;
+  placeType?: string;
+  placePriceRange?: '$' | '$$' | '$$$' | '$$$$';
+
+  title?: string;
+  movie?: string;
+  year?: number;
+  genre?: string;
+  actor?: string;
+  director?: string;
+  streaming?: boolean;
+
+  productName?: string;
+  product?: string;
+  brand?: string;
+  productCategory?: string;
+}
+
+export interface QueryUnderstanding {
+  intent: string;                 // what user is trying to do
+  intentConfidence: number;        // confidence in interpretation (0.0-1.0)
+
+  domain: 
+    | 'general'
+    | 'travel-hotel'
+    | 'travel-flights'
+    | 'travel-places'
+    | 'movies'
+    | 'shopping'
+    | null;
+
+ 
+  entities: Record<string, any> & Partial<DomainEntityTypes>;
+  constraints?: Record<string, any>;
+
+
+  retrievalModes: Array<'web'>;
+
+ 
+  uiCandidates: UICandidate[];
+
+  uiConfidence: number;            // safety to render domain UI (0.0-1.0)
+  requiresStructuredEvidence: boolean;
+
+  uiDecision: 'enable' | 'disable' | 'defer';
+
+  reasoningTrace?: {
+    signals: string[];
+    confidenceBreakdown: Record<string, number>;
+  };
+}
+
+
+export interface RetrievalResult {
+  content: string;
+  metadata: {
+    title: string;
+    url?: string;
+    sourceType: string;
+    timestamp?: string;
+    location?: any;
+  };
+}
+
+/**
+ * ClassifierInput - Input for query interpretation
+ */
+export type ClassifierInput = {
+  llm: BaseLLM<any>; 
+  enabledSources: SearchSources[];
+  query: string;
+  chatHistory: ChatTurnMessage[];
+};
 
 export type SearchAgentConfig = {
   sources: SearchSources[];
@@ -34,7 +144,6 @@ export type SearchAgentConfig = {
   systemInstructions: string;
 };
 
-
 export type SearchAgentInput = {
   chatHistory: ChatTurnMessage[];
   followUp: string;
@@ -44,52 +153,6 @@ export type SearchAgentInput = {
   abortSignal?: AbortSignal; 
 };
 
-
-export type WidgetInput = {
-  chatHistory: ChatTurnMessage[];
-  followUp: string;
-  classification: ClassifierOutput;
-  llm: BaseLLM<any>; 
-};
-
-export type Widget = {
-  type: string;
-  shouldExecute: (classification: ClassifierOutput) => boolean;
-  execute: (input: WidgetInput) => Promise<WidgetOutput | void>;
-};
-
-export type WidgetOutput = {
-  type: string;
-  llmContext: string;
-  data: any;
-};
-
-
-export type ClassifierInput = {
-  llm: BaseLLM<any>; 
-  enabledSources: SearchSources[];
-  query: string;
-  chatHistory: ChatTurnMessage[];
-};
-
-export type ClassifierOutput = {
-  classification: {
-    skipSearch: boolean;
-    personalSearch: boolean;
-    academicSearch: boolean;
-    discussionSearch: boolean;
-    showWeatherWidget: boolean;
-    showStockWidget: boolean;
-    showCalculationWidget: boolean;
-    showProductWidget: boolean;
-    showHotelWidget: boolean;
-    showPlaceWidget: boolean;
-    showMovieWidget: boolean;
-  };
-  standaloneFollowUp: string;
-};
-
-
 export type AdditionalConfig = {
   llm: BaseLLM<any>; 
   embedding: BaseEmbedding<any> | null; 
@@ -97,11 +160,10 @@ export type AdditionalConfig = {
   abortSignal?: AbortSignal; 
 };
 
-
 export type ResearcherInput = {
   chatHistory: ChatTurnMessage[];
   followUp: string;
-  classification: ClassifierOutput;
+  understanding: QueryUnderstanding;
   config: SearchAgentConfig;
 };
 
@@ -109,7 +171,6 @@ export type ResearcherOutput = {
   findings: ActionOutput[];
   searchFindings: Chunk[];
 };
-
 
 export type SearchActionOutput = {
   type: 'search_results';
@@ -130,7 +191,6 @@ export type ActionOutput =
   | DoneActionOutput
   | ReasoningResearchAction;
 
-
 export interface ResearchAction<
   TSchema extends z.ZodObject<any> = z.ZodObject<any>,
 > {
@@ -139,7 +199,7 @@ export interface ResearchAction<
   getToolDescription: (config: { mode: SearchAgentConfig['mode'] }) => string;
   getDescription: (config: { mode: SearchAgentConfig['mode'] }) => string;
   enabled: (config: {
-    classification: ClassifierOutput;
+    understanding: QueryUnderstanding;
     fileIds: string[];
     mode: SearchAgentConfig['mode'];
     sources: SearchSources[];
@@ -153,7 +213,6 @@ export interface ResearchAction<
   ) => Promise<ActionOutput>;
 }
 
-
 export interface TextBlock {
   id: string;
   type: 'text';
@@ -164,7 +223,8 @@ export interface WidgetBlock {
   id: string;
   type: 'widget';
   data: {
-    widgetType: string;
+  
+    widgetType: WidgetType;
     params: any;
   };
 }

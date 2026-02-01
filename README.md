@@ -1,325 +1,160 @@
 # Clonar 🔍
 
-An agentic AI research system that addresses fundamental limitations in existing AI search architectures by implementing an evidence-first, iterative research methodology. Unlike systems that generate answers from static knowledge bases or single-pass web queries, Clonar employs a multi-phase agent workflow that dynamically adapts research depth, routes queries to specialized tools based on intent classification, and synthesizes answers with verifiable source citations. The system is architected as a mobile-first Android application, intentionally designed to demonstrate that sophisticated agentic AI research can be delivered effectively on resource-constrained mobile platforms with proper architectural separation between client and server components.
+An **agentic query pipeline** that turns natural-language questions into structured, citation-backed answers. It uses query understanding, multi-vertical orchestration, hybrid retrieval (BM25 + dense), and citation-first synthesis. Unlike single-pass search UIs, Clonar decomposes mixed queries (e.g. “flights to NYC and hotels near the airport”), runs verticals in parallel, reorders by retrieval quality, and can replan in Deep mode when the answer is for the wrong question.
 
-## Overview
+**This repository** contains the **agentic framework**: the backend query pipeline (query understanding, orchestration, vertical agents, retrieval, synthesis). It does **not** include the full product surface or the Flutter client; those are separate. You get the core that turns a message + history + mode into a plan, runs the right verticals, merges results, and returns summary, cards, citations, and UI hints.
 
-This project implements an agentic AI research system with adaptive iteration depth, intent-aware tool routing, and evidence-first answer synthesis. The multi-phase architecture (classification → research → synthesis → answer) dynamically adjusts research depth (2-25 iterations) based on query complexity. Unlike systems that attach sources after generation, this system tracks evidence during research and embeds citations in answers. The mobile-first Android design demonstrates that sophisticated agent workflows can run effectively on resource-constrained platforms through proper architectural separation. The backend is platform-agnostic; the Flutter frontend handles streaming, state management, and Android lifecycle constraints. Key contributions include the adaptive research engine, pluggable provider architecture, and mobile-optimized SSE streaming implementation.
+---
 
+## What's in this repo
 
+- **Query understanding** (`node/src/services/query-understanding.ts`) — Rewrite, decompose, vertical classification, intent, **ordered preferences**, **soft constraints** (e.g. airport not pinned until results), filters.
+- **Orchestrator** (`node/src/services/orchestrator.ts`) — Plan cache, vertical selection, parallel run, merge, **adaptive primary by retrieval quality**, **cross-part conflict** detection (e.g. JFK vs LGA), **fallback reframe** when structured results are thin, **Deep replan** when critique signals wrong domain.
+- **Vertical agents** (`node/src/services/vertical/`) — Product, hotel, flight, movie, and **other** (web overview, e.g. Perplexity). Each does retrieval (hybrid BM25 + dense + rerank), dedup, summarization with **citation-first** instructions and dual memory (working memory vs retrieved content).
+- **API** — `POST /api/query` (JSON in/out) and `GET /api/query/stream` (SSE) with `message`, `history`, `mode` (quick | deep).
+
+---
 
 ## Architecture
 
-The system implements a multi-phase agent workflow with clear separation of concerns:
+**1. Query understanding (plan only, no search yet)**  
+The pipeline rewrites the message (resolve “there”, “this weekend”, same-query refs like “the airport” → “NYC airport”), decomposes into parts (e.g. flight + hotel), assigns verticals (product, hotel, flight, movie, other), intent, and **ordered preferences**. It fills structured filters per vertical and marks **soft constraints** (e.g. “airport” unspecified) so downstream can align after retrieval. Output: a **plan** (what to look for). Plan is cached by message+history.
 
-**Phase 1: Classification**
-The query is analyzed to determine intent, required search sources, and widget needs. This classification happens before any research begins, enabling efficient tool routing.
+**2. Orchestration**  
+The orchestrator selects which verticals to run from the plan’s candidates, builds a per-vertical plan, and runs **all selected verticals in parallel**. It then reorders by **retrieval quality** (e.g. top-K snippet average), merges summaries and cards, and combines citations. It **checks cross-part conflicts** (e.g. flight into JFK vs hotel area LaGuardia) and attaches a hint when they don’t align. If structured results are weak, it **adds a web overview** with a **reframe** (“We found few structured options. You might relax X. Here’s a broader view from the web:”) and **relaxation hint** using the lowest-priority preference.
 
-**Phase 2: Iterative Research**
-Based on classification results, the agent performs iterative research using appropriate tools (web search, academic search, discussion search, file search). The research depth adapts to the selected optimization mode (speed/balanced/quality), with reasoning loops that evaluate information sufficiency.
+**3. Vertical agents**  
+Each vertical (product, hotel, flight, movie) derives search queries from the plan, runs **hybrid retrieval** (BM25 + dense, then LLM rerank), dedupes, merges snippets, and runs **one** summarizer. Summarizer prompts use **dual memory**: “Working memory (conversation context)” for intent/preferences only; “Retrieved content” as numbered passages; **every factual claim must cite** [1], [2], etc. The **other** vertical uses a web overview (e.g. Perplexity) for time-sensitive questions and returns summary + citations when the API provides them.
 
-**Phase 3: Evidence Synthesis**
-Research findings are synthesized with source extraction. Evidence is tracked and organized before answer generation begins, ensuring all claims can be attributed to specific sources.
+**4. Deep mode**  
+When `mode` is **deep**, the pipeline can: run a planner (extra research?), alternate query phrasings for more retrieval angles, and a **critique** step. If the critique decides the answer is for the **wrong** question (with sufficient confidence), the pipeline **replans**: it runs query understanding again with the suggested query, then runs the pipeline with the new plan and **replaces** the answer (`suggestedQueryUsed: true`). Otherwise the suggested query is shown as a hint only.
 
-**Phase 4: Answer Generation**
-The final answer is generated with embedded citations, structured sections, and follow-up suggestions based on answer coverage analysis.
+---
 
-The system consists of three main components:
+## Modes and features
 
-1. **Agent System** (`node/src/agent/`) - Core research and answer generation engine
-   - Query classification and intent detection
-   - Iterative research with tool-based actions
-   - Evidence extraction and source tracking
-   - Answer synthesis with source attribution
-   - Follow-up suggestion generation based on answer coverage
+| Mode   | Behavior |
+|--------|----------|
+| **Quick** | Single pass: plan → run verticals → merge → payload. Result is cached by message+history+mode. |
+| **Deep**  | Extra planner, alternate rewrites, extra research, critique; optionally **replan** with suggested query. |
 
-2. **Backend API** (`node/src/routes/`) - Express.js REST API
-   - `/api/chat` - Main streaming chat endpoint with SSE
-   - `/api/autocomplete` - Query autocomplete suggestions
-   - `/api/chats` - Chat history management
-   - Session management and reconnection support
+**Verticals:** product, hotel, flight, movie, **other** (web overview for weather, things to do, general questions).
 
-3. **Flutter Frontend** (`lib/`) - Android mobile application
-   - Main search interface with query input
-   - Answer display with follow-up suggestions
-   - Riverpod-based state management for agent state
-   - Real-time streaming UI updates via SSE
-   - Chat history management and persistence
-   - Android lifecycle-aware state persistence
-   - Communicates with backend API via HTTP/SSE
+**Pipeline behaviors (newer):**  
+- **Soft constraints** — e.g. “airport” kept unspecified until results so flight/hotel can align (e.g. hotels near JFK when flights are JFK).  
+- **Preference priority** — Ordered preferences (e.g. price > location > wifi); when results are thin, fallback suggests relaxing the **lowest-priority** first.  
+- **Cross-part conflict** — If flight results are JFK and hotel results are LaGuardia, the response includes a hint and suggestion (e.g. “Want hotels near JFK to match your flight?”).  
+- **Fallback reframe** — When appending a web overview, the server explains why and optionally suggests which preference to relax.  
+- **Deep replan** — When critique says “wrong domain,” the pipeline can replan and replace the answer with one from the suggested query.
 
-## Features
+---
 
-**Research Modes**
-- **Speed Mode** - Quick answers with minimal research iterations (2 iterations)
-- **Balanced Mode** - Default mode for everyday queries (6 iterations)
-- **Quality Mode** - Deep research with comprehensive coverage (up to 25 iterations)
+## Project structure (agentic framework)
 
-**Search Capabilities**
-- **Web Search** - Powered by SearxNG for privacy-focused web research
-- **Academic Search** - Search scholarly articles and research papers
-- **Discussion Search** - Find opinions and discussions from forums and communities
-- **File Search** - Upload documents and ask questions about their content
-
-**Smart Features**
-- **Streaming Responses** - Real-time answer generation via Server-Sent Events (SSE)
-- **Follow-up Suggestions** - Intelligent follow-up questions based on answer coverage
-- **Chat History** - Persistent conversation history with cloud sync
-- **Source Citations** - Every answer includes cited sources for verification
-- **Query Classification** - Automatic intent detection to route queries to the right search type
-
-**LLM Support**
-- OpenAI (GPT-4, GPT-3.5)
-- Custom OpenAI-compatible APIs
-- Extensible provider system for adding new models
-
-## Academic & Industry Relevance
-
-This project contributes to several active research and industry areas:
-
-**Agentic AI Systems**
-The multi-phase agent architecture demonstrates patterns for building systems that can autonomously plan, execute research, and synthesize findings. The adaptive iteration depth and reasoning loop implementation contribute to research on agentic AI system design.
-
-**Retrieval-Augmented Generation (RAG)**
-The system implements RAG principles with dynamic retrieval (iterative research) rather than static knowledge bases. The evidence-first synthesis approach ensures answers are grounded in retrieved information rather than model hallucinations.
-
-**Responsible AI with Citations**
-The mandatory source citation system addresses concerns about AI-generated content verifiability. Every answer includes traceable sources, enabling users to verify claims and understand information provenance.
-
-**Mobile-First AI Design**
-The project demonstrates that sophisticated AI systems can be effectively delivered on mobile platforms through proper architectural design. This contributes to research on mobile AI architectures and streaming protocols for resource-constrained devices.
-
-**Tool-Using AI Systems**
-The system implements a tool registry and routing system that enables the agent to select appropriate tools based on query classification. This contributes to research on tool-using AI systems and multi-tool coordination.
-
-## Installation
-
-### Prerequisites
-
-**Backend:**
-- Node.js 18+ and npm
-- SearxNG instance running on a server (backend dependency, not mobile)
-- OpenAI API key (or compatible provider)
-
-**Android App:**
-- Flutter SDK 3.0+
-- Android Studio or VS Code with Flutter extensions
-- Android device or emulator
-
-### Backend Setup
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd clonar
+```
+node/
+├── src/
+│   ├── routes/
+│   │   └── query.ts          # POST /api/query, GET /api/query/stream
+│   ├── services/
+│   │   ├── query-understanding.ts   # Plan: rewrite, decompose, classify, filters, preferencePriority, softConstraints
+│   │   ├── orchestrator.ts          # Run verticals, merge, quality reorder, fallback, crossPartHint, Deep replan
+│   │   ├── orchestrator-stream.ts   # SSE streaming wrapper
+│   │   ├── critique-agent.ts        # Deep: refine summary, optional needsReplan + suggestedQuery
+│   │   ├── planner-agent.ts         # Deep: extra research?
+│   │   ├── vertical/
+│   │   │   ├── product-agent.ts
+│   │   │   ├── hotel-agent.ts
+│   │   │   ├── flight-agent.ts
+│   │   │   └── movie-agent.ts
+│   │   └── providers/
+│   │       ├── catalog/      # Product: hybrid retriever, SQL provider
+│   │       ├── hotels/       # Hotel: hybrid retriever, SQL provider
+│   │       ├── flights/      # Flight: hybrid retriever, SQL provider
+│   │       ├── movies/       # Movie: hybrid retriever, SQL provider
+│   │       └── web/
+│   │           └── perplexity-web.ts   # Other: web overview + citations
+│   ├── types/
+│   │   ├── core.ts           # QueryContext, PlanCandidate, VerticalPlan, etc.
+│   │   └── verticals.ts      # Filters per vertical
+│   └── ...
+├── package.json
+└── ...
+docs/
+├── QUERY_FLOW_STORY.md       # End-to-end flow in plain language (query → UI)
+├── PERPLEXITY_FLOW_GAP_ANALYSIS.md
+└── PIPELINE_VS_PERPLEXITY.md
 ```
 
-2. Navigate to the Node.js backend:
-```bash
-cd node
-```
+The **Flutter client** (screens, widgets, state) is not part of this release; this repo is the agentic backend pipeline only.
 
-3. Install dependencies:
-```bash
-npm install
-```
+---
 
-4. Create a `.env` file in the `node` directory:
-```env
-OPENAI_API_KEY=your_api_key_here
-SEARXNG_URL=http://localhost:8080
-PORT=4000
-DATABASE_URL=your_database_url
-```
+## API
 
-5. Start the development server:
-```bash
-npm run dev
-```
+### POST /api/query
 
-The API will be available at `http://localhost:4000`.
+Request body:
 
-### Android App Setup
-
-1. Navigate to the project root (where `pubspec.yaml` is located):
-```bash
-cd clonar
-```
-
-2. Install Flutter dependencies:
-```bash
-flutter pub get
-```
-
-3. Update the API base URL in `lib/core/api_client.dart` to point to your backend server:
-```dart
-// Update the baseUrl to your backend server address
-// For local development: 'http://10.0.2.2:4000' (Android emulator)
-// For production: 'https://your-backend-domain.com'
-```
-
-4. Connect an Android device or start an emulator, then run:
-```bash
-flutter run
-```
-
-**Note:** The Android app communicates with the backend API over HTTP. SearxNG runs on the backend server, not on the mobile device.
-
-## Configuration
-
-### SearxNG Setup (Backend Only)
-
-SearxNG runs on your backend server, not on the Android device. The backend makes HTTP requests to SearxNG to perform web searches. You can:
-
-- Run your own SearxNG instance on the same server as the backend
-- Use a public SearxNG instance (not recommended for privacy)
-- Deploy SearxNG separately and configure the backend to connect to it
-
-**Backend Configuration:**
-Set the `SEARXNG_URL` environment variable in your backend `.env` file:
-```env
-SEARXNG_URL=http://localhost:8080
-```
-
-**SearxNG Requirements:**
-- JSON format enabled in SearxNG settings
-- Wolfram Alpha search engine enabled (for calculations)
-- Accessible from your backend server (not from mobile devices)
-
-### LLM Provider Configuration
-
-The agent supports multiple LLM providers through a plugin system. Configure providers in the backend settings or via environment variables.
-
-## API Usage
-
-### Streaming Chat Endpoint
-
-```bash
-POST /api/chat
-Content-Type: application/json
-
+```json
 {
-  "message": {
-    "messageId": "msg_123",
-    "chatId": "chat_456",
-    "content": "best hotels in Paris"
-  },
-  "chatId": "chat_456",
-  "optimizationMode": "balanced",
-  "sources": ["web"],
-  "chatModel": {
-    "key": "gpt-4",
-    "providerId": "openai"
-  },
-  "embeddingModel": {
-    "key": "text-embedding-3-small",
-    "providerId": "openai"
-  },
-  "history": []
+  "message": "Flights to NYC and hotels near the airport",
+  "history": ["I'm thinking next month"],
+  "mode": "quick",
+  "userId": "optional"
 }
 ```
 
-The response is a Server-Sent Events (SSE) stream with events:
-- `start` - Research begins
-- `research` - Research progress updates
-- `answer` - Answer chunks (streaming)
-- `done` - Research complete
-- `error` - Error occurred
+Response: JSON with `summary`, `definitionBlurb`, `referencesSection`, `citations`, `vertical`, `products` | `hotels` | `flights` | `showtimes`, `ui`, `followUpSuggestions`, `suggestedQuery`, `suggestedQueryUsed`, `crossPartHint` (when flight+hotel airports differ), `semanticFraming`, `answerGeneratedAt`, `debug`, etc.
 
-### Chat History
+### GET /api/query/stream
 
-```bash
-GET /api/chats
-# Returns list of user's chat conversations
+Query params: `message`, `history` (JSON array), `mode`, `userId` (optional).
 
-GET /api/chats/:chatId
-# Returns messages for a specific conversation
-```
+Response: Server-Sent Events — `token` (chunks), `citations`, `done` (full payload), `error`.
 
-## Development
+---
 
-### Project Structure
+## Installation (backend)
 
-```
-clonar/
-├── node/                 # Backend (Node.js/Express)
-│   ├── src/
-│   │   ├── agent/        # Agent system core
-│   │   ├── routes/       # API endpoints (chat, chats, autocomplete, reconnect)
-│   │   ├── services/     # Business logic (search, query generation)
-│   │   ├── models/       # LLM provider abstractions
-│   │   ├── followup/     # Follow-up suggestion system
-│   │   ├── config/       # Configuration management
-│   │   └── db/           # Database schema and migrations
-│   └── package.json
-├── lib/                  # Frontend (Flutter)
-│   ├── screens/
-│   │   ├── ShopScreen.dart           # Query input screen
-│   │   └── ClonarAnswerScreen.dart   # Answer display screen
-│   ├── widgets/
-│   │   ├── ClonarAnswerWidget.dart   # Answer rendering
-│   │   ├── SessionRenderer.dart     # Session rendering
-│   │   └── ResearchActivityWidget.dart # Research progress
-│   ├── providers/        # Riverpod state management (11 providers)
-│   ├── services/         # API clients and services
-│   ├── models/           # Data models
-│   ├── core/             # Core utilities
-│   └── theme/            # App theme
-└── README.md
-```
+**Prerequisites:** Node.js 18+, npm.
 
-### Key Components
+1. Clone and install:
 
-**Agent System** (`node/src/agent/APISearchAgent.ts`)
-- Manages research sessions and streaming
-- Coordinates classification, research, and answer generation
-- Handles tool-based actions (web search, scraping, etc.)
+   ```bash
+   git clone <repository-url>
+   cd clonar/node
+   npm install
+   ```
 
-**Research Engine** (`node/src/agent/prompts/researcher.ts`)
-- Iterative research with reasoning loops
-- Mode-specific iteration limits and strategies
-- Tool selection based on query classification
+2. Environment (e.g. `.env` in `node/`):
 
-**Frontend State** (`lib/providers/agent_provider.dart`)
-- Manages agent state and streaming
-- Handles session history
-- Coordinates UI updates during streaming
+   ```env
+   OPENAI_API_KEY=your_key
+   PERPLEXITY_API_KEY=optional_for_other_vertical
+   PORT=4000
+   ```
 
-## Troubleshooting
+3. Run:
 
-**Streaming Not Working**
-- Ensure SSE headers are properly set in the backend
-- Check that the Android app is using the correct API base URL in `api_client.dart`
-- For Android emulator, use `http://10.0.2.2:4000` to access localhost backend
-- For physical device, use your computer's local IP address (e.g., `http://192.168.1.100:4000`)
-- Verify network connectivity between Android device and backend server
+   ```bash
+   npm run dev
+   ```
 
-**Search Results Empty**
-- Verify SearxNG is running on your backend server and accessible from the backend
-- Check that `SEARXNG_URL` is correctly configured in backend `.env`
-- Verify SearxNG configuration (JSON format enabled)
-- Review backend logs for search errors
-- Note: SearxNG runs on the backend, not on the Android device
+   API: `http://localhost:4000`. Use `POST /api/query` or `GET /api/query/stream` with `message`, `history`, `mode`.
 
-**LLM Provider Issues**
-- Confirm API keys are correctly set in environment variables
-- Check provider configuration in backend settings
-- Verify model names match your provider's available models
+---
 
-## Future Enhancements
 
-The following features are planned for future releases:
 
-- **Context-Aware Widgets** - Interactive widgets for weather, stocks, calculations, Shopping and other quick lookups that appear when relevant to the query
-- **Enhanced Search Sources** - Additional search integrations (Tavily, Exa, etc.) for improved research coverage
-- **Custom Agent Configuration** - Ability to create and configure custom agent behaviors and workflows
-- **Advanced Caching** - Smarter caching strategies with query-based expiry and LRU eviction
-- **Multi-language Support** - Support for queries and answers in multiple languages
+---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+Contributions are welcome. For large changes, open an issue first.
+
+---
 
 ## License
 
-This project is open source. See LICENSE file for details.
+See LICENSE file.

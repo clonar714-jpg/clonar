@@ -1,0 +1,111 @@
+
+import OpenAI from "openai";
+import { LRUCache } from "lru-cache";
+
+
+let client: OpenAI | null = null;
+
+function getClient(): OpenAI {
+  if (!client) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("❌ Missing OPENAI_API_KEY in .env");
+    }
+    client = new OpenAI({ apiKey });
+  }
+  return client;
+}
+
+
+const cache = new LRUCache<string, number[]>({
+  max: 5000,
+  ttl: 1000 * 60 * 60 * 24, // 24 hours
+});
+
+
+export function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+
+export async function getEmbedding(text: string): Promise<number[]> {
+  if (!text || !text.trim()) return [];
+
+  const input = text.trim().slice(0, 8000);
+  const key = `emb:${input}`;
+
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const res = await getClient().embeddings.create({
+    model: "text-embedding-3-small",
+    input,
+  });
+
+  const emb = res.data[0].embedding;
+  cache.set(key, emb);
+  return emb;
+}
+
+
+export async function getEmbeddings(texts: string[]): Promise<number[][]> {
+  const results: number[][] = [];
+  const uncached: string[] = [];
+  const mapping: Record<string, number> = {};
+
+  texts.forEach((t, i) => {
+    if (!t || !t.trim()) {
+      results[i] = [];
+      return;
+    }
+    const input = t.trim().slice(0, 8000);
+    const key = `emb:${input}`;
+    const cached = cache.get(key);
+    if (cached) {
+      results[i] = cached;
+    } else {
+      mapping[input] = i;
+      uncached.push(input);
+    }
+  });
+
+  if (uncached.length > 0) {
+    const res = await getClient().embeddings.create({
+      model: "text-embedding-3-small",
+      input: uncached,
+    });
+
+    res.data.forEach((d, idx) => {
+      const text = uncached[idx];
+      const emb = d.embedding;
+      cache.set(`emb:${text}`, emb);
+      results[mapping[text]] = emb;
+    });
+  }
+
+  return results;
+}
+
+
+export async function similaritySearch(
+  query: string,
+  items: string[]
+): Promise<{ item: string; score: number }[]> {
+  if (!items.length) return [];
+
+  const [qEmb, ...itemEmbeds] = await getEmbeddings([query, ...items]);
+
+  return items
+    .map((item, i) => ({
+      item,
+      score: cosine(qEmb, itemEmbeds[i]),
+    }))
+    .sort((a, b) => b.score - a.score);
+}
