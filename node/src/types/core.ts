@@ -17,12 +17,45 @@ export type UiDecision = {
   primaryActions: Array<'book' | 'website' | 'call' | 'directions' | 'buy' | 'watch'>;
 };
 
+/** ChatGPT-style Memory: explicit facts + structured slots. Injected into context each request (no vector DB). */
+export interface UserMemory {
+  brands?: string[];
+  dietary?: string[];
+  hobbies?: string[];
+  projects?: string[];
+  /** Explicit "remember that X" facts (ChatGPT-style). */
+  facts?: string[];
+  /** Resolve "my birthday" (e.g. "2025-03-15" or "March 15"). */
+  birthday?: string;
+  /** Resolve "where I live" / weather (e.g. "Boston" or "San Francisco"). */
+  location?: string;
+}
+
+/** One turn in the conversation thread (for Perplexity-style rewrite context). */
+export interface ConversationTurn {
+  query: string;
+  answer: string;
+}
+
 export interface QueryContext {
   message: string;
   history: string[];
   userId?: string;
   /** optional, default 'quick' */
   mode?: QueryMode;
+  /** For loading/saving session state. Use sessionId ?? userId when calling getSession/saveSession. */
+  sessionId?: string;
+  /** Conversation thread from session (last N turns) for rewrite/context like Perplexity. Set by route from getSession(). */
+  conversationThread?: ConversationTurn[];
+  /** Perplexity-style Memory (brands, dietary, hobbies, projects). Set by route when userId present. */
+  userMemory?: UserMemory | null;
+  /** Last-used filters from session; merged with extracted filters (session default, query overrides). */
+  lastHotelFilters?: PlanCandidateHotelFilters;
+  lastFlightFilters?: PlanCandidateFlightFilters;
+  lastMovieFilters?: PlanCandidateMovieFilters;
+  lastProductFilters?: PlanCandidateProductFilters;
+  /** A/B: "default" = run rewrite; "none" = skip rewrite, use message as rewrittenPrompt (for online eval). */
+  rewriteVariant?: 'default' | 'none';
 }
 
 /** Optional per-vertical filter blobs for a candidate (accepts full filter types from verticals). */
@@ -66,8 +99,8 @@ export interface PlanCandidate {
   vertical: Vertical;
   intent: Intent;
   score: number;
-  /** Per-vertical preference context when decomposed (e.g. "cheap", "quiet near airport"); downstream may ignore. */
-  preferenceContext?: string;
+  /** Confidence in [0,1] for this vertical choice (same as score when from classifier; can differ when combined with intent). */
+  confidence?: number;
   productFilters?: PlanCandidateProductFilters;
   hotelFilters?: PlanCandidateHotelFilters;
   flightFilters?: PlanCandidateFlightFilters;
@@ -105,12 +138,12 @@ export interface BasePlan {
   ambiguity?: AmbiguityInfo;
   /** Per-vertical search-oriented reformulations (synonyms, key terms) for retrieval fan-out. */
   searchQueries?: Partial<Record<Vertical, string[]>>;
-  /** Per-vertical sub-queries for within-vertical fan-out (retrieve per sub-query, then combine). */
-  subQueries?: Partial<Record<Vertical, string[]>>;
-  /** Time sensitivity (especially for "other"): orchestrator uses for web overview vs encyclopedic retrieval. */
-  timeSensitivity?: 'timeless' | 'time_sensitive';
-  /** Ordered preference phrases (highest priority first). When results are thin, relaxation can drop lowest-priority first. */
-  preferencePriority?: string[];
-  /** When set, "airport" etc. are not pinned to a single code; downstream can align after retrieval (e.g. hotel near arrival airport). */
-  softConstraints?: { airport?: 'city_only' | 'unspecified' };
+  /** Flat list of sub-queries for retrieval (from decomposition). No vertical grouping. */
+  subQueries?: string[];
+  /** Gated typo correction: confidence in [0,1] for the rewrite; when low, UI may show rewriteAlternatives. */
+  rewriteConfidence?: number;
+  /** Alternative phrasings when rewrite confidence is low (for "Did you mean?" in UI). */
+  rewriteAlternatives?: string[];
+  /** Confidence in [0,1] for intent classification (browse/compare/buy/book). */
+  intentConfidence?: number;
 }

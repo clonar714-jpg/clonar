@@ -11,9 +11,9 @@
     "incremental": true,
     "sourceMap": false,
     "forceConsistentCasingInFileNames": true,
-    "baseUrl": "src",
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["*"]
+      "@/*": ["src/*"]
     },
     "typeRoots": ["./src/types", "./node_modules/@types"],
     "resolveJsonModule": true

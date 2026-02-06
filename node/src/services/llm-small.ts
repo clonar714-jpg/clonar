@@ -1,18 +1,44 @@
-// src/services/llm-small.ts — classification via model router
-import { SimpleModelRouter } from './model-router';
-import { ProviderLlmClient } from './llm-client';
+// src/services/llm-small.ts
+import OpenAI from 'openai';
 
-const router = new SimpleModelRouter(new ProviderLlmClient());
+let client: OpenAI | null = null;
 
-export async function callSmallLLM(prompt: string): Promise<string> {
-  return router.classify(prompt);
+function getClient(): OpenAI {
+  if (!client) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('Missing OPENAI_API_KEY. Set it in node/.env or your environment.');
+    }
+    client = new OpenAI({ apiKey });
+  }
+  return client;
 }
 
-/** Same as classify but accepts system + user for JSON-oriented calls (e.g. reranker). */
-export async function callSmallLlmJson(input: {
+export async function callSmallLLM(prompt: string): Promise<string> {
+  const res = await getClient().chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: 'You are a JSON-only classifier/extractor.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0,
+  });
+  return res.choices[0].message.content ?? '{}';
+}
+
+export interface CallSmallLlmJsonInput {
   system: string;
   user: string;
-}): Promise<string> {
-  const prompt = `${input.system}\n\n${input.user}`;
-  return router.classify(prompt);
+}
+
+export async function callSmallLlmJson(input: CallSmallLlmJsonInput): Promise<string> {
+  const res = await getClient().chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: input.system },
+      { role: 'user', content: input.user },
+    ],
+    temperature: 0,
+  });
+  return res.choices[0].message.content ?? '{}';
 }

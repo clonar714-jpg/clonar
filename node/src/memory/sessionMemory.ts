@@ -3,19 +3,40 @@
 import { SessionStore } from "./SessionStore";
 import { InMemorySessionStore } from "./InMemorySessionStore";
 import { RedisSessionStore } from "./RedisSessionStore";
+import type {
+  PlanCandidateHotelFilters,
+  PlanCandidateFlightFilters,
+  PlanCandidateMovieFilters,
+  PlanCandidateProductFilters,
+} from "@/types/core";
 
+/** One turn in the conversation thread (Perplexity-style: use prior messages for context). */
+export interface ConversationTurn {
+  query: string;
+  answer: string;
+}
+
+/** Max turns to keep in session (Perplexity-style thread). */
+export const CONVERSATION_THREAD_MAX_TURNS = 10;
 
 export interface SessionState {
-  domain: "shopping" | "hotel" | "restaurants" | "flights" | "location" | "general";
-  brand: string | null;
-  category: string | null;
-  price: number | null;
-  city: string | null;
-  gender: "men" | "women" | null;
-  intentSpecific: Record<string, any>; 
-  lastQuery: string;
-  lastAnswer: string;
-  lastImageUrl?: string | null; 
+  /** Conversation thread (last N turns) for rewrite/context like Perplexity. */
+  conversationThread?: ConversationTurn[];
+  /** Last-used filters (Perplexity-style): merged with extracted filters next turn. */
+  lastHotelFilters?: PlanCandidateHotelFilters;
+  lastFlightFilters?: PlanCandidateFlightFilters;
+  lastMovieFilters?: PlanCandidateMovieFilters;
+  lastProductFilters?: PlanCandidateProductFilters;
+}
+
+/** Updates for updateSession: appendTurn to add a turn to the thread; last*Filters to persist. */
+export interface UpdateSessionUpdates {
+  /** Current turn to append to conversationThread (replaces old lastQuery/lastAnswer). */
+  appendTurn?: { query: string; answer: string };
+  lastHotelFilters?: PlanCandidateHotelFilters;
+  lastFlightFilters?: PlanCandidateFlightFilters;
+  lastMovieFilters?: PlanCandidateMovieFilters;
+  lastProductFilters?: PlanCandidateProductFilters;
 }
 
 
@@ -136,24 +157,33 @@ export async function clearSession(sessionId: string): Promise<void> {
 }
 
 
-export async function updateSession(sessionId: string, updates: Partial<SessionState>): Promise<void> {
+export async function updateSession(sessionId: string, updates: UpdateSessionUpdates): Promise<void> {
   const existing = await getSession(sessionId);
-  if (existing) {
-    await saveSession(sessionId, { ...existing, ...updates });
-  } else {
-    
-    await saveSession(sessionId, {
-      domain: updates.domain || "general",
-      brand: updates.brand || null,
-      category: updates.category || null,
-      price: updates.price || null,
-      city: updates.city || null,
-      gender: updates.gender || null,
-      intentSpecific: updates.intentSpecific || {},
-      lastQuery: updates.lastQuery || "",
-      lastAnswer: updates.lastAnswer || "",
-    });
+  const base = existing ?? {};
+
+  // Append current turn to conversation thread (last N turns)
+  let conversationThread = existing?.conversationThread ?? [];
+  const turn = updates.appendTurn;
+  if (turn?.query != null && turn?.answer != null) {
+    conversationThread = conversationThread
+      .concat([{ query: turn.query, answer: turn.answer }])
+      .slice(-CONVERSATION_THREAD_MAX_TURNS);
   }
+
+  // Keep last filters for verticals we didn't use this turn (updates override, else keep existing)
+  const lastHotelFilters = updates.lastHotelFilters ?? existing?.lastHotelFilters;
+  const lastFlightFilters = updates.lastFlightFilters ?? existing?.lastFlightFilters;
+  const lastMovieFilters = updates.lastMovieFilters ?? existing?.lastMovieFilters;
+  const lastProductFilters = updates.lastProductFilters ?? existing?.lastProductFilters;
+
+  await saveSession(sessionId, {
+    ...base,
+    conversationThread,
+    ...(lastHotelFilters != null && { lastHotelFilters }),
+    ...(lastFlightFilters != null && { lastFlightFilters }),
+    ...(lastMovieFilters != null && { lastMovieFilters }),
+    ...(lastProductFilters != null && { lastProductFilters }),
+  });
 }
 
 

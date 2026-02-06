@@ -15,6 +15,8 @@ export interface MovieAgentResult {
   showtimes: MovieShowtime[];
   citations?: Citation[];
   retrievalStats?: { vertical: 'movie'; itemCount: number; maxItems?: number; avgScore?: number; topKAvg?: number };
+  /** Queries actually run for retrieval (for UI transparency). */
+  searchQueries?: string[];
 }
 
 const GROUNDING_SYSTEM = `You are a movie ticket booking assistant. You receive two separate sections: Working memory (conversation context) and Retrieved content (factual source only). Use ONLY the Retrieved content section for factual claims and recommendations; Working memory is for intent and preferences only. This separation prevents context contamination.
@@ -38,39 +40,45 @@ export async function runMovieAgent(
 ): Promise<MovieAgentResult> {
   const filters = plan.movie;
   const text = plan.decomposedContext?.movie ?? plan.rewrittenPrompt;
-  const llmQueries = await searchReformulationPerPart(text, 'movie');
-  let queriesToRun = llmQueries.length > 0 ? llmQueries : [plan.rewrittenPrompt.trim()];
-  // Perplexity-aligned: when decomposed slice has multiple segments, add each as a retrieval variant for broader recall.
-  const slice = plan.decomposedContext?.movie;
-  if (slice?.includes(';')) {
-    const segments = slice.split(';').map((s) => s.trim()).filter(Boolean).slice(0, 3);
-    for (const seg of segments) {
-      if (seg && !queriesToRun.some((q) => q.trim().toLowerCase() === seg.toLowerCase())) {
-        queriesToRun = [...queriesToRun, seg];
-      }
-    }
-  }
-  // Perplexity-aligned: feed location/entity signals into at least one retrieval variant (e.g. "showtimes in Brooklyn").
-  const locations = plan.entities?.locations ?? [];
-  const entities = plan.entities?.entities ?? [];
-  const anchors = [...locations, ...entities].filter(Boolean).slice(0, 2);
-  for (const anchor of anchors) {
-    const variant = `${text} ${anchor}`.trim();
-    if (variant && !queriesToRun.some((q) => q.toLowerCase().includes(anchor.toLowerCase()))) {
-      queriesToRun = [...queriesToRun, variant];
-    }
-  }
+  // Sub-queries are a flat list now; vertical agents run only when there are no sub-queries, so always use fallback.
+  const planMovieQueries: string[] | undefined = undefined;
+  let queriesToRun: string[] =
+    planMovieQueries != null && planMovieQueries.length > 0
+      ? planMovieQueries
+      : (await (async () => {
+          const llmQueries = await searchReformulationPerPart(text, 'movie');
+          let q = llmQueries.length > 0 ? llmQueries : [plan.rewrittenPrompt.trim()];
+          const slice = plan.decomposedContext?.movie;
+          if (slice?.includes(';')) {
+            const segments = slice.split(';').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+            for (const seg of segments) {
+              if (seg && !q.some((x) => x.trim().toLowerCase() === seg.toLowerCase())) q = [...q, seg];
+            }
+          }
+          const locations = plan.entities?.locations ?? [];
+          const entities = plan.entities?.entities ?? [];
+          const anchors = [...locations, ...entities].filter(Boolean).slice(0, 2);
+          for (const anchor of anchors) {
+            const variant = `${text} ${anchor}`.trim();
+            if (variant && !q.some((x) => x.toLowerCase().includes(anchor.toLowerCase()))) q = [...q, variant];
+          }
+          return q;
+        })());
 
   const allShowtimes: MovieShowtime[] = [];
   const allSnippets: Array<{ id: string; url: string; title?: string; text: string; score?: number }> = [];
   const seenShowtimeKeys = new Set<string>();
 
-  for (const query of queriesToRun) {
-    const { showtimes, snippets } = await deps.retriever.searchShowtimes({
-      ...filters,
-      rewrittenQuery: query,
-      ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
-    });
+  const searchResults = await Promise.all(
+    queriesToRun.map((query) =>
+      deps.retriever.searchShowtimes({
+        ...filters,
+        rewrittenQuery: query,
+        ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
+      }),
+    ),
+  );
+  for (const { showtimes, snippets } of searchResults) {
     for (const st of showtimes) {
       const key = showtimeKey(st);
       if (!seenShowtimeKeys.has(key)) {
@@ -151,5 +159,6 @@ Showtimes list (from retrieved content): ${JSON.stringify(showtimes.slice(0, 15)
       avgScore,
       topKAvg,
     },
+    searchQueries: queriesToRun,
   };
 }

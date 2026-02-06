@@ -12,7 +12,9 @@ import { getCache, setCache } from './cache';
 import { logger } from './logger';
 import { critiqueAndRefineSummary } from './critique-agent';
 import { planResearchStep } from './planner-agent';
-import { understandQuery, classifyTimeSensitivity, getRewrittenQueriesForMode, safeParseJson } from './query-understanding';
+import { rewriteQuery } from './query-rewrite';
+import { extractFilters, type ExtractedFilters } from './filter-extraction';
+import { getRewrittenQueriesForMode, safeParseJson, decomposeIntoSubQueries } from './query-understanding';
 import { callSmallLLM } from './llm-small';
 import { perplexityOverview } from './providers/web/perplexity-web';
 import type { PerplexityCitation } from './providers/web/perplexity-web';
@@ -30,14 +32,25 @@ import { buildProductUiDecision } from './ui_decision/productUiDecision';
 import { buildFlightUiDecision } from './ui_decision/flightUiDecision';
 import { buildMovieUiDecision } from './ui_decision/movieUiDecision';
 import { buildGenericUiDecision } from './ui_decision/genericUiDecision';
+import { updateSession } from '@/memory/sessionMemory';
+import { routeAndRetrieve } from './retrieval-router';
+import { shouldUseGroundedRetrieval } from './grounding-decision';
+import { createTrace, addSpan, finishTrace } from './query-processing-trace';
+import { createRequestMetrics } from './query-processing-metrics';
+import { shouldSampleForEval, submitForHumanReview } from './eval-sampling';
+import { runAutomatedEvals } from './eval-automated';
 
 export interface OrchestratorDeps {
   productRetriever: ProductRetriever;
   hotelRetriever: HotelRetriever;
   flightRetriever: FlightRetriever;
   movieRetriever: MovieRetriever;
-  /** Optional key for retrieved-content cache (dual memory); set in runPipeline from planCacheKey. */
+  /** Optional key for retrieved-content cache (dual memory); set in runPipeline from makePlanCacheKey(ctx). */
   retrievedContentCacheKey?: string;
+  /** Optional: used by retrieval router for semantic routing (query vs vertical profile embeddings). */
+  embedder?: import('./providers/retrieval-vector-utils').Embedder;
+  /** Optional: lightweight reranker for merged chunks before synthesis. */
+  passageReranker?: import('./retrieval-router').PassageReranker;
 }
 
 export type Citation = {
@@ -132,16 +145,36 @@ export interface DebugInfo {
   rewrittenQuery: string;
   usedHistory: string[];
   mode?: QueryMode;
+  /** Gated typo correction: confidence in [0,1] for the rewrite; when low, UI may show rewriteAlternatives. */
+  rewriteConfidence?: number;
+  /** Alternative phrasings when rewrite confidence is low (for "Did you mean?" in UI). */
+  rewriteAlternatives?: string[];
+  /** Confidence in [0,1] for intent classification (browse/compare/buy/book). */
+  intentConfidence?: number;
 
   routing?: {
     candidates: Array<{
       vertical: Vertical;
       intent: VerticalPlan['intent'];
       score: number;
+      /** Confidence in [0,1] for this vertical choice. */
+      confidence?: number;
     }>;
     chosen: Vertical;
     multiVertical?: boolean;
+    /** Intent/confidence-based routing from retrieval layer (for evals and metrics). */
+    routingDecision?: import('./retrieval-router').RoutingDecision;
   };
+
+  /** One-line interpretation for UI: "Searching for hotels in downtown NYC and attractions in Philadelphia." */
+  interpretationSummary?: string;
+  /** Actual search queries run (for "SEARCHING" / transparency in UI). */
+  searchQueries?: string[];
+  /** Decomposed parts when multi-part: [{ part, vertical }, ...]. */
+  decomposedParts?: Array<{ part: string; vertical: string }>;
+
+  /** Extracted filters from NL (temporal, categorical) for retrieval/APIs; for evals and monitoring. */
+  extractedFilters?: ExtractedFilters;
 
   /** True when deep mode ran the critique pass. */
   deepRefined?: boolean;
@@ -160,6 +193,18 @@ export interface DebugInfo {
     quality: 'good' | 'weak' | 'fallback_other';
     maxItems?: number;
   };
+
+  /** When we skip retrieval (conceptual query): grounding decision and reason. */
+  groundingDecision?: {
+    needs_grounding: false;
+    reason: string;
+  };
+
+  /** Structured trace (spans) for query processing; for online eval and observability. */
+  trace?: import('./query-processing-trace').QueryProcessingTrace;
+
+  /** Automated component-level eval scores (rewrite, filter, routing) when available. */
+  automatedEvalScores?: import('./eval-automated').AutomatedEvalScores;
 }
 
 // ---------- Type guards for PipelineResult union ----------
@@ -257,7 +302,6 @@ function makePlanCacheKey(ctx: QueryContext): string {
 }
 
 const PIPELINE_CACHE_TTL_SECONDS = 60;
-const PLAN_CACHE_TTL_SECONDS = 60;
 
 type CandidateLike = { vertical: Vertical; intent: VerticalPlan['intent']; score: number };
 
@@ -347,7 +391,7 @@ async function runVerticalSingle(
   switch (plan.vertical) {
     case 'product': {
       const res = await runProductAgent(plan, { retriever: deps.productRetriever, retrievedContentCacheKey: deps.retrievedContentCacheKey });
-      return {
+      const out: PipelineResult = {
         vertical: 'product',
         intent: plan.intent,
         summary: res.summary,
@@ -355,10 +399,11 @@ async function runVerticalSingle(
         citations: res.citations,
         retrievalStats: res.retrievalStats,
       };
+      return res.searchQueries?.length ? { ...out, searchQueries: res.searchQueries } as PipelineResult & { searchQueries: string[] } : out;
     }
     case 'hotel': {
       const res = await runHotelAgent(plan, { retriever: deps.hotelRetriever, retrievedContentCacheKey: deps.retrievedContentCacheKey });
-      return {
+      const out: PipelineResult = {
         vertical: 'hotel',
         intent: plan.intent,
         summary: res.summary,
@@ -366,10 +411,11 @@ async function runVerticalSingle(
         citations: res.citations,
         retrievalStats: res.retrievalStats,
       };
+      return res.searchQueries?.length ? { ...out, searchQueries: res.searchQueries } as PipelineResult & { searchQueries: string[] } : out;
     }
     case 'flight': {
       const res = await runFlightAgent(plan, { retriever: deps.flightRetriever });
-      return {
+      const out: PipelineResult = {
         vertical: 'flight',
         intent: plan.intent,
         summary: res.summary,
@@ -377,10 +423,11 @@ async function runVerticalSingle(
         citations: res.citations,
         retrievalStats: res.retrievalStats,
       };
+      return res.searchQueries?.length ? { ...out, searchQueries: res.searchQueries } as PipelineResult & { searchQueries: string[] } : out;
     }
     case 'movie': {
       const res = await runMovieAgent(plan, { retriever: deps.movieRetriever, retrievedContentCacheKey: deps.retrievedContentCacheKey });
-      return {
+      const out: PipelineResult = {
         vertical: 'movie',
         intent: plan.intent,
         summary: res.summary,
@@ -388,10 +435,11 @@ async function runVerticalSingle(
         citations: res.citations,
         retrievalStats: res.retrievalStats,
       };
+      return res.searchQueries?.length ? { ...out, searchQueries: res.searchQueries } as PipelineResult & { searchQueries: string[] } : out;
     }
     case 'other':
     default: {
-      const timeSensitivity = await classifyTimeSensitivity(ctx);
+      // Other = web search only (Perplexity API). Grounding decision at pipeline start already skips retrieval when not needed.
       const prefStr =
         plan.preferenceContext != null
           ? Array.isArray(plan.preferenceContext)
@@ -400,38 +448,28 @@ async function runVerticalSingle(
           : '';
       let userPrompt =
         prefStr ? `${plan.rewrittenPrompt}\n\nUser preferences / context: ${prefStr}` : plan.rewrittenPrompt;
-      // Perplexity-aligned: feed landmark/entity signals into retrieval for "other" (web overview) to improve recall.
       const locations = plan.entities?.locations ?? [];
       const entities = plan.entities?.entities ?? [];
       const anchors = [...locations, ...entities].filter(Boolean).slice(0, 3);
       if (anchors.length) {
         userPrompt = `${userPrompt}\n\nKey places/entities: ${anchors.join(', ')}`;
       }
-      if (timeSensitivity === 'time_sensitive') {
-        const overview = await perplexityOverview(userPrompt);
-        const citations: Citation[] = (overview.citations ?? []).map((c: PerplexityCitation) => ({
-          id: c.id,
-          url: c.url,
-          title: c.title,
-          snippet: c.snippet,
-          date: c.date,
-          last_updated: c.last_updated,
-        }));
-        return {
-          vertical: 'other',
-          intent: plan.intent,
-          summary: overview.summary,
-          ...(citations.length > 0 && { citations }),
-        };
-      }
-      const system =
-        'You are a helpful general-knowledge assistant. The user\'s full request and preferences are provided below. Answer clearly without browsing the web. Structure your answer by the user\'s criteria when it makes sense; say what you can address and what you don\'t have data for. Use conditional language when the answer depends on unstated factors.';
-      const summary = await callMainLLM(system, userPrompt);
-      return {
+      const overview = await perplexityOverview(userPrompt);
+      const citations: Citation[] = (overview.citations ?? []).map((c: PerplexityCitation) => ({
+        id: c.id,
+        url: c.url,
+        title: c.title,
+        snippet: c.snippet,
+        date: c.date,
+        last_updated: c.last_updated,
+      }));
+      const out: PipelineResult = {
         vertical: 'other',
         intent: plan.intent,
-        summary: summary.trim(),
+        summary: overview.summary,
+        ...(citations.length > 0 && { citations }),
       };
+      return { ...out, searchQueries: [plan.rewrittenPrompt] } as PipelineResult & { searchQueries: string[] };
     }
   }
 }
@@ -554,6 +592,7 @@ async function runVerticalAgentMulti(
   result: PipelineResult;
   citations: Citation[];
   routingInfo: DebugInfo['routing'];
+  searchQueries: string[];
 }> {
   const candidates = basePlan.candidates ?? [];
   const selected = selectVerticals(candidates);
@@ -561,6 +600,7 @@ async function runVerticalAgentMulti(
 
   if (!primary) {
     const fallbackResult = await runVerticalSingle(basePlan, deps, ctx);
+    const sq = (fallbackResult as PipelineResult & { searchQueries?: string[] }).searchQueries ?? [];
     return {
       result: fallbackResult,
       citations: fallbackResult.citations ?? [],
@@ -569,6 +609,7 @@ async function runVerticalAgentMulti(
         chosen: basePlan.vertical,
         multiVertical: false,
       },
+      searchQueries: sq,
     };
   }
 
@@ -578,6 +619,7 @@ async function runVerticalAgentMulti(
       vertical: c.vertical,
       intent: c.intent,
       score: c.score,
+      ...(c.confidence != null && { confidence: c.confidence }),
     })),
     chosen: primary.vertical,
     multiVertical,
@@ -625,7 +667,181 @@ async function runVerticalAgentMulti(
     mergedResult = { ...mergedResult, semanticFraming: 'guide' } as PipelineResult;
   }
 
-  return { result: mergedResult, citations: allCitations, routingInfo };
+  const allSearchQueries = allResults.flatMap(
+    (r) => (r as PipelineResult & { searchQueries?: string[] }).searchQueries ?? [],
+  );
+
+  return { result: mergedResult, citations: allCitations, routingInfo, searchQueries: allSearchQueries };
+}
+
+/** Perplexity-style central retrieval: flat sub-queries → router → multiple retrievers per query → merge + rerank. No vertical ownership of retrieval. */
+const ROUTER_GROUNDING_SYSTEM = `You are a search assistant. You receive Working memory (context only) and Retrieved content (factual sources only).
+Use ONLY the Retrieved content for factual claims; cite [1], [2], etc.
+Do not invent details. Do not infer facts from the plan or assume vertical correctness.
+If the list doesn't cover something, say so.`;
+
+/**
+ * Central retrieval is the default fast path. Builds a minimal plan internally for the retrieval layer only.
+ * Sub-queries (or single [rewrittenPrompt] when decomposition is empty) always go to routeAndRetrieve; the router decides verticals.
+ * There is always a rewritten prompt by the time we get here; if we have no sub-queries we return a minimal empty result.
+ */
+async function runCentralRetrieval(
+  rewrittenPrompt: string,
+  subQueries: string[] | undefined,
+  deps: OrchestratorDeps,
+  ctx: QueryContext,
+  extractedFilters?: ExtractedFilters,
+): Promise<{
+  result: PipelineResult;
+  citations: Citation[];
+  routingInfo: DebugInfo['routing'];
+  searchQueries: string[];
+  primaryVertical: Vertical;
+}> {
+  // Always send at least [rewrittenPrompt] to routing when we have a message; router decides verticals. Empty decomposition → single-query fallback.
+  const fallbackQuery = [rewrittenPrompt?.trim() || ctx.message.trim()].filter(Boolean);
+  const flatSubQueries =
+    (subQueries?.length
+      ? (subQueries.filter((q) => typeof q === 'string' && q.trim().length > 0) as string[])
+      : undefined) ?? fallbackQuery;
+
+  // Minimal plan only for retrieval layer (router + getHotelFilters etc.). Merge extracted filters so APIs get structured params.
+  const planForRetrieval = {
+    vertical: 'other' as const,
+    intent: 'browse' as const,
+    rewrittenPrompt,
+    subQueries: flatSubQueries.length > 0 ? flatSubQueries : undefined,
+    ...(extractedFilters?.hotel && {
+      hotel: {
+        destination: extractedFilters.hotel.destination ?? 'unknown',
+        checkIn: extractedFilters.hotel.checkIn ?? new Date().toISOString().slice(0, 10),
+        checkOut: extractedFilters.hotel.checkOut ?? new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+        guests: extractedFilters.hotel.guests ?? 2,
+        ...extractedFilters.hotel,
+      } as HotelFilters,
+    }),
+    ...(extractedFilters?.flight && {
+      flight: {
+        origin: extractedFilters.flight.origin ?? '',
+        destination: extractedFilters.flight.destination ?? 'unknown',
+        departDate: extractedFilters.flight.departDate ?? new Date().toISOString().slice(0, 10),
+        adults: extractedFilters.flight.adults ?? 1,
+        ...extractedFilters.flight,
+      } as FlightFilters,
+    }),
+    ...(extractedFilters?.product && {
+      product: {
+        query: extractedFilters.product.query ?? rewrittenPrompt.slice(0, 200),
+        ...extractedFilters.product,
+      } as ProductFilters,
+    }),
+    ...(extractedFilters?.movie && {
+      movie: {
+        city: extractedFilters.movie.city ?? 'unknown',
+        date: extractedFilters.movie.date ?? new Date().toISOString().slice(0, 10),
+        tickets: extractedFilters.movie.tickets ?? 2,
+        ...extractedFilters.movie,
+      } as MovieTicketFilters,
+    }),
+  } as VerticalPlan;
+
+  // Should not happen: we always have rewrittenPrompt (or ctx.message) so fallbackQuery is non-empty. Guard for safety.
+  if (flatSubQueries.length === 0) {
+    const emptyResult: PipelineResult = {
+      intent: 'browse',
+      summary: '',
+      citations: [],
+      vertical: 'other',
+      retrievalStats: { vertical: 'other', itemCount: 0, quality: 'good' },
+    };
+    return {
+      result: emptyResult,
+      citations: [],
+      routingInfo: { candidates: [], chosen: 'other', multiVertical: false },
+      searchQueries: [],
+      primaryVertical: 'other',
+    };
+  }
+
+  const { chunks, bySource, searchQueries, routingDecision } = await routeAndRetrieve(flatSubQueries, deps, ctx, planForRetrieval);
+
+  const citations: Citation[] = chunks.map((c) => ({
+    id: c.id,
+    url: c.url,
+    title: c.title,
+    snippet: c.text,
+  }));
+
+  const workingMemory = {
+    userQuery: rewrittenPrompt,
+    preferenceContext: undefined,
+  };
+  const retrievedPassages = chunks
+    .map((c, i) => `[${i + 1}] ${(c.title ? c.title + ': ' : '')}${c.text.replace(/\s+/g, ' ').slice(0, 400)}`)
+    .join('\n');
+  const userContent = `
+Working memory (context only; do not cite as source):
+${JSON.stringify(workingMemory)}
+
+Retrieved content (cite as [1], [2], ...):
+${retrievedPassages}
+`;
+  const summary = await callMainLLM(ROUTER_GROUNDING_SYSTEM, userContent);
+
+  // UI vertical is post-hoc only: choose after retrieval.
+  const withCounts = (
+    [
+      { v: 'hotel' as Vertical, n: bySource.hotel?.length ?? 0 },
+      { v: 'flight' as Vertical, n: bySource.flight?.length ?? 0 },
+      { v: 'product' as Vertical, n: bySource.product?.length ?? 0 },
+      { v: 'movie' as Vertical, n: bySource.movie?.length ?? 0 },
+    ] as { v: Vertical; n: number }[]
+  ).filter((x) => x.n > 0);
+  const primaryVertical: Vertical =
+    withCounts.length > 0 ? withCounts.reduce((a, b) => (a.n >= b.n ? a : b)).v : 'other';
+
+  const baseResult: BasePipelineResult = {
+    intent: 'browse',
+    summary: summary.trim(),
+    citations,
+    retrievalStats: {
+      vertical: primaryVertical,
+      itemCount:
+        (bySource.hotel?.length ?? 0) +
+        (bySource.flight?.length ?? 0) +
+        (bySource.product?.length ?? 0) +
+        (bySource.movie?.length ?? 0),
+      quality: 'good',
+    },
+  };
+
+  let result: PipelineResult;
+  if (primaryVertical === 'hotel' && (bySource.hotel?.length ?? 0) > 0) {
+    result = { ...baseResult, vertical: 'hotel', hotels: bySource.hotel ?? [] };
+  } else if (primaryVertical === 'flight' && (bySource.flight?.length ?? 0) > 0) {
+    result = { ...baseResult, vertical: 'flight', flights: bySource.flight ?? [] };
+  } else if (primaryVertical === 'product' && (bySource.product?.length ?? 0) > 0) {
+    result = { ...baseResult, vertical: 'product', products: bySource.product ?? [] };
+  } else if (primaryVertical === 'movie' && (bySource.movie?.length ?? 0) > 0) {
+    result = { ...baseResult, vertical: 'movie', showtimes: bySource.movie ?? [] };
+  } else {
+    result = { ...baseResult, vertical: 'other' };
+  }
+
+  const routingInfo: DebugInfo['routing'] = {
+    candidates: [{ vertical: primaryVertical, intent: 'browse', score: 1 }],
+    chosen: primaryVertical,
+    multiVertical: false,
+    ...(routingDecision && { routingDecision }),
+  };
+
+  return {
+    result,
+    citations,
+    routingInfo,
+    searchQueries,
+    primaryVertical,
+  };
 }
 
 /** Attach UI hints (layouts, map possible, cards, actions). Frontend chooses final presentation. */
@@ -684,41 +900,195 @@ export async function runPipeline(
     mode,
   });
 
+  const pipelineStartedAt = Date.now();
+  const rewriteVariant = ctx.rewriteVariant ?? 'default';
+  const trace = createTrace({ originalQuery: ctx.message, variant: rewriteVariant });
+  const metrics = createRequestMetrics();
+
   try {
-    const planCacheKey = makePlanCacheKey(ctx);
-    let plan: VerticalPlan | null = await getCache<VerticalPlan>(planCacheKey);
     const understandStarted = Date.now();
-    if (!plan) {
-      plan = await understandQuery(ctx);
-      await setCache(planCacheKey, plan, PLAN_CACHE_TTL_SECONDS);
+    let rewrittenPrompt: string;
+    if (rewriteVariant === 'none') {
+      rewrittenPrompt = ctx.message?.trim() ?? '';
+      metrics.recordRewrite(false);
+      addSpan(trace, 'rewrite', understandStarted, {
+        metadata: { variant: 'none', skipped: true },
+        output: { rewrittenPrompt },
+      });
+    } else {
+      const rewriteResult = await rewriteQuery(ctx);
+      rewrittenPrompt = rewriteResult.rewrittenPrompt;
+      metrics.recordRewrite(rewrittenPrompt !== (ctx.message?.trim() ?? ''));
+      addSpan(trace, 'rewrite', understandStarted, {
+        input: { message: ctx.message },
+        output: { rewrittenPrompt },
+      });
+      trace.rewrittenQuery = rewrittenPrompt;
     }
+
     const understandDuration = Date.now() - understandStarted;
-    logger.info('runPipeline:understandQuery:done', {
-      mode,
-      vertical: plan.vertical,
-      intent: plan.intent,
-      durationMs: understandDuration,
-      candidates: plan.candidates?.map((c) => ({ vertical: c.vertical, score: c.score })),
+    logger.info('runPipeline:rewrite:done', { mode, durationMs: understandDuration });
+
+    const filterExtractStarted = Date.now();
+    let extractedFilters: ExtractedFilters = {};
+    try {
+      extractedFilters = await extractFilters(ctx, rewrittenPrompt);
+      const hasHotel = !!extractedFilters.hotel;
+      const hasFlight = !!extractedFilters.flight;
+      const hasProduct = !!extractedFilters.product;
+      const hasMovie = !!extractedFilters.movie;
+      addSpan(trace, 'filter_extraction', filterExtractStarted, {
+        output: { hasHotel, hasFlight, hasProduct, hasMovie },
+      });
+    } catch (err) {
+      logger.warn('runPipeline:filter_extraction_failed', { err: err instanceof Error ? err.message : String(err) });
+      addSpan(trace, 'filter_extraction', filterExtractStarted, { error: String(err) });
+    }
+
+    const groundingStarted = Date.now();
+    let grounding: { needs_grounding: boolean; reason: string };
+    try {
+      grounding = await shouldUseGroundedRetrieval(ctx, rewrittenPrompt);
+    } catch (err) {
+      logger.warn('runPipeline:grounding_failed', { err: err instanceof Error ? err.message : String(err) });
+      grounding = { needs_grounding: true, reason: 'Grounding check failed, continuing with retrieval' };
+    }
+    addSpan(trace, 'grounding_decision', groundingStarted, {
+      output: { needs_grounding: grounding.needs_grounding, reason: grounding.reason?.slice(0, 100) },
     });
+    metrics.recordGroundingSkipped(!grounding.needs_grounding);
+
+    if (!grounding.needs_grounding) {
+      try {
+        // No retrieval: answer from knowledge only.
+        const systemPrompt =
+          'You are a helpful assistant. Answer the user\'s question clearly using your knowledge. Do not cite external sources; this is a conceptual or general-knowledge question. Be concise and accurate.';
+        const summary = await callMainLLM(systemPrompt, rewrittenPrompt);
+        const ungroundedResult = {
+        vertical: 'other' as Vertical,
+        intent: 'browse' as const,
+        summary: summary.trim(),
+      } as PipelineResult;
+      const resultWithUi = attachUiDecision(ungroundedResult, ctx.message);
+      const usedHistory = ctx.history?.slice(-5) ?? [];
+      const debug: DebugInfo = {
+        originalQuery: ctx.message,
+        rewrittenQuery: rewrittenPrompt,
+        usedHistory,
+        mode,
+        interpretationSummary: 'Answered from general knowledge (no search).',
+        groundingDecision: { needs_grounding: false, reason: grounding.reason },
+        trace,
+      };
+      const firstParagraph = (resultWithUi.summary ?? '').split(/\n\n+/)[0]?.trim() ?? '';
+      const definitionBlurb =
+        firstParagraph.length > 0 && firstParagraph.length <= 600 ? firstParagraph : undefined;
+      const followUpSuggestions = await buildDynamicFollowUps(resultWithUi, ctx);
+      const finalPayload: PipelineResult = {
+        ...resultWithUi,
+        debug,
+        citations: [],
+        answerGeneratedAt: new Date().toISOString(),
+        ...(definitionBlurb && { definitionBlurb }),
+        ...(followUpSuggestions.length > 0 && { followUpSuggestions }),
+      };
+      if (shouldSampleForEval()) {
+        submitForHumanReview({
+          traceId: trace.traceId,
+          trace,
+          originalQuery: ctx.message,
+          rewrittenQuery: rewrittenPrompt,
+          summary: resultWithUi.summary,
+          routing: undefined,
+        });
+      }
+      if (mode === 'quick') {
+        await setCache(cacheKey, finalPayload, PIPELINE_CACHE_TTL_SECONDS);
+      }
+      if (ctx.sessionId) {
+        try {
+          await updateSession(ctx.sessionId, {
+            appendTurn: { query: ctx.message, answer: resultWithUi.summary ?? '' },
+          });
+        } catch (sessionErr) {
+          logger.warn('runPipeline:updateSession failed (ungrounded)', { sessionId: ctx.sessionId });
+        }
+      }
+      logger.info('runPipeline:ungrounded:done', { reason: grounding.reason.slice(0, 80) });
+      return finalPayload;
+      } catch (ungroundedErr) {
+        logger.warn('runPipeline:ungrounded_failed', { err: ungroundedErr instanceof Error ? ungroundedErr.message : String(ungroundedErr) });
+        // Fall through to normal retrieval so we don't get stuck.
+      }
+    }
+
+    const decomposeStarted = Date.now();
+    const subQueries = await decomposeIntoSubQueries(ctx, rewrittenPrompt);
+    const totalSubQueries = subQueries.length;
+    addSpan(trace, 'decompose', decomposeStarted, {
+      output: { subQueryCount: totalSubQueries },
+    });
+    metrics.recordDecomposition(totalSubQueries);
+    if (subQueries.length > 0) {
+      logger.info('runPipeline:decomposeIntoSubQueries:done', { totalSub: totalSubQueries });
+    }
 
     const usedHistory = ctx.history.slice(-5);
     const debug: DebugInfo = {
       originalQuery: ctx.message,
-      rewrittenQuery: plan.rewrittenPrompt,
+      rewrittenQuery: rewrittenPrompt,
       usedHistory,
       mode,
+      trace,
+      ...((extractedFilters?.hotel ?? extractedFilters?.flight ?? extractedFilters?.product ?? extractedFilters?.movie) && { extractedFilters }),
     };
 
-    const firstPassStarted = Date.now();
-    const depsWithCacheKey = { ...deps, retrievedContentCacheKey: planCacheKey };
-    const { result: initialResult, citations: initialCitations, routingInfo } =
-      await runVerticalAgentMulti(plan, depsWithCacheKey, ctx);
+    const retrievalStarted = Date.now();
+    const depsWithCacheKey = { ...deps, retrievedContentCacheKey: makePlanCacheKey(ctx) };
+    const { result: initialResult, citations: initialCitations, routingInfo, searchQueries: firstPassSearchQueries, primaryVertical } =
+      await runCentralRetrieval(rewrittenPrompt, subQueries, depsWithCacheKey, ctx, extractedFilters);
+    addSpan(trace, 'retrieval', retrievalStarted, {
+      output: {
+        searchQueriesCount: firstPassSearchQueries?.length ?? 0,
+        chosen: routingInfo?.chosen,
+        routingRationale: routingInfo?.routingDecision?.rationale,
+        retrievalQuality: initialResult.retrievalStats?.quality,
+        topKAvg: initialResult.retrievalStats?.topKAvg,
+      },
+    });
+    metrics.recordRouting(routingInfo?.chosen ? [routingInfo.chosen] : []);
+    if (routingInfo?.routingDecision) {
+      metrics.recordRoutingDecision(
+        routingInfo.routingDecision.primary,
+        routingInfo.routingDecision.confidence,
+        routingInfo.routingDecision.intentBasedNarrowed,
+      );
+    }
+    metrics.recordRetrievalQuality(initialResult.retrievalStats?.topKAvg ?? initialResult.retrievalStats?.avgScore ?? 0);
     let result: PipelineResult = initialResult;
     let citations: Citation[] = initialCitations;
 
     debug.routing = routingInfo;
+    debug.searchQueries = firstPassSearchQueries.length > 0 ? firstPassSearchQueries : undefined;
+    const retrievalCounts = {
+      hotel: initialResult.vertical === 'hotel' ? (initialResult.retrievalStats?.itemCount ?? 0) : 0,
+      flight: initialResult.vertical === 'flight' ? (initialResult.retrievalStats?.itemCount ?? 0) : 0,
+      product: initialResult.vertical === 'product' ? (initialResult.retrievalStats?.itemCount ?? 0) : 0,
+      movie: initialResult.vertical === 'movie' ? (initialResult.retrievalStats?.itemCount ?? 0) : 0,
+    };
+    debug.automatedEvalScores = runAutomatedEvals({
+      originalQuery: ctx.message ?? '',
+      rewrittenQuery: rewrittenPrompt,
+      extractedFilters: extractedFilters as Record<string, unknown> | undefined,
+      primaryRoute: routingInfo?.routingDecision?.primary ?? undefined,
+      sourcesUsed: routingInfo?.routingDecision?.sourcesUsed,
+      retrievalCounts,
+    });
+    if (!debug.interpretationSummary) {
+      debug.interpretationSummary = 'Searching for ' + (rewrittenPrompt || ctx.message).trim() + '.';
+    }
 
-    const firstPassDuration = Date.now() - firstPassStarted;
+    const firstPassDuration = Date.now() - retrievalStarted;
     const baseItemsCount =
       result.retrievalStats?.itemCount ?? getResultItemsCount(result);
     const maxItemsHint = result.retrievalStats?.maxItems ?? 20;
@@ -750,7 +1120,7 @@ export async function runPipeline(
         items: baseItemsCount,
       });
 
-      const fallbackOverview = await perplexityOverview(plan.rewrittenPrompt);
+      const fallbackOverview = await perplexityOverview(rewrittenPrompt);
       const fallbackCitations: Citation[] = (fallbackOverview.citations ?? []).map((c: PerplexityCitation) => ({
         id: c.id,
         url: c.url,
@@ -760,19 +1130,13 @@ export async function runPipeline(
         last_updated: c.last_updated,
       }));
       // Point 7: Reframe so user sees why web overview is there (avoid contradiction with cards).
-      // Point 4: When we have preference priority, hint which preference could be relaxed for more options.
-      const basePlanWithExtras = plan as VerticalPlan & { preferencePriority?: string[] };
-      const relaxHint =
-        basePlanWithExtras.preferencePriority?.length &&
-        basePlanWithExtras.preferencePriority.length > 0
-          ? `You might relax "${basePlanWithExtras.preferencePriority[basePlanWithExtras.preferencePriority.length - 1]}" for more options. `
-          : '';
+      const relaxHint = '';
       const fallbackReframe =
         `We found few structured options. ${relaxHint}Here's a broader view from the web:\n\n`;
       result = {
         ...result,
         vertical: 'other',
-        intent: plan.intent,
+        intent: 'browse',
         summary:
           (result.summary ?? '') +
           '\n\n---\n\n' +
@@ -792,42 +1156,39 @@ export async function runPipeline(
 
     if (mode === 'deep') {
       if (result.vertical === 'other') {
-        const timeSensitivity = await classifyTimeSensitivity(ctx);
-        if (timeSensitivity === 'time_sensitive') {
-          const extraStarted = Date.now();
-          const extraQuery = `${plan.rewrittenPrompt} key facts, pros and cons, timeline`;
-          const extraOverview = await perplexityOverview(extraQuery);
-          const extraDuration = Date.now() - extraStarted;
+        const extraStarted = Date.now();
+        const extraQuery = `${rewrittenPrompt} key facts, pros and cons, timeline`;
+        const extraOverview = await perplexityOverview(extraQuery);
+        const extraDuration = Date.now() - extraStarted;
 
-          logger.info('runPipeline:other_extra_wave:done', {
-            durationMs: extraDuration,
-          });
+        logger.info('runPipeline:other_extra_wave:done', {
+          durationMs: extraDuration,
+        });
 
-          const extraCitations: Citation[] = (extraOverview.citations ?? []).map((c: PerplexityCitation) => ({
-            id: c.id,
-            url: c.url,
-            title: c.title,
-            snippet: c.snippet,
-            date: c.date,
-            last_updated: c.last_updated,
-          }));
-          result = {
-            ...result,
-            summary:
-              (result.summary ?? '') +
-              '\n\nAdditional perspective from the web:\n' +
-              extraOverview.summary,
-            citations: [...(result.citations ?? []), ...extraCitations],
-          } as PipelineResult;
-          citations = result.citations ?? citations;
-        }
+        const extraCitations: Citation[] = (extraOverview.citations ?? []).map((c: PerplexityCitation) => ({
+          id: c.id,
+          url: c.url,
+          title: c.title,
+          snippet: c.snippet,
+          date: c.date,
+          last_updated: c.last_updated,
+        }));
+        result = {
+          ...result,
+          summary:
+            (result.summary ?? '') +
+            '\n\nAdditional perspective from the web:\n' +
+            extraOverview.summary,
+          citations: [...(result.citations ?? []), ...extraCitations],
+        } as PipelineResult;
+        citations = result.citations ?? citations;
       }
 
       const plannerStarted = Date.now();
       const decision = await planResearchStep({
         userQuery: ctx.message,
-        rewrittenQuery: plan.rewrittenPrompt,
-        vertical: plan.vertical,
+        rewrittenQuery: rewrittenPrompt,
+        vertical: primaryVertical,
         summaryDraft: result.summary ?? '',
         mode: 'deep',
       });
@@ -836,24 +1197,24 @@ export async function runPipeline(
         decision.type === 'extra_research'
           ? { decision: decision.type, newQuery: decision.newQuery }
           : { decision: decision.type };
+      const decisionExtras = decision as { confidence?: number; newQuery?: string };
       logger.info('runPipeline:planner:done', {
         decision: decision.type,
-        confidence: decision.confidence,
-        hasNewQuery: !!decision.newQuery,
+        confidence: decisionExtras.confidence,
+        hasNewQuery: !!decisionExtras.newQuery,
         durationMs: plannerDuration,
       });
 
-      // Deep mode enriches the existing plan (alternate phrasing, extra retrieval), does NOT restart pipeline or create a second plan.
-      // Alternate rewrites are retrieval-only variants (not semantic truth); plan.rewrittenPrompt stays the canonical rewrite.
+      // Deep mode: alternate phrasing, extra retrieval. Build minimal plan only for runVerticalSingle.
       if (result.vertical !== 'other') {
-        const rewrites = await getRewrittenQueriesForMode(ctx, plan.vertical);
+        const rewrites = await getRewrittenQueriesForMode(ctx, primaryVertical);
         if (rewrites.length > 1) {
           const extraStarted = Date.now();
           const extraCitations: Citation[] = [];
           let mergedSummary = result.summary ?? '';
 
           for (const rq of rewrites.slice(1)) {
-            const planWithRewrite = { ...plan, rewrittenPrompt: rq } as VerticalPlan;
+            const planWithRewrite = { vertical: primaryVertical, intent: 'browse' as const, rewrittenPrompt: rq } as VerticalPlan;
             const extraResult = await runVerticalSingle(planWithRewrite, depsWithCacheKey, ctx);
             extraCitations.push(...(extraResult.citations ?? []));
             mergedSummary += '\n\nAdditional angle:\n' + (extraResult.summary ?? '');
@@ -861,7 +1222,7 @@ export async function runPipeline(
 
           const extraDuration = Date.now() - extraStarted;
           logger.info('runPipeline:deep_fanout:done', {
-            vertical: plan.vertical,
+            vertical: primaryVertical,
             rewritesCount: rewrites.length,
             durationMs: extraDuration,
           });
@@ -871,18 +1232,19 @@ export async function runPipeline(
         }
       }
 
-      // Extra research: same plan with new query phrasing; run primary vertical only and merge (no full understandQuery).
+      // Extra research: new query phrasing; run primary vertical only and merge.
+      const extraResearch = decision.type === 'extra_research' ? decision as { type: 'extra_research'; newQuery?: string; confidence?: number } : null;
       if (
-        decision.type === 'extra_research' &&
-        decision.newQuery &&
-        (decision.confidence ?? 0) >= 0.5
+        extraResearch &&
+        extraResearch.newQuery &&
+        (extraResearch.confidence ?? 0) >= 0.5
       ) {
         const extraStarted = Date.now();
-        const planWithNewQuery = { ...plan, rewrittenPrompt: decision.newQuery } as VerticalPlan;
+        const planWithNewQuery = { vertical: primaryVertical, intent: 'browse' as const, rewrittenPrompt: extraResearch.newQuery } as VerticalPlan;
         const extraResult = await runVerticalSingle(planWithNewQuery, depsWithCacheKey, ctx);
         const extraDuration = Date.now() - extraStarted;
         logger.info('runPipeline:extraResearch:done', {
-          vertical: plan.vertical,
+          vertical: primaryVertical,
           durationMs: extraDuration,
           items: extraResult.retrievalStats?.itemCount ?? getResultItemsCount(extraResult),
         });
@@ -925,14 +1287,23 @@ export async function runPipeline(
           history: [...(ctx.history ?? []), ctx.message],
         };
         const replanStarted = Date.now();
-        const newPlan = await understandQuery(replanCtx);
+        const rewriteResultReplan = await rewriteQuery(replanCtx);
+        const rewrittenPromptReplan = rewriteResultReplan.rewrittenPrompt;
+        const subQueriesReplan = await decomposeIntoSubQueries(replanCtx, rewrittenPromptReplan);
+        let extractedFiltersReplan: ExtractedFilters = {};
+        try {
+          extractedFiltersReplan = await extractFilters(replanCtx, rewrittenPromptReplan);
+        } catch (_) {
+          // use empty; retrieval will use defaults
+        }
         const replanCacheKey = makePlanCacheKey(replanCtx);
         const depsReplan = { ...deps, retrievedContentCacheKey: replanCacheKey };
-        const { result: replanResult, citations: replanCitations } = await runVerticalAgentMulti(
-          newPlan,
-          depsReplan,
-          replanCtx,
-        );
+        const { result: replanResult, citations: replanCitations, searchQueries: replanSearchQueries } =
+          await runCentralRetrieval(rewrittenPromptReplan, subQueriesReplan, depsReplan, replanCtx, extractedFiltersReplan);
+        if (replanSearchQueries.length > 0) {
+          debug.searchQueries = replanSearchQueries;
+          debug.interpretationSummary = 'Searching for ' + (rewrittenPromptReplan || '').trim() + '.';
+        }
         const replanDuration = Date.now() - replanStarted;
         logger.info('runPipeline:deepReplan:done', {
           durationMs: replanDuration,
@@ -1044,6 +1415,41 @@ export async function runPipeline(
         message: truncatedMessage,
       });
     }
+
+    // Persist conversation thread (Perplexity-style).
+    if (ctx.sessionId) {
+      try {
+        await updateSession(ctx.sessionId, {
+          appendTurn: { query: ctx.message, answer: resultWithUi.summary ?? '' },
+        });
+      } catch (sessionErr) {
+        logger.warn('runPipeline:updateSession failed', {
+          sessionId: ctx.sessionId,
+          err: sessionErr instanceof Error ? sessionErr.message : String(sessionErr),
+        });
+      }
+    }
+
+    if (
+      shouldSampleForEval({
+        routingConfidence: finalPayload.debug?.routing?.routingDecision?.confidence,
+        primaryRoute:
+          finalPayload.debug?.routing?.routingDecision?.primary ??
+          finalPayload.debug?.routing?.chosen ??
+          null,
+        automatedEvalScores: finalPayload.debug?.automatedEvalScores,
+      })
+    ) {
+      submitForHumanReview({
+        traceId: trace.traceId,
+        trace,
+        originalQuery: ctx.message,
+        rewrittenQuery: rewrittenPrompt,
+        searchQueries: finalPayload.debug?.searchQueries,
+        routing: finalPayload.debug?.routing,
+        summary: finalPayload.summary,
+      });
+    }
     return finalPayload;
   } catch (err) {
     const totalDuration = Date.now() - startedAt;
@@ -1053,5 +1459,8 @@ export async function runPipeline(
       totalDurationMs: totalDuration,
     });
     throw err;
+  } finally {
+    finishTrace(trace);
+    metrics.finish(pipelineStartedAt);
   }
 }

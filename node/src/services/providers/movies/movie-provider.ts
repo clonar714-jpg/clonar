@@ -1,4 +1,6 @@
 // src/services/providers/movies/movie-provider.ts
+// Canonical movie showtime shape for all providers. Aligns with Perplexity/ChatGPT/cinema
+// display: poster, runtime, genre, rating, cinema address, end time.
 import { MovieTicketFilters } from '@/types/verticals';
 
 export interface MovieShowtime {
@@ -13,8 +15,20 @@ export interface MovieShowtime {
   currency: string;
   availableSeats: number;
   bookingUrl?: string;
-  lat?: number;
-  lng?: number;
+  /** Movie poster image URL. */
+  posterUrl?: string;
+  /** Runtime in minutes. */
+  runtimeMinutes?: number;
+  /** Genre(s), e.g. "Action", "Drama". */
+  genre?: string[];
+  /** Content rating (e.g. "PG-13", "R"). */
+  contentRating?: string;
+  /** Cinema address for directions. */
+  cinemaAddress?: string;
+  /** End time (HH:MM) when available. */
+  endTime?: string;
+  /** Screen or theater name. */
+  screenName?: string;
 }
 
 export interface MovieProvider {

@@ -1,5 +1,9 @@
 // src/services/query-understanding.ts
 // Pipeline: (0) Decompose first → (A) Classify vertical/intent → (B) Rewrite → (C) Extract filters. Decomposition discovers all parts (including "other") before we commit to verticals.
+//
+// NOTE: Understanding outputs are advisory only. Retrieval routing is decided centrally by retrieval-router.
+// No retrieval decision depends on primaryVertical, candidate vertical scores, or intent confidence.
+// If classifyVertical is wrong, retrieval MUST still succeed (router uses sub-query content only).
 import {
   QueryContext,
   Intent,
@@ -55,10 +59,58 @@ export function safeParseJson(raw: string, context: string): Record<string, any>
   }
 }
 
+/**
+ * True when the user is asking for a definition, explanation, or conceptual answer —
+ * not for a list of results (hotels, flights, products, etc.). Used to avoid nudging
+ * vertical classification to hotel/flight/product/movie for "what is hotel", "define flight", etc.
+ */
+function isDefinitionalOrInformationalQuery(message: string): boolean {
+  const lower = message.toLowerCase().trim();
+  const patterns = [
+    /^what\s+is\s+(a\s+)?/,
+    /^what\s+are\s+/,
+    /^define\s+/,
+    /^definition\s+of\s+/,
+    /^explain\s+/,
+    /^meaning\s+of\s+/,
+    /^how\s+does\s+.+\s+work\s*$/,
+    /^who\s+is\s+/,
+    /^why\s+is\s+/,
+  ];
+  return patterns.some((re) => re.test(lower));
+}
+
 /** One part of a decomposed query: the sub-query text and the vertical it belongs to (product, hotel, flight, movie, or other for web search / no vertical). */
 export interface DecomposedPart {
   part: string;
   vertical: Vertical;
+}
+
+/** Output of query understanding (intent, filters, decomposition) before building the execution plan. Split from execution so we can test/evolve understanding vs strategy separately. */
+export interface QueryUnderstanding {
+  rewrittenPrompt: string;
+  rewriteConfidence: number;
+  rewriteAlternatives?: string[];
+  intent: Intent;
+  /** Confidence in [0,1] for intent classification. */
+  intentConfidence: number;
+  verticalScores: { vertical: Vertical; score: number }[];
+  initialPrimary: { vertical: Vertical; score: number };
+  initialSecondary: { vertical: Vertical; score: number } | undefined;
+  useDecomposedFlow: boolean;
+  partIntents: Intent[];
+  partPreferenceContexts: (string | undefined)[];
+  preferenceContext: string | undefined;
+  product: ProductFilters | undefined;
+  hotel: HotelFilters | undefined;
+  flight: FlightFilters | undefined;
+  movie: MovieTicketFilters | undefined;
+  decomposedContext: Partial<Record<Vertical, string>> | undefined;
+  entities: ExtractedEntities | undefined;
+  ambiguity: AmbiguityInfo | undefined;
+  timeSensitivity: TimeSensitivity;
+  preferencePriority: string[];
+  softConstraints: { airport: string } | undefined;
 }
 
 /**
@@ -66,6 +118,7 @@ export interface DecomposedPart {
  * (so we split already-resolved text; we don't rely on the decomposer to add cities).
  * "other" = general web search, things to do, weather, or anything that doesn't fit the four structured verticals.
  * Returns empty array if decomposition fails (caller falls back to classify-then-extract).
+ * NOTE: Understanding outputs are advisory only. Retrieval routing is decided centrally by retrieval-router.
  */
 export async function decomposeQueryFirst(
   ctx: QueryContext,
@@ -87,6 +140,7 @@ Rules:
 - "flight" = plane tickets, air travel
 - "movie" = cinema, showtimes, movie tickets
 - "other" = general web search: things to do, weather, facts, "no vertical", or anything that doesn't fit the four above. Use "other" for half-query that belongs to no vertical.
+- Use "other" for definitional/conceptual questions even if they mention a domain: "what is a hotel?", "define flight", "explain product lifecycle" → the user wants an answer, not a list of results. Only use "hotel"/"flight"/"product"/"movie" when the user wants to find, book, browse, or compare items.
 
 If the query is a single clear intent (e.g. only "hotels in Boston"), return ONE part. If the user asked for multiple different things (e.g. flights to NYC + hotels in Philadelphia + weather there), return one part per thing. Half of the query can be one vertical and half "other". Each "part" should be a short sub-query that preserves the resolved wording (e.g. "hotels near NYC airport" not "hotels near airport" if the query already says NYC).
 
@@ -110,14 +164,21 @@ Return JSON only: [{"part": "short sub-query or request for this part", "vertica
   return valid;
 }
 
-export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> {
-  // Step 1: Rewrite full query first (domain-agnostic). Resolves "airport" → "NYC airport" etc. so we don't rely on decomposer to add cities.
-  const rewrittenQuery = await rewriteFullQuery(ctx);
+/** Query understanding only (intent, filters, decomposition). Use buildExecutionPlan(understanding) to get the execution plan. */
+export async function understandQuery(ctx: QueryContext): Promise<QueryUnderstanding> {
+  // Step 1: Rewrite (language normalization only). Routes set ctx.conversationThread from session (Perplexity-style) so rewrite can resolve follow-ups from prior turns.
+  const rewriteResult = await rewriteFullQuery(ctx);
+  const effectiveRewrite =
+    rewriteResult.confidence >= REWRITE_CONFIDENCE_THRESHOLD
+      ? rewriteResult.rewrittenQuery
+      : ctx.message.trim();
+  const rewrittenQuery = effectiveRewrite;
 
   // Step 2: Decompose the rewritten query — discover all parts (including "other"). Parts get already-resolved text.
   const parts = await decomposeQueryFirst(ctx, rewrittenQuery);
 
-  // If decomposition gave us 0 or 1 part, fall back to classic flow (classify whole query, then extract)
+  // If decomposition gave us 0 or 1 part, fall back to classic flow (classify whole query, then extract).
+  // NOTE: Classify vertical/intent are hints only. Retrieval is never skipped or narrowed based on these.
   const useDecomposedFlow = parts.length >= 2;
   let verticalScores: { vertical: Vertical; score: number }[];
   let intent: Intent;
@@ -126,20 +187,24 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
   let initialPrimary: { vertical: Vertical; score: number };
   let initialSecondary: { vertical: Vertical; score: number } | undefined;
 
+  let intentConfidence = 1;
   if (!useDecomposedFlow) {
-    // Classic flow: classify whole query, use rewrittenQuery from step 1, then extract
+    // Classic flow: classify whole query, use rewrittenQuery from step 1, then extract (advisory only).
     const [scores, intentResult] = await Promise.all([
       classifyVerticalWithScores(ctx),
       classifyIntent(ctx),
     ]);
     verticalScores = scores;
-    intent = intentResult;
+    intent = intentResult.intent;
+    intentConfidence = intentResult.confidence;
     initialPrimary = verticalScores[0] ?? { vertical: 'other' as Vertical, score: 1 };
     initialSecondary = verticalScores[1];
     preferenceContext = await extractPreferenceContext(ctx, rewrittenQuery, initialPrimary.vertical);
   } else {
     // Decomposed flow: parts are unordered; assign equal initial scores — orchestrator reorders by retrieval quality (no false priority from LLM order).
-    intent = await classifyIntent(ctx);
+    const intentResult = await classifyIntent(ctx);
+    intent = intentResult.intent;
+    intentConfidence = intentResult.confidence;
     const partScores = parts.map((p) => ({ vertical: p.vertical, score: 0.9 }));
     verticalScores = partScores;
     initialPrimary = partScores[0];
@@ -157,7 +222,8 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
     );
   }
 
-  // Step C: Extract structured filters — from rewritten query (classic) or from each part's text (decomposed)
+  // Step C: Extract structured filters — from rewritten query (classic) or from each part's text (decomposed).
+  // NOTE: Extracted filters are hints only (e.g. destination, dates). Retrieval router decides which sources run from sub-query content.
   let product: ProductFilters | undefined;
   let hotel: HotelFilters | undefined;
   let flight: FlightFilters | undefined;
@@ -190,6 +256,12 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
     }
   }
 
+  // Perplexity-style: merge last-used filters from session (session default, extracted overrides).
+  if (ctx.lastHotelFilters && hotel) hotel = { ...ctx.lastHotelFilters, ...hotel };
+  if (ctx.lastFlightFilters && flight) flight = { ...ctx.lastFlightFilters, ...flight } as FlightFilters;
+  if (ctx.lastMovieFilters && movie) movie = { ...ctx.lastMovieFilters, ...movie };
+  if (ctx.lastProductFilters && product) product = { ...ctx.lastProductFilters, ...product };
+
   // Build decomposedContext from parts so each vertical gets only its slice (and "other" gets merged other-parts)
   let decomposedContext: Partial<Record<Vertical, string>> | undefined;
   if (useDecomposedFlow && parts.length >= 1) {
@@ -216,8 +288,60 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
 
   const softAirport = detectSoftAirport(rewrittenQuery);
   const softConstraints = softAirport ? { airport: softAirport } : undefined;
+  const timeSensitivity = await classifyTimeSensitivity(ctx);
 
-  // Step D: Build candidates from verticalScores (classic) or from parts (decomposed). When decomposed, attach scoped intent and preference per candidate.
+  return {
+    rewrittenPrompt: rewrittenQuery,
+    rewriteConfidence: rewriteResult.confidence,
+    rewriteAlternatives: rewriteResult.alternatives?.length ? rewriteResult.alternatives : undefined,
+    intent,
+    intentConfidence,
+    verticalScores,
+    initialPrimary,
+    initialSecondary,
+    useDecomposedFlow,
+    partIntents,
+    partPreferenceContexts,
+    preferenceContext,
+    product,
+    hotel,
+    flight,
+    movie,
+    decomposedContext,
+    entities,
+    ambiguity,
+    timeSensitivity,
+    preferencePriority,
+    softConstraints,
+  };
+}
+
+/** Build execution plan (candidates + primary vertical + filter slots) from query understanding. Separates "what we understood" from "how we'll execute". NOTE: Plan vertical/candidates are advisory; retrieval router decides sources from sub-query content only. */
+export function buildExecutionPlan(understanding: QueryUnderstanding): VerticalPlan {
+  const {
+    rewrittenPrompt: rewrittenQuery,
+    intent,
+    intentConfidence,
+    verticalScores,
+    initialPrimary,
+    useDecomposedFlow,
+    partIntents,
+    partPreferenceContexts,
+    preferenceContext,
+    product,
+    hotel,
+    flight,
+    movie,
+    decomposedContext,
+    entities,
+    ambiguity,
+    timeSensitivity,
+    preferencePriority,
+    softConstraints,
+    rewriteConfidence,
+    rewriteAlternatives,
+  } = understanding;
+
   const candidates: PlanCandidate[] = verticalScores.map((vs, idx) => {
     const intentForCandidate = useDecomposedFlow && partIntents[idx] != null ? partIntents[idx]! : intent;
     const prefForCandidate = useDecomposedFlow ? partPreferenceContexts[idx] : undefined;
@@ -225,6 +349,7 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
       vertical: vs.vertical,
       intent: intentForCandidate,
       score: vs.score,
+      confidence: vs.score,
       ...(prefForCandidate && { preferenceContext: prefForCandidate }),
     };
     if (vs.vertical === 'product' && product) base.productFilters = product;
@@ -234,35 +359,33 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
     return base;
   });
 
-  // Step E: Build plan with initialPrimary.vertical for API shape only; orchestrator decides final presentation from retrieval quality.
   const vertical = initialPrimary.vertical;
   const now = new Date();
-  const timeSensitivity = await classifyTimeSensitivity(ctx);
   const planExtras = {
     ...(preferenceContext && { preferenceContext }),
     ...(decomposedContext && Object.keys(decomposedContext).length > 0 && { decomposedContext }),
     ...(entities && (entities.entities?.length || entities.locations?.length || entities.concepts?.length) && { entities }),
-    // Only attach ambiguity when unresolved — suppresses noise when history/context already resolved it.
     ...(ambiguity && !ambiguity.resolved && { ambiguity }),
     timeSensitivity,
     ...(preferencePriority.length > 0 && { preferencePriority }),
     ...(softConstraints && { softConstraints }),
+    rewriteConfidence,
+    ...(rewriteAlternatives?.length ? { rewriteAlternatives } : {}),
+    intentConfidence,
   };
-  let plan: VerticalPlan;
   switch (vertical) {
     case 'product':
-      plan = {
-        vertical,
+      return {
+        vertical: 'product',
         intent,
         rewrittenPrompt: rewrittenQuery,
         product: product ?? { query: rewrittenQuery },
         candidates,
         ...planExtras,
-      };
-      break;
+      } as VerticalPlan;
     case 'hotel':
-      plan = {
-        vertical,
+      return {
+        vertical: 'hotel',
         intent,
         rewrittenPrompt: rewrittenQuery,
         hotel:
@@ -274,11 +397,10 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
           },
         candidates,
         ...planExtras,
-      };
-      break;
+      } as VerticalPlan;
     case 'flight':
-      plan = {
-        vertical,
+      return {
+        vertical: 'flight',
         intent,
         rewrittenPrompt: rewrittenQuery,
         flight:
@@ -290,11 +412,10 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
           },
         candidates,
         ...planExtras,
-      };
-      break;
+      } as VerticalPlan;
     case 'movie':
-      plan = {
-        vertical,
+      return {
+        vertical: 'movie',
         intent,
         rewrittenPrompt: rewrittenQuery,
         movie:
@@ -305,18 +426,16 @@ export async function understandQuery(ctx: QueryContext): Promise<VerticalPlan> 
           },
         candidates,
         ...planExtras,
-      };
-      break;
+      } as VerticalPlan;
     default:
-      plan = {
+      return {
         vertical: 'other',
         intent,
         rewrittenPrompt: rewrittenQuery,
         candidates,
         ...planExtras,
-      };
+      } as VerticalPlan;
   }
-  return plan;
 }
 
 type VerticalScore = { vertical: Vertical; score: number };
@@ -335,7 +454,8 @@ Important:
 - Use double quotes around keys and string values.
 
 Examples:
-- Hotels, stays -> [{"vertical":"hotel","score":1}]
+- Hotels, stays, "find hotels in Boston" -> [{"vertical":"hotel","score":1}]
+- "What is a hotel?" / "define flight" / "explain product" -> [{"vertical":"other","score":1}] (user wants an answer, not a list)
 - Flights, plane tickets -> [{"vertical":"flight","score":1}]
 - Headphones, laptops -> [{"vertical":"product","score":1}]
 - Movies, cinema, tickets -> [{"vertical":"movie","score":1}]
@@ -386,7 +506,10 @@ Recent history: ${JSON.stringify(recentHistory)}
     /movie|cinema|theater|tickets?\b|showtime/.test(q);
 
   const primary = result[0];
-  if (primary.vertical === 'other') {
+  // Perplexity-aligned: do NOT nudge to a vertical when the user is asking "what is X", "define X", etc.
+  // They want an LLM answer, not hotel/flight/product/movie list UI.
+  const isDefinitional = isDefinitionalOrInformationalQuery(ctx.message);
+  if (primary.vertical === 'other' && !isDefinitional) {
     let suspected: Vertical | null = null;
     if (looksHotel) suspected = 'hotel';
     else if (looksFlight) suspected = 'flight';
@@ -416,16 +539,22 @@ Recent history: ${JSON.stringify(recentHistory)}
   return result;
 }
 
-// Step A: Intent classification using query + history
-async function classifyIntent(ctx: QueryContext): Promise<Intent> {
+export interface IntentWithConfidence {
+  intent: Intent;
+  confidence: number;
+}
+
+// Step A: Intent classification using query + history; returns confidence in [0,1].
+async function classifyIntent(ctx: QueryContext): Promise<IntentWithConfidence> {
   const recentHistory = ctx.history.slice(-3);
   const prompt = `
-Return JSON {"intent":"browse"|"compare"|"buy"|"book"}.
+Return JSON {"intent":"browse"|"compare"|"buy"|"book","confidence":number in [0,1]}.
 
 Rules:
 - Return ONLY valid JSON.
 - Do NOT wrap the JSON in markdown or code fences.
 - Use double quotes for keys and string values.
+- Set "confidence" to how sure you are (1.0 = clear, <0.7 = ambiguous).
 
 - browse: wants ideas/options, not necessarily purchase
 - compare: wants pros/cons or ranking
@@ -438,8 +567,11 @@ Recent history: ${JSON.stringify(recentHistory)}
   const raw = await callSmallLLM(prompt);
   const parsed = safeParseJson(raw, 'classifyIntent');
   const i = parsed?.intent;
-  if (typeof i === 'string' && ['browse', 'compare', 'buy', 'book'].includes(i)) return i as Intent;
-  return 'browse';
+  const intent = typeof i === 'string' && ['browse', 'compare', 'buy', 'book'].includes(i) ? (i as Intent) : 'browse';
+  let confidence = typeof parsed?.confidence === 'number' ? parsed.confidence : 1;
+  if (confidence < 0) confidence = 0;
+  if (confidence > 1) confidence = 1;
+  return { intent, confidence };
 }
 
 /** Scoped intent: classify intent from a single slice (e.g. per-vertical when decomposed). Lightweight; used when decomposedContext exists. */
@@ -494,33 +626,36 @@ Recent history: ${JSON.stringify(recentHistory)}
   return 'timeless';
 }
 
+/** Result of rewriteFullQuery: rewritten text, confidence in [0,1], and optional alternatives when uncertain. */
+export interface RewriteResult {
+  rewrittenQuery: string;
+  confidence: number;
+  alternatives?: string[];
+  /** When the rewrite module detected conflicting constraints. */
+  conflicts?: string[];
+  /** When the module could not normalize and suggests asking the user for clarification. */
+  needsClarification?: boolean;
+}
+
+const REWRITE_CONFIDENCE_THRESHOLD = 0.7;
+
 /**
- * Single canonical semantic rewrite (domain-agnostic). All other rewrites (rewriteQueryWithHistory,
- * getRewrittenQueriesForMode) are retrieval-only variants — do not treat them as semantic truth.
+ * Gated query rewrite: normalize only (typos, noise, long/messy, ambiguity, conflicts).
+ * Uses the Query Rewrite module; no reasoning, planning, decomposition, or intent.
+ * Context binding is handled separately (assume resolved context provided if needed).
  */
-async function rewriteFullQuery(ctx: QueryContext): Promise<string> {
-  const recentHistory = (ctx.history ?? []).slice(-5);
-  const historyContext =
-    recentHistory.length > 0
-      ? `\n\nPrevious queries:\n${recentHistory.map((q, i) => `${i + 1}. ${q}`).join('\n')}\n`
-      : '';
-
-  const prompt = `
-Rewrite the user's query as one clear, explicit sentence. Resolve vague references.
-
-Rules:
-- Use conversation history: "there", "that place", "same area" → use location from previous queries.
-- TIME: You MUST convert relative time phrases to explicit dates. Output actual dates in YYYY-MM-DD or ranges (e.g. "2025-02-01 to 2025-02-02"). Examples: "this weekend" → use the next Saturday–Sunday as YYYY-MM-DD; "next month", "same dates" → resolve using history or the upcoming month. Do not leave relative time in the rewritten query.
-- Within the SAME query: if the user mentions a city in one part (e.g. "flights to NYC") and something vague in another (e.g. "hotels near airport"), resolve the vague part using the city (e.g. "hotels near NYC airport").
-- Keep all parts of the query; keep budget/quality wording. Do not favor one domain; keep the full request.
-
-Current query: ${JSON.stringify(ctx.message)}
-${historyContext}
-
-Return ONLY the rewritten query as plain text (no JSON, no explanation). Include explicit YYYY-MM-DD for any date references.
-`;
-  const raw = await callSmallLLM(prompt);
-  return raw.trim();
+async function rewriteFullQuery(ctx: QueryContext): Promise<RewriteResult> {
+  const { normalizeQuery, toRewriteResult } = await import('./query-rewrite');
+  const output = await normalizeQuery(ctx);
+  const originalMessage = ctx.message?.trim() ?? '';
+  const result = toRewriteResult(output, originalMessage);
+  return {
+    rewrittenQuery: result.rewrittenQuery,
+    confidence: result.confidence,
+    alternatives: result.alternatives?.length ? result.alternatives : undefined,
+    ...(result.conflicts?.length && { conflicts: result.conflicts }),
+    ...(result.needsClarification && { needsClarification: true }),
+  };
 }
 
 /** Extract entities, locations, and concepts for structured anchors (rewrite/filter extraction). */
@@ -580,20 +715,39 @@ Return JSON only: {"queries": ["query1", "query2", ...]}. No markdown, no code f
 }
 
 /** Within-vertical fan-out: decompose one part into multiple focused sub-queries for retrieval (e.g. "50L backpack" + "beginner" + "Philmont"). */
-async function decomposeWithinVertical(partText: string, vertical: Vertical): Promise<string[]> {
+export async function decomposeWithinVertical(partText: string, vertical: Vertical): Promise<string[]> {
   const prompt = `
-Break this ${vertical} request into 2-5 focused sub-queries that each target a different aspect (e.g. product type, size, use case, location). Each sub-query should be a short, search-friendly phrase. We will run retrieval for each sub-query and combine results.
+Break this ${vertical} request into 2-6 focused sub-queries that each target a different aspect (e.g. product type, size, use case, location). Each sub-query should be a short, search-friendly phrase. We will run retrieval for each sub-query and combine results (Perplexity-style).
 
 Request: ${JSON.stringify(partText)}
 
-Return JSON only: {"subQueries": ["sub1", "sub2", ...]}. No markdown, no code fences. Use double quotes. If the request is already a single clear query, return one item.
+Return JSON only: {"subQueries": ["sub1", "sub2", ...]}. No markdown, no code fences. Use double quotes. If the request is already a single clear query, return one item. Prefer 3-6 sub-queries when the request has multiple dimensions.
 `;
   const raw = await callSmallLLM(prompt);
   const p = safeParseJson(raw, 'decomposeWithinVertical');
   const arr = Array.isArray(p?.subQueries) ? p.subQueries : [];
-  const valid = arr.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).slice(0, 5);
+  const valid = arr.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).slice(0, 8);
   if (valid.length === 0) return [partText.slice(0, 200)];
   return valid;
+}
+
+const MAX_SUB_QUERIES_TOTAL = 12;
+const MAX_SUB_QUERIES_PER_VERTICAL = 8;
+
+/**
+ * Decomposition for retrieval only: one resolved query → flat list of sub-queries (query-decomposition module).
+ * No vertical/intent in the decomposition step; routing is handled by the retriever.
+ */
+export async function decomposeIntoSubQueries(
+  ctx: QueryContext,
+  rewrittenPrompt: string,
+): Promise<string[]> {
+  const { decomposeForRetrieval } = await import('./query-decomposition');
+  const isFollowUpResolved = !!(ctx.conversationThread?.length);
+
+  const text = rewrittenPrompt?.trim() || ctx.message.trim();
+  const subQueries = await decomposeForRetrieval(text, { isFollowUpResolved });
+  return subQueries.length > 0 ? subQueries.slice(0, MAX_SUB_QUERIES_PER_VERTICAL) : [];
 }
 
 // Step B: Query rewriting with history (resolves vague references like "there", "this weekend")

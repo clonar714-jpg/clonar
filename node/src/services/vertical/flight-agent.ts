@@ -16,6 +16,8 @@ export interface FlightAgentResult {
   flights: Flight[];
   citations?: Citation[];
   retrievalStats?: { vertical: 'flight'; itemCount: number; maxItems?: number; avgScore?: number; topKAvg?: number };
+  /** Queries actually run for retrieval (for UI transparency). */
+  searchQueries?: string[];
 }
 
 const GROUNDING_SYSTEM = `You are a flight booking assistant. You receive two separate sections: Working memory (conversation context) and Retrieved content (factual source only). Use ONLY the Retrieved content section for factual claims and recommendations; Working memory is for intent and preferences only. This separation prevents context contamination.
@@ -39,29 +41,38 @@ export async function runFlightAgent(
 ): Promise<FlightAgentResult> {
   const filters = plan.flight;
   const text = plan.decomposedContext?.flight ?? plan.rewrittenPrompt;
-  const llmQueries = await searchReformulationPerPart(text, 'flight');
-  let queriesToRun = llmQueries.length > 0 ? llmQueries : [plan.rewrittenPrompt.trim()];
-  // Perplexity-aligned: feed location/entity signals into at least one retrieval variant (e.g. "flights to JFK").
-  const locations = plan.entities?.locations ?? [];
-  const entities = plan.entities?.entities ?? [];
-  const anchors = [...locations, ...entities].filter(Boolean).slice(0, 2);
-  for (const anchor of anchors) {
-    const variant = `${text} ${anchor}`.trim();
-    if (variant && !queriesToRun.some((q) => q.toLowerCase().includes(anchor.toLowerCase()))) {
-      queriesToRun = [...queriesToRun, variant];
-    }
-  }
+  // Sub-queries are a flat list now; vertical agents run only when there are no sub-queries, so always use fallback.
+  const planFlightQueries: string[] | undefined = undefined;
+  let queriesToRun: string[] =
+    planFlightQueries != null && planFlightQueries.length > 0
+      ? planFlightQueries
+      : (await (async () => {
+          const llmQueries = await searchReformulationPerPart(text, 'flight');
+          let q = llmQueries.length > 0 ? llmQueries : [plan.rewrittenPrompt.trim()];
+          const locations = plan.entities?.locations ?? [];
+          const entities = plan.entities?.entities ?? [];
+          const anchors = [...locations, ...entities].filter(Boolean).slice(0, 2);
+          for (const anchor of anchors) {
+            const variant = `${text} ${anchor}`.trim();
+            if (variant && !q.some((x) => x.toLowerCase().includes(anchor.toLowerCase()))) q = [...q, variant];
+          }
+          return q;
+        })());
 
   const allFlights: Flight[] = [];
   const allSnippets: Array<{ id: string; url: string; title?: string; text: string; score?: number }> = [];
   const seenFlightKeys = new Set<string>();
 
-  for (const query of queriesToRun) {
-    const { flights, snippets } = await deps.retriever.searchFlights({
-      ...filters,
-      rewrittenQuery: query,
-      ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
-    });
+  const searchResults = await Promise.all(
+    queriesToRun.map((query) =>
+      deps.retriever.searchFlights({
+        ...filters,
+        rewrittenQuery: query,
+        ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
+      }),
+    ),
+  );
+  for (const { flights, snippets } of searchResults) {
     for (const f of flights) {
       const key = flightKey(f);
       if (!seenFlightKeys.has(key)) {
@@ -142,5 +153,6 @@ Flight list (from retrieved content): ${JSON.stringify(flights.slice(0, 15).map(
       avgScore,
       topKAvg,
     },
+    searchQueries: queriesToRun,
   };
 }

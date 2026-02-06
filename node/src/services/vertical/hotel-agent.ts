@@ -15,6 +15,8 @@ export interface HotelAgentResult {
   hotels: Hotel[];
   citations?: Citation[];
   retrievalStats?: { vertical: 'hotel'; itemCount: number; maxItems?: number; avgScore?: number; topKAvg?: number };
+  /** Queries actually run for retrieval (for UI transparency, e.g. "Searching for..."). */
+  searchQueries?: string[];
 }
 
 const GROUNDING_SYSTEM = `You are a hotel search assistant. You receive two separate sections: Working memory (conversation context) and Retrieved content (factual source only). Use ONLY the Retrieved content section for factual claims and recommendations; Working memory is for intent and preferences only. This separation prevents context contamination.
@@ -53,39 +55,46 @@ export async function runHotelAgent(
 ): Promise<HotelAgentResult> {
   const filters = plan.hotel;
   const text = plan.decomposedContext?.hotel ?? plan.rewrittenPrompt;
-  const llmQueries = await searchReformulationPerPart(text, 'hotel');
-  let queriesToRun = llmQueries.length > 0 ? llmQueries : getSearchQueriesFallback(plan);
-  // Perplexity-aligned: when decomposed slice has multiple segments (e.g. "flights NYC; cheap"), add each as a retrieval variant for broader recall.
-  const slice = plan.decomposedContext?.hotel;
-  if (slice?.includes(';')) {
-    const segments = slice.split(';').map((s) => s.trim()).filter(Boolean).slice(0, 3);
-    for (const seg of segments) {
-      if (seg && !queriesToRun.some((q) => q.trim().toLowerCase() === seg.toLowerCase())) {
-        queriesToRun = [...queriesToRun, seg];
-      }
-    }
-  }
-  // Perplexity-aligned: feed landmark/entity signals into at least one retrieval variant for better recall (e.g. "hotels near Stanford campus").
-  const locations = plan.entities?.locations ?? [];
-  const entities = plan.entities?.entities ?? [];
-  const landmarks = [...locations, ...entities].filter(Boolean).slice(0, 2);
-  for (const landmark of landmarks) {
-    const variant = `${text} near ${landmark}`.trim();
-    if (variant && !queriesToRun.some((q) => q.toLowerCase().includes(landmark.toLowerCase()))) {
-      queriesToRun = [...queriesToRun, variant];
-    }
-  }
+  // Sub-queries are a flat list now; vertical agents run only when there are no sub-queries, so always use fallback.
+  const planHotelQueries: string[] | undefined = undefined;
+  let queriesToRun: string[] =
+    planHotelQueries != null && planHotelQueries.length > 0
+      ? planHotelQueries
+      : (await (async () => {
+          const llmQueries = await searchReformulationPerPart(text, 'hotel');
+          let q = llmQueries.length > 0 ? llmQueries : getSearchQueriesFallback(plan);
+          const slice = plan.decomposedContext?.hotel;
+          if (slice?.includes(';')) {
+            const segments = slice.split(';').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+            for (const seg of segments) {
+              if (seg && !q.some((x) => x.trim().toLowerCase() === seg.toLowerCase())) q = [...q, seg];
+            }
+          }
+          const locations = plan.entities?.locations ?? [];
+          const entities = plan.entities?.entities ?? [];
+          const landmarks = [...locations, ...entities].filter(Boolean).slice(0, 2);
+          for (const landmark of landmarks) {
+            const variant = `${text} near ${landmark}`.trim();
+            if (variant && !q.some((x) => x.toLowerCase().includes(landmark.toLowerCase()))) q = [...q, variant];
+          }
+          return q;
+        })());
 
   const allHotels: Hotel[] = [];
   const allSnippets: Array<{ id: string; url: string; title?: string; text: string; score?: number }> = [];
   const seenHotelKeys = new Set<string>();
 
-  for (const query of queriesToRun) {
-    const { hotels, snippets } = await deps.retriever.searchHotels({
-      ...filters,
-      rewrittenQuery: query,
-      ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
-    });
+  // Perplexity-style: run sub-queries in parallel (each triggers its own search).
+  const searchResults = await Promise.all(
+    queriesToRun.map((query) =>
+      deps.retriever.searchHotels({
+        ...filters,
+        rewrittenQuery: query,
+        ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
+      }),
+    ),
+  );
+  for (const { hotels, snippets } of searchResults) {
     for (const h of hotels) {
       const key = hotelKey(h);
       if (!seenHotelKeys.has(key)) {
@@ -172,5 +181,6 @@ Hotel list (from retrieved content): ${JSON.stringify(hotels.slice(0, 20).map((h
       avgScore,
       topKAvg,
     },
+    searchQueries: queriesToRun,
   };
 }

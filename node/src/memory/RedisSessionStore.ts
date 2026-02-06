@@ -100,11 +100,8 @@ export class RedisSessionStore implements SessionStore {
       
       await this.client!.setex(key, this.ttl, data);
 
-      console.log(`💾 RedisSessionStore: Saved session state for ${sessionId}:`, {
-        domain: state.domain,
-        brand: state.brand,
-        category: state.category,
-        price: state.price,
+      console.log(`💾 RedisSessionStore: Saved session for ${sessionId}`, {
+        threadTurns: state.conversationThread?.length ?? 0,
       });
     } catch (err: any) {
       console.error(`❌ RedisSessionStore.set error for ${sessionId}:`, err.message);

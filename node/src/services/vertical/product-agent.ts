@@ -18,6 +18,8 @@ export interface ProductAgentResult {
   products: Product[];
   citations?: Citation[];
   retrievalStats?: { vertical: 'product'; itemCount: number; maxItems?: number; avgScore?: number; topKAvg?: number };
+  /** Queries actually run for retrieval (for UI transparency). */
+  searchQueries?: string[];
 }
 
 /** 90% A, 10% B for prompt A/B testing. */
@@ -46,40 +48,46 @@ export async function runProductAgent(
 ): Promise<ProductAgentResult> {
   const filters = plan.product;
   const text = plan.decomposedContext?.product ?? plan.rewrittenPrompt;
-  const llmQueries = await searchReformulationPerPart(text, 'product');
-  let queriesToRun = llmQueries.length > 0 ? llmQueries : getSearchQueriesFallback(plan);
-  // Perplexity-aligned: when decomposed slice has multiple segments, add each as a retrieval variant for broader recall.
-  const slice = plan.decomposedContext?.product;
-  if (slice?.includes(';')) {
-    const segments = slice.split(';').map((s) => s.trim()).filter(Boolean).slice(0, 3);
-    for (const seg of segments) {
-      if (seg && !queriesToRun.some((q) => q.trim().toLowerCase() === seg.toLowerCase())) {
-        queriesToRun = [...queriesToRun, seg];
-      }
-    }
-  }
-  // Perplexity-aligned: feed entity/landmark signals into at least one retrieval variant (e.g. brand + query) for better recall.
-  const entities = plan.entities?.entities ?? [];
-  const locations = plan.entities?.locations ?? [];
-  const anchors = [...entities, ...locations].filter(Boolean).slice(0, 2);
-  for (const anchor of anchors) {
-    const variant = `${text} ${anchor}`.trim();
-    if (variant && !queriesToRun.some((q) => q.toLowerCase().includes(anchor.toLowerCase()))) {
-      queriesToRun = [...queriesToRun, variant];
-    }
-  }
+  // Sub-queries are a flat list now; vertical agents run only when there are no sub-queries, so always use fallback.
+  const planProductQueries: string[] | undefined = undefined;
+  let queriesToRun: string[] =
+    planProductQueries != null && planProductQueries.length > 0
+      ? planProductQueries
+      : (await (async () => {
+          const llmQueries = await searchReformulationPerPart(text, 'product');
+          let q = llmQueries.length > 0 ? llmQueries : getSearchQueriesFallback(plan);
+          const slice = plan.decomposedContext?.product;
+          if (slice?.includes(';')) {
+            const segments = slice.split(';').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+            for (const seg of segments) {
+              if (seg && !q.some((x) => x.trim().toLowerCase() === seg.toLowerCase())) q = [...q, seg];
+            }
+          }
+          const entities = plan.entities?.entities ?? [];
+          const locations = plan.entities?.locations ?? [];
+          const anchors = [...entities, ...locations].filter(Boolean).slice(0, 2);
+          for (const anchor of anchors) {
+            const variant = `${text} ${anchor}`.trim();
+            if (variant && !q.some((x) => x.toLowerCase().includes(anchor.toLowerCase()))) q = [...q, variant];
+          }
+          return q;
+        })());
 
   const allProducts: Product[] = [];
   const allSnippets: Array<{ id: string; url: string; title?: string; text: string; score?: number }> = [];
   const seenProductKeys = new Set<string>();
 
-  for (const query of queriesToRun) {
-    const { products, snippets } = await deps.retriever.searchProducts({
-      ...filters,
-      query: query,
-      rewrittenQuery: query,
-      ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
-    });
+  const searchResults = await Promise.all(
+    queriesToRun.map((query) =>
+      deps.retriever.searchProducts({
+        ...filters,
+        query,
+        rewrittenQuery: query,
+        ...(plan.preferenceContext != null && { preferenceContext: plan.preferenceContext }),
+      }),
+    ),
+  );
+  for (const { products, snippets } of searchResults) {
     for (const p of products) {
       const key = productKey(p);
       if (!seenProductKeys.has(key)) {
@@ -146,5 +154,6 @@ export async function runProductAgent(
       avgScore,
       topKAvg,
     },
+    searchQueries: queriesToRun,
   };
 }
