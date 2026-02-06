@@ -96,7 +96,32 @@ STRICT CONSTRAINTS
 - Do NOT ask clarifying questions.
 - Do NOT rely on chat history.
 
-Decomposition = search query expansion only.`;
+Decomposition = search query expansion only.
+- Each query must be a standalone search string.
+- Remove all conversational filler (e.g., "I will search for...").
+- Do NOT repeat the same query in different words.`;
+
+const Example = `
+Resolved query: "compare electric cars for families in Europe: safety, price, charging network"
+Output:
+{
+  "subQueries": [
+    "best family electric cars Europe safety ratings 2024",
+    "electric car prices Europe family models comparison",
+    "EV charging infrastructure across Europe for long trips",
+    "spacious family electric vehicles Europe reviews"
+  ]
+}
+
+Resolved query: "latest iPhone 15 features and price"
+Output:
+{
+  "subQueries": [
+    "iPhone 15 official features list",
+    "iPhone 15 price comparison by model",
+    "iPhone 15 camera and battery specifications"
+  ]
+}
 
 /**
  * Generate 3–8 search sub-queries for parallel retrieval. No verticals, intent, or planning.
@@ -127,3 +152,4 @@ Return ONLY valid JSON: {"subQueries": ["query1", "query2", ...]}. No markdown, 
 
   return list.slice(0, MAX_SUB_QUERIES);
 }
+
