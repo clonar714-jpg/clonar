@@ -2,7 +2,7 @@
 
 This repository open-sources the RAG (retrieval-augmented generation) query pipeline: from a user question to a grounded answer with citations. The design is Perplexity-style and centers on **explicit multihop reasoning**—each step conditions on the outputs of prior steps, with optional iterative refinement when the system detects insufficient coverage.
 
-You do not need any frontend to use it. The pipeline is fully specified by **docs/QUERY_FLOW_STORY.md**. Run the Node backend and call the API with any HTTP client (curl, Postman, or your own app).
+You do not need any frontend to use it. Run the Node backend and call the API with any HTTP client (curl, Postman, or your own app).
 
 ---
 
@@ -31,7 +31,6 @@ The pipeline implements **structured multihop reasoning** rather than a single m
 ## What's in this release
 
 - **Multihop reasoning pipeline:** Explicit chain of reasoning steps (rewrite → clarification gate → filter extraction → grounding → plan → execute → merge/quality → synthesize), with optional deep-mode critique and second retrieval pass. Each step conditions on prior outputs; no single-shot “retrieve-then-answer” black box.
-- **Single source of truth:** **docs/QUERY_FLOW_STORY.md** — step-by-step flow with real file names and responsibilities. No extra “frontend” doc; that story is the spec.
 - **Backend:** Node.js service that implements the flow. Entry points: **POST /api/query** (single JSON) and **GET /api/query/stream** (SSE: token → citations → done).
 
 ## Files involved (query flow only)
