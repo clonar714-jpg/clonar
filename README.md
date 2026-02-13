@@ -14,7 +14,7 @@ The pipeline implements **structured multihop reasoning** rather than a single m
 |-----------------|------------------------------|---------|
 | **1. Query rewrite** | Raw message + conversation thread + user memory | Normalized prompt; optional *needsClarification* (conflicts/underspecification). |
 | **2. Clarification gate** | Rewrite output | If clarification needed → return questions and **stop** (no retrieval). Else continue. |
-| **3. Filter extraction** | Rewritten prompt | Structured filters per vertical (hotel, flight, product, movie) + preference context. |
+| **3. Filter extraction** | Rewritten prompt | Structured filters per vertical + preference context. |
 | **4. Grounding decision** | Rewritten prompt + context | **none** \| **hybrid** \| **full** — whether to skip retrieval, use web-only, or run full 7-stage. |
 | **5. Retrieval plan** (full path) | Rewritten prompt + extracted filters + session | **RetrievalPlan**: ordered steps (tool + args). Primary vertical and search strategy. |
 | **6. Execute plan** | Plan + context | Chunks from multiple sources; executor fills defaults (e.g. dates/guests) when planner omitted them. |
@@ -24,7 +24,7 @@ The pipeline implements **structured multihop reasoning** rather than a single m
 
 **Why this is multihop:** The model does not perform one “retrieve everything then answer” step. It (1) **reasons** about whether to clarify, (2) **reasons** about which verticals and tools to use and in what order, (3) **executes** that plan, (4) **reasons** about retrieval quality and formatting, (5) **synthesizes** once from the chosen evidence, and optionally (6) **reasons** again in deep mode (critique → second retrieval hop). Session state (conversation thread, last filters, last successful vertical) feeds back into the next query, so **cross-turn multihop** is supported as well.
 
-Details, file names, and data shapes are in **docs/QUERY_FLOW_STORY.md**.
+
 
 ---
 
@@ -131,7 +131,7 @@ curl -N "http://localhost:4000/api/query/stream?message=boutique%20hotels%20near
 
 ## Flow in one sentence
 
-The server loads **session** (conversation thread, last-used filters, lastSuccessfulVertical, lastResultStrength) and **user memory**, checks **pipeline cache** (return if hit), then **plan cache** (rewrite + filters + grounding, TTL 60s). On plan cache miss, a **multihop reasoning chain** runs: **rewrite** → if **needsClarification** return clarification (no retrieval); else **extract filters** → **grounding decision** (none | hybrid | full). **None** → LLM-only answer. **Hybrid** → Perplexity web overview + derive retrieval quality + synthesize. **Full** → **7-stage**: plan retrieval steps → execute → merge, dedupe, rerank → derive retrieval quality → build formatting guidance → synthesize. Optional **deep mode** (second reasoning hop): critique answer; if insufficient, run 7-stage once more with expanded prompt. Then: retrieval quality (with optional weak fallback to web), **attachUiDecision** (answer confidence, showCards), **buildDynamicFollowUps**, **updateSession**, cache, return. Full step-by-step: **docs/QUERY_FLOW_STORY.md**.
+The server loads **session** (conversation thread, last-used filters, lastSuccessfulVertical, lastResultStrength) and **user memory**, checks **pipeline cache** (return if hit), then **plan cache** (rewrite + filters + grounding, TTL 60s). On plan cache miss, a **multihop reasoning chain** runs: **rewrite** → if **needsClarification** return clarification (no retrieval); else **extract filters** → **grounding decision** (none | hybrid | full). **None** → LLM-only answer. **Hybrid** → Perplexity web overview + derive retrieval quality + synthesize. **Full** → **7-stage**: plan retrieval steps → execute → merge, dedupe, rerank → derive retrieval quality → build formatting guidance → synthesize. Optional **deep mode** (second reasoning hop): critique answer; if insufficient, run 7-stage once more with expanded prompt. Then: retrieval quality (with optional weak fallback to web), **attachUiDecision** (answer confidence, showCards), **buildDynamicFollowUps**, **updateSession**, cache, return. 
 
 ---
 
