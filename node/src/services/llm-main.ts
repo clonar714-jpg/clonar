@@ -1,7 +1,5 @@
-// src/services/llm-main.ts — summaries (direct) + router-based planner/critique
+
 import OpenAI from 'openai';
-import { SimpleModelRouter } from './model-router';
-import { ProviderLlmClient } from './llm-client';
 
 let client: OpenAI | null = null;
 
@@ -18,7 +16,7 @@ function getClient(): OpenAI {
   return client;
 }
 
-/** Used by vertical agents: system + user, fixed model. */
+
 export async function callMainLLM(prompt: string): Promise<string>;
 export async function callMainLLM(
   systemContent: string,
@@ -48,24 +46,4 @@ export async function callMainLLM(
     max_tokens: 512,
   });
   return res.choices[0].message.content ?? '';
-}
-
-const router = new SimpleModelRouter(new ProviderLlmClient());
-
-export async function callMainLLMForSummary(
-  prompt: string,
-  mode: 'quick' | 'deep',
-): Promise<string> {
-  return router.summarize(prompt, mode);
-}
-
-export async function callMainLLMForPlanner(
-  prompt: string,
-  mode: 'quick' | 'deep',
-): Promise<string> {
-  return router.plan(prompt, mode);
-}
-
-export async function callMainLLMForCritique(prompt: string): Promise<string> {
-  return router.critique(prompt);
 }

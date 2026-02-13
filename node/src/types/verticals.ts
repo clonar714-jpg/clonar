@@ -1,4 +1,4 @@
-// src/types/verticals.ts
+
 import { BasePlan } from './core';
 
 export type { PlanCandidate } from './core';
@@ -14,8 +14,8 @@ export interface ProductFilters {
 
 export interface HotelFilters {
   destination: string;
-  checkIn: string;   // ISO date
-  checkOut: string;  // ISO date
+  checkIn: string;   
+  checkOut: string;  
   guests: number;
   budgetMin?: number;
   budgetMax?: number;
@@ -24,21 +24,21 @@ export interface HotelFilters {
 }
 
 export interface FlightFilters {
-  origin: string;         // "SFO"
-  destination: string;   // "JFK"
-  departDate: string;    // YYYY-MM-DD
-  returnDate?: string;   // optional
+  origin: string;         
+  destination: string;  
+  departDate: string;    
+  returnDate?: string;   
   adults: number;
   cabin?: 'economy' | 'premium' | 'business' | 'first';
 }
 
 export interface MovieTicketFilters {
-  city: string;            // e.g. "San Francisco"
-  movieTitle?: string;     // "Dune 2"
-  date: string;            // YYYY-MM-DD
-  timeWindow?: string;     // "evening", "afternoon"
-  tickets: number;         // number of seats
-  format?: string;         // "IMAX", "3D", "2D"
+  city: string;           
+  movieTitle?: string;     
+  date: string;            
+  timeWindow?: string;     
+  tickets: number;         
+  format?: string;         
 }
 
 export type VerticalPlan =

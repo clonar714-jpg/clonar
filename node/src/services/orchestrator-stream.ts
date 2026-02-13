@@ -1,4 +1,4 @@
-// src/services/orchestrator-stream.ts — SSE wrapper around runPipeline
+
 import { runPipeline, type Citation, type OrchestratorDeps, type PipelineResult } from './orchestrator';
 import { QueryContext } from '@/types/core';
 
@@ -20,7 +20,7 @@ export async function runPipelineStream(
   try {
     result = await runPipeline(ctx, deps);
   } catch {
-    // HTTP layer (query.ts) already handles errors and emits an SSE error event.
+    
     return;
   }
 

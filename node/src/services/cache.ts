@@ -1,12 +1,4 @@
-// node/src/services/cache.ts — Redis cache-aside for pipeline (Phase 4); optional when Redis unavailable
-//
-// Caching strategy:
-// - Final answer: quick mode caches full PipelineResult by (mode, message, history) to avoid recomputing.
-// - Plan: understandQuery result is cached by (message, history) so duplicate/retry requests reuse the plan.
-// - Retrieval: per-vertical retrieval can be cached by (vertical, filters, query) in future for lower latency.
-// - Retrieved content: snippets can be stored by (retrievedContentCacheKey, vertical) with short TTL for dual-memory
-//   separation (conversation context vs retrieved content) and optional reuse within the same request/session.
-// We avoid recomputing expensive steps when inputs are unchanged; final answer cache remains the main win for quick mode.
+
 import Redis from 'ioredis';
 import { logger } from './logger';
 

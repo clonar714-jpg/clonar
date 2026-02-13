@@ -3,11 +3,18 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "npx cross-env NODE_ENV=development NODE_OPTIONS=--max-old-space-size=4096 tsx watch src/index.ts",
-    "start": "npx cross-env NODE_ENV=production tsx src/index.ts",
-    "build": "tsc"
+    "dev": "npx cross-env NODE_ENV=development NODE_OPTIONS=--max-old-space-size=4096 npx tsx watch src/index.ts",
+    "start": "npx cross-env NODE_ENV=production npx tsx src/index.ts",
+    "build": "tsc",
+    "mcp": "npx tsx src/mcp/server.ts",
+    "mcp:product": "npx tsx src/mcp/servers/product-server.ts",
+    "mcp:hotel": "npx tsx src/mcp/servers/hotel-server.ts",
+    "mcp:flight": "npx tsx src/mcp/servers/flight-server.ts",
+    "mcp:movie": "npx tsx src/mcp/servers/movie-server.ts",
+    "mcp:serve": "npx tsx src/mcp/serve-http.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
     "@supabase/supabase-js": "^2.86.0",
     "@types/multer": "^2.0.0",
     "@types/uuid": "^10.0.0",

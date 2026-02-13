@@ -1,243 +1,253 @@
-# What Happens Between Your Question and the Answer You See
+# Query Flow: From Your Question to the Answer
 
-This document explains, in plain language, what happens from the moment you type a question and tap search until the answer appears on your screen. No technical jargon required—just a step-by-step story with real examples.
+This document describes **exactly** what happens when you ask a question in the app: which files run, in what order, and how data flows from the request to the final answer and cards.
 
-We’ll follow **two example questions** through the whole flow:
-
-1. **“Hotels in Boston under $150 with good wifi”** — one clear request (hotels).
-2. **“Flights to NYC and hotels near the airport”** — two requests in one (flights + hotels).
+**Example:** *"boutique hotels near Boston's convention center with good workspaces and close to restaurants"*
 
 ---
 
-## Step 1: You Type and Send
+## One-Sentence Overview
 
-You type your question in the search bar (e.g. *“Hotels in Boston under $150 with good wifi”* or *“Flights to NYC and hotels near the airport”*). You may have already said something earlier in the chat (e.g. *“I’m going to Boston next month”*). You also choose **Quick** or **Deep** mode on the Shop screen before searching—Quick is faster; Deep does extra research and refinement.
-
-The app sends to the server:
-
-- Your **message** (the question you just typed)
-- **History** (the last few messages in the chat, so “there” or “this weekend” can be understood)
-- **Mode** (Quick or Deep)
-
-**Example:**  
-If you said *“I’m thinking Boston”* and then *“Hotels there under $150 with good wifi”*, the server receives both so it can turn “there” into “Boston.”
+The app sends **message** (and history, userId, sessionId, mode) to **POST /api/query**. The server builds **QueryContext** (session: conversation thread, last-used filters, lastSuccessfulVertical, lastResultStrength), checks **pipeline cache** (return if hit), then **plan cache** (key: message + history, TTL 60s). On plan cache **miss**: **rewrite** → if **needsClarification** return early with clarification payload (no retrieval); else **extract filters** → **grounding decision** (none | hybrid | full) → **set plan cache**. **None** → LLM-only answer. **Hybrid** → perplexityOverview only; **deriveRetrievalQuality** (citation/item count); synthesize with **formatting guidance** from derived confidence. **Full** → **7-stage**: plan → execute → merge → **deriveRetrievalQuality** (itemCount, citationCount, avgScore, topKAvg) → **buildFormattingGuidance** from that quality → synthesize → result with **retrievalStats.quality**. Optional **deep mode** (ctx.mode === 'deep'): critique answer; if insufficient, run 7-stage once more with expanded prompt. Then: **retrievalQuality** from result.retrievalStats ?? classifyRetrievalQuality; optional **weak fallback** (web overview when weak + vertical ≠ other); **attachUiDecision** (deriveAnswerConfidence → showCards/answerConfidence); **buildDynamicFollowUps** with vertical, intent, filter summary, top result names; **updateSession**; cache; return. **Debug** includes derived quality, answerConfidence, clarificationTriggered, deepRefined.
 
 ---
 
-## Step 2: The System Figures Out What You Want (The Plan)
+## Flow Diagram (High Level)
 
-The server’s first job is to **understand your question** and build a **plan**: what you’re asking for, where, when, and what matters to you. It does **not** search the web or databases yet—it only decides *what* to look for.
-
-### 2.1 Making Your Question Clear
-
-The system rewrites your message into one clear, full sentence. It uses your chat history to fill in missing bits.
-
-| What you typed | What the system understands |
-|----------------|-----------------------------|
-| *“Hotels there under $150 with good wifi”* (after you said “Boston”) | *“Hotels in Boston under $150 with good wifi.”* |
-| *“Flights to NYC and hotels near the airport”* | *“Flights to NYC and hotels near the NYC airport.”* (it knows “the airport” means NYC’s airports.) |
-| *“Something nice for this weekend”* (after you said “Boston”) | *“Something nice in Boston for [specific dates, e.g. Jan 31–Feb 2].”* |
-
-It also turns vague times into real dates when needed (e.g. “this weekend” → actual dates like Jan 31–Feb 2) so filters and search use exact dates.
-
-### 2.2 Splitting One Message Into Parts (When You Ask for More Than One Thing)
-
-If your clear sentence has **more than one kind of request**, the system splits it into **parts** and labels each part.
-
-**Example — “Flights to NYC and hotels near the airport”:**
-
-- **Part 1:** “Flights to NYC” → labeled **flights**
-- **Part 2:** “Hotels near the NYC airport” → labeled **hotels**
-
-**Example — “Hotels in Boston under $150 with good wifi”:**
-
-- One part only: “Hotels in Boston under $150 with good wifi” → labeled **hotels**
-
-The system uses five labels: **products** (things to buy), **hotels**, **flights**, **movies** (showtimes), and **other** (everything else—weather, things to do, general questions). So “things to do in NYC and a family-friendly hotel” becomes two parts: one **hotels**, one **other**.
-
-### 2.3 What You Want To Do (Browse, Compare, Buy, Book)
-
-For each part, the system decides your **intent**:
-
-- **Browse** — “Show me options,” “What’s good,” “Ideas for…”
-- **Compare** — “Which is better,” “MacBook vs ThinkPad”
-- **Buy** — “I want to buy this”
-- **Book** — “Reserve it,” “Book a room”
-
-**Example:**  
-*“Compare flights to NYC and suggest some nice hotels”* → flights: **compare**; hotels: **browse**.
-
-### 2.4 What Matters To You (Preferences)
-
-Besides place and dates, the system pulls out **preferences** in plain language (e.g. “under $150,” “good wifi,” “quiet,” “near the airport”). It also **orders** them by importance (e.g. price first, then location, then wifi). That order is used later when results are thin: the system can suggest relaxing the **least important** preference first to get more options.
-
-**Example — “Cheap flights to JFK and a quiet hotel near LaGuardia”:**
-
-- Flight part: preference “cheap”
-- Hotel part: preferences “quiet,” “near LaGuardia”
-
-**Example — “Hotels under $150 with good wifi near the airport”:**
-
-- Preferences: e.g. “under $150” (first), “near airport” (second), “good wifi” (third). If few results are found, the system might say: “You might relax ‘good wifi’ for more options.”
-
-Those preferences are used when searching and when writing the answer so results and text match what you care about.
-
-### 2.5 Filling In the “Form” (Dates, Places, Guests, etc.)
-
-For hotels, flights, products, and movies, the system fills in a **form**:
-
-- **Hotels:** city, area, check-in/out dates, number of guests
-- **Flights:** origin, destination, depart/return dates, adults
-- **Products:** what you’re looking for, category, budget
-- **Movies:** city, movie name, date, number of tickets
-
-**Example — “Hotels in Boston under $150 with good wifi”:**
-
-- City: Boston  
-- Dates: default or from “this weekend” if you said that  
-- Preferences (not in the form, but used for ranking): under $150, good wifi  
-
-**Example — “Flights to NYC and hotels near the airport”:**
-
-- Flight form: destination NYC, dates default or from your message  
-- Hotel form: city NYC, area “near airport,” dates same idea  
-
-### 2.6 The Plan Is Ready
-
-At the end of this step, the server has a **plan** that says:
-
-- What you meant (one clear rewritten sentence)
-- How many parts (e.g. two: flights + hotels) and what type each is
-- Your intent and **ordered** preferences per part (most important first)
-- Filled-in “forms” for each type (hotel, flight, etc.)
-- Any **soft** bits (e.g. “airport” not pinned to JFK/LGA until results are in)
-
-It still has **not** run any search. It only decided *what* to look for. If you ask the same question again (or retry), the server can reuse this plan from cache so it doesn’t recompute everything.
+```
+[App]  →  POST /api/query  →  [query.ts]  →  build context, load session (thread, last*Filters, lastSuccessfulVertical, lastResultStrength) & user memory
+                ↓
+        [orchestrator.runPipeline]  →  pipeline cache check (return if hit)
+                ↓
+        plan cache check (plan:${makePlanCacheKey(ctx)}, TTL 60s)
+                ↓
+        ┌─ cache HIT  →  use cached rewrittenPrompt, extractedFilters, grounding  →  skip to "grounding_mode?"
+        │
+        └─ cache MISS  →  rewrite
+                            ↓
+                          needsClarification?  →  YES  →  return clarification payload (summary, needsClarification, clarificationQuestions)
+                            |                     attachUiDecision, updateSession(appendTurn), debug.clarificationTriggered  →  DONE
+                            NO
+                            ↓
+                          extractFilters  →  grounding decision (LLM)  →  set plan cache
+                            ↓
+        grounding_mode?
+         ├─ none   →  LLM-only answer  →  attachUiDecision  →  follow-ups  →  updateSession(appendTurn)  →  cache  →  return
+         │
+         ├─ hybrid →  perplexityOverview  →  deriveRetrievalQuality(itemCount, citationCount)
+         │           →  buildFormattingGuidance(synthesisAnswerConfidence(quality))  →  synthesize
+         │           →  result.retrievalStats.quality = derived  →  (join below at "post-retrieval")
+         │
+         └─ full   →  7-stage: planRetrievalSteps  →  executeRetrievalPlan  →  smartDedupeChunks  →  rerankChunks  →  cap 50
+                        →  deriveRetrievalQuality(itemCount, citationCount, avgScore, topKAvg)
+                        →  buildFormattingGuidance(synthesisAnswerConfidence(quality))  →  synthesize
+                        →  result.retrievalStats = { quality, avgScore, topKAvg }
+                        ↓
+                     [optional] ctx.mode === 'deep': critique  →  if insufficient  →  run 7-stage again (expanded prompt)  →  debug.deepRefined = true
+                        ↓
+        post-retrieval:
+          retrievalQuality = result.retrievalStats?.quality ?? classifyRetrievalQuality(...)
+          optional upgrade: weak + 1–3 items + avgScore >= 0.7  →  good
+          weak fallback? (vertical ≠ other)  →  append perplexityOverview, quality = 'fallback_other'
+          attachUiDecision (deriveAnswerConfidence  →  showCards, answerConfidence)
+          debug.retrieval.quality, debug.answerConfidence
+          buildDynamicFollowUps(result, ctx, { primaryVertical, intent, filterSummary, topResultNames })
+          updateSession(appendTurn, lastSuccessfulVertical, lastResultStrength)
+          cache  →  return
+```
 
 ---
 
-## Step 3: The System Looks Up Answers (Search and Summarize)
+## Stage 0: Request and Context
 
-Now the server uses the plan to **actually look things up** and **write an answer**.
+**What happens:** The app sends **POST** to `/api/query` with `message`, `history`, `userId`, `sessionId`, and optionally `mode`. The route validates the body, builds **QueryContext**, normalizes **mode** (`'deep'` or `'pro'` → `'deep'`, otherwise `'quick'`), loads **session state** (conversation thread, last-used filters per vertical, **lastSuccessfulVertical**, **lastResultStrength**), and when `userId` is present loads **user memory**. No rewrite or retrieval runs here—only context attachment. Pipeline then checks **pipeline cache** (by cacheKey from mode + message + history); on hit, returns cached result. A **GET /api/query/stream** endpoint exists with the same context building (plus optional **conversationThread** and **previousFeedback** from the feedback store for the stream path); it uses **runPipelineStream** for SSE delivery.
 
-### 3.1 Which “Desks” Get Used
+| File | Role |
+|------|------|
+| **`lib/screens/ShopScreen.dart`** | Search UI; user types and taps search; triggers API call with message. |
+| **`lib/providers/agent_provider.dart`** | Exposes submit action; calls API client (POST /api/query or GET /api/query/stream). |
+| **`lib/core/api_client.dart`** / **`lib/services/query_api_client.dart`** | Builds HTTP request: `POST` to `/api/query` with body `{ message, history, userId, sessionId, mode }`. |
+| **`node/src/routes/query.ts`** | Reads body; **buildPipelineContext** validates and builds **QueryContext**. **getSession(sessionKey)** loads session; sets **ctx.conversationThread**, **ctx.lastHotelFilters**, **ctx.lastFlightFilters**, **ctx.lastMovieFilters**, **ctx.lastProductFilters**, **ctx.lastSuccessfulVertical**, **ctx.lastResultStrength**. **getUserMemory(userId)** sets **ctx.userMemory**. Calls **runPipeline(ctx, deps)**. |
+| **`node/src/memory/sessionMemory.ts`** | **SessionState**: `conversationThread`, `last*Filters`, **lastSuccessfulVertical**, **lastResultStrength**. **getSession**, **updateSession**. |
+| **`node/src/memory/userMemory.ts`** | **getUserMemory(userId)** for preferences/location. |
+| **`node/src/types/core.ts`** | **QueryContext** (message, history, userId, sessionId, mode, conversationThread, last*Filters, lastSuccessfulVertical, lastResultStrength, userMemory, rewriteVariant, previousFeedback). |
 
-The plan has a list of **candidates** (e.g. “flights” and “hotels”). The server picks which of these to run: usually the main one plus any other that scored close enough. For *“Flights to NYC and hotels near the airport”* it runs **both** flights and hotels at the same time (in parallel), so the total wait is about as long as the slower of the two, not the sum.
-
-### 3.2 What Each “Desk” Does
-
-- **Hotels, Flights, Products, Movies:**  
-  The server runs **search** using the form (city, dates, etc.) and your preferences. It pulls in multiple bits of text (snippets), drops duplicates, and then **one summarizer** writes a short answer and **cites** which snippet each fact came from (e.g. [1], [2]). It can also use your preferences to rank results (e.g. “good wifi,” “near airport”) and to add extra search phrasings when your request has several parts (e.g. “cheap” and “quiet”) so it doesn’t miss good options.  
-  The result: a **summary**, a list of **cards** (e.g. hotel or flight options), and a list of **sources** (citations).
-
-- **Other (weather, things to do, general questions):**  
-  For **time-sensitive** questions (e.g. weather, “what’s happening”), the server calls a **web overview** (e.g. Perplexity-style) and gets an answer plus sources. For **timeless** questions it may use a general-knowledge assistant without web search.  
-  The result: a **summary** and, when the provider returns them, **sources**.
-
-### 3.3 Who Goes First on the Screen
-
-The server doesn’t always show results in the order it *guessed* (e.g. flights first). It checks **how good** each “desk’s” results were (e.g. how many items, how relevant). The one with the **best** results becomes the **main** answer you see first; the others appear as “Also relevant (flights)” or “Also relevant (hotels)” below.
-
-**Example:**  
-If hotel search returned many strong results and flight search returned few, the **hotels** block can be shown first and flights second, so you see what actually worked best.
-
-### 3.4 Putting Everything Into One Answer
-
-The server merges all results into **one** response:
-
-- **Summary:** Best part’s summary first, then “Also relevant (flights):” or “Also relevant (hotels):” with the next summary.
-- **Cards:** The best part’s cards in the main area (e.g. hotel cards); the other part’s cards in a secondary area (e.g. flight cards below).
-- **Sources:** All citations from every part are combined into one numbered list (e.g. “1. Title – domain – Updated 2025-01-15”).
-
-If the main part had **weak** results (very few or low quality) but the “other” part (e.g. web overview) had a good answer, the server can still show the weak part’s cards and **add** a “Web overview (due to limited structured results):” section with the overview and its sources. Your original sources are kept, not dropped.
+**Result:** **ctx** is ready. Pipeline runs next.
 
 ---
 
-## Step 4: Fallbacks, Deep Mode, and How the App Should Show It
+## Stage 1: Plan Cache and Understand Phase
 
-### 4.1 When Structured Results Are Thin (Fallback)
+**What happens:** Pipeline computes **planCacheKey = plan:${makePlanCacheKey(ctx)}** (message + history hash). If **rewriteVariant !== 'none'**, it tries **getCache(planCacheKey)**. On **hit**: use cached **rewrittenPrompt**, **extractedFilters**, **groundingDecision**; add **plan_cache_hit** span; skip rewrite, filter extraction, and grounding. On **miss** (or rewriteVariant === 'none'): run the understand phase below; then when rewriteVariant !== 'none', **setCache(planCacheKey, { rewrittenPrompt, extractedFilters, groundingDecision }, 60)**.
 
-If the main search (e.g. hotels or flights) returned very few or low-quality items, the server **adds** a web overview. It **reframes** it so you know why it’s there: e.g. *“We found few structured options. You might relax ‘good wifi’ for more options. Here’s a broader view from the web:”* then the overview **with** its sources. Your original results and their sources stay; nothing is removed. The relaxation hint uses your **lowest-priority** preference (from the plan) so you know what to loosen first if you try again.
+### 1a. Rewrite (on plan cache miss)
 
-### 4.2 Deep Mode (Extra Research and Polish)
+Unless **ctx.rewriteVariant === 'none'**, **rewriteQuery(ctx)** runs. It calls a small LLM to normalize language (typos, follow-ups from **ctx.conversationThread** and **ctx.userMemory**). It returns **RewriteOnlyResult**: **rewrittenPrompt**, **confidence**, **rewriteAlternatives**, **conflicts**, **needsClarification**. If **needsClarification === true**, the pipeline **returns immediately** with a clarification payload: summary = "To give you a better answer, could you clarify: …", **needsClarification: true**, **clarificationQuestions: rewriteResult.conflicts ?? []**, **attachUiDecision**, **updateSession(appendTurn)**, **debug.clarificationTriggered: true**. No filter extraction, grounding, or retrieval run; response is not cached in pipeline cache.
 
-If you chose **Deep** mode, the server can do extra work:
+| File | Role |
+|------|------|
+| **`node/src/services/orchestrator.ts`** | **runPipeline**: plan cache get/set; on miss: **rewriteQuery(ctx)**; if **rewriteResult.needsClarification** → build clarification result, attachUiDecision, updateSession, return (no cache). Else continue to filter extraction. |
+| **`node/src/services/query-rewrite.ts`** | **rewriteQuery(ctx)** → **normalizeQuery(ctx)**. Returns **rewrittenPrompt**, **needsClarification**, **conflicts** when rewrite detects conflicts/underspecification. |
+| **`node/src/services/query-processing-trace.ts`** | **createTrace**, **addSpan** (rewrite, plan_cache_hit). |
 
-- **Planner:** Decides whether to do more research.
-- **Extra research:** May run another search with a slightly different phrasing to get more angles.
-- **Alternate phrasings:** For hotels/flights/products/movies, it may run the same type of search again with different query wording and merge the summaries and sources.
-- **Critique:** A refinement step improves the summary (e.g. clearer, more neutral). If the critique suggests a better question, that can be shown as “For a better answer, try: …” but the server does **not** throw away your answer or restart from scratch.
+**Result:** **rewrittenPrompt** (or clarification early exit).
 
-All of this stays in the **same** response: longer summary, more sources, same structure.
+### 1b. Filter Extraction (on plan cache miss, after rewrite)
 
-### 4.3 Hints for the App (How To Present the Answer)
+**extractFilters(ctx, rewrittenPrompt)** runs. LLM extracts **structured filters** per vertical (hotel, flight, product, movie) and **preferenceDescription**. Merge: minimal non-date defaults + session + extracted. **preferenceDescription** becomes **preferenceContext** for ranking only.
 
-Before sending the response, the server attaches **hints** for the app: e.g. “show cards,” “show a map” (for hotels with multiple results), “use list layout.” The **app** (Flutter) decides the exact layout and styling within those hints; the server doesn’t dictate pixels.
+| File | Role |
+|------|------|
+| **`node/src/services/orchestrator.ts`** | Calls **extractFilters(ctx, rewrittenPrompt)**; **filter_extraction** span; **debug.extractedFilters** when any. |
+| **`node/src/services/filter-extraction.ts`** | **extractFilters**: LLM extract + merge with session; **getHotelMergeDefaults** etc. (no date/guest injection here; executor fills later). |
+| **`node/src/types/verticals.ts`** | **HotelFilters**, **FlightFilters**, **ProductFilters**, **MovieTicketFilters**; **ExtractedFilters**. |
 
-### 4.4 What Gets Sent Back (The Payload)
+**Result:** **extractedFilters** for planning.
 
-The server builds the **final payload** for the app. It includes:
+### 1c. Grounding Decision (on plan cache miss)
 
-- **Summary** (the full answer text, with “Also relevant …” sections when there are multiple parts)
-- **Short answer** (first 2–4 sentences for the definition box; kept plain and non-marketing)
-- **References** (numbered list: “1. Title – domain – Updated YYYY-MM-DD”)
-- **Cards** (e.g. hotels, flights, products, showtimes) in main and secondary slots
-- **UI hints** (show cards, show map, etc.)
-- **Follow-up suggestions** (short “next question” chips the user can tap)
-- **Suggested query** (when Deep mode critique suggested a better question; may be “already used” if the server replanned)
-- **Cross-part hint** (when flights and hotels point to different airports, e.g. “You’re flying into JFK but hotels are for LaGuardia — want hotels near JFK?”)
-- **When the answer was generated**
+**shouldUseGroundedRetrieval(ctx, rewrittenPrompt)** uses a small LLM to decide **grounding_mode**: **none** | **hybrid** | **full**. On timeout/parse failure, default is **full**.
 
-In Quick mode, this payload can be **cached** so the same question + history + mode returns immediately next time.
+| File | Role |
+|------|------|
+| **`node/src/services/orchestrator.ts`** | **grounding_decision** span; then **setCache(planCacheKey, { rewrittenPrompt, extractedFilters, groundingDecision: grounding }, 60)** when rewriteVariant !== 'none'. |
+| **`node/src/services/grounding-decision.ts`** | **shouldUseGroundedRetrieval**: prompt + **callSmallLLM**; parses **grounding_mode** and **reason**. |
 
----
-
-## Step 5: The App Receives the Response
-
-The app sent your question to the server (e.g. POST to `/api/query`). The server now sends back **one JSON payload** with everything above. The app parses it and stores it as the **answer for this search** (e.g. in the current session). It knows: summary, cards, references, UI hints, follow-ups, etc.
+**Result:** **grounding** (none | hybrid | full). Plan cache is written so the next identical message+history can skip rewrite/filter/grounding.
 
 ---
 
-## Step 6: What You See on Screen
+## Stage 2: Branch by Grounding Mode
 
-The **answer screen** (e.g. ClonarAnswerWidget) uses that payload to draw what you see:
+### 2a. grounding_mode === 'none'
 
-1. **Short answer** at the top (2–4 sentences in the definition box), when present.
-2. **Full summary** below: the main answer and, if there were multiple parts, “Also relevant (flights)” or “Also relevant (hotels)” sections. For **comparisons** (e.g. “MacBook vs ThinkPad”), the layout is: short answer → “When to choose A vs B” block → details → references.
-3. **Cards:** Hotel cards, flight cards, product cards, or movie showtime cards—with a **map** for hotels when the server said so.
-4. **Sources:** A numbered list of references (e.g. “1. Title – domain – Updated 2025-01-15”) you can tap to open.
-5. **Follow-up chips:** Suggested next questions you can tap.
+LLM-only answer: **callMainLLM** with a general-knowledge system prompt and **rewrittenPrompt**. Result: **vertical: 'other'**, **intent: 'browse'**, **summary**. **attachUiDecision**; **buildDynamicFollowUps(result, ctx)** (no extra context); **updateSession(appendTurn)**; **setCache(cacheKey, finalPayload)**; return. No retrieval.
 
-**Example — “Hotels in Boston under $150 with good wifi”:**  
-You see a short answer at the top, a paragraph or two about Boston hotels under $150 with good wifi, then hotel cards (and maybe a map), then numbered sources, then follow-up chips like “Which area is best for first-time visitors?” or “Show me mid-range options.”
+### 2b. grounding_mode === 'hybrid'
 
-**Example — “Flights to NYC and hotels near the airport”:**  
-You might see hotels first if hotel results were stronger, or flights first if flight results were stronger. Either way: short answer, then the main summary and cards (e.g. hotels), then “Also relevant (flights):” with flight summary and flight cards below, then one combined source list, then follow-ups. If your flights are into JFK but hotel results were for LaGuardia, you may also see a hint: *“You’re flying into JFK but hotel results are for LaGuardia — want hotels near JFK to match your flight?”*
+- **perplexityOverview(rewrittenPrompt)** → web citations.
+- **deriveRetrievalQuality({ itemCount: citationCount, citationCount })** → **good** | **weak** | **fallback_other** (rules: citationCount 0 → fallback_other; itemCount >= 4 → good; else weak; optional downgrade when avgScore < 0.5 and itemCount <= 2).
+- **buildFormattingGuidance** with **answerConfidence = synthesisAnswerConfidence(derivedQuality)** (strong | medium | weak).
+- **callMainLLM(ROUTER_GROUNDING_SYSTEM, userContent)** with retrieved passages + formatting guidance → **summary**.
+- **result** = vertical 'other', **retrievalStats.quality = derivedQuality** (no hardcoded 'good' or 'fallback_other').
+- Then flow joins **post-retrieval** (weak fallback, attachUiDecision, follow-ups, session, cache).
+
+### 2c. grounding_mode === 'full' — 7-Stage Retrieval
+
+**run7StageRetrievalAndSynthesize(ctx, rewrittenPrompt, extractedFilters, deps)**:
+
+1. **Plan:** **planRetrievalSteps(ctx, rewrittenPrompt, extractedFilters)** → **RetrievalPlan** (steps with tool + args). **getPlannedPrimaryVertical(steps)** from first step.
+2. **Execute:** **executeRetrievalPlan(plan, ctx)** → chunks, **bySource** (hotel[], flight[], product[], movie[]), **searchQueries**, **primaryVertical**. Executor injects system defaults for dates/guests when planner omitted them.
+3. **Merge:** **smartDedupeChunks** → **rerankChunks** → **capped = slice(0, 50)**. Build **citations**.
+4. **Quality:** **avgScore** / **topKAvg** from capped chunk scores. **deriveRetrievalQuality({ itemCount, citationCount: capped.length, avgScore, topKAvg })** → **retrievalQuality**.
+5. **Formatting:** **synthesisAnswerConfidence(retrievalQuality)** → **buildFormattingGuidance** (answerConfidence, itemCount, primaryVertical, comparableAttributes).
+6. **Synthesize:** **callMainLLM(ROUTER_GROUNDING_SYSTEM, userContent)** with workingMemory + retrievedPassages + formattingGuidance → **summary**.
+7. **Result:** **baseResult** + vertical-specific fields; **retrievalStats** = { vertical, itemCount, **quality: retrievalQuality**, avgScore, topKAvg }.
+
+Return: **result**, **citations**, **searchQueries**, **primaryVertical**, **plannedPrimaryVertical**, **stepCount**. No hardcoded quality.
+
+| File | Role |
+|------|------|
+| **`node/src/services/orchestrator.ts`** | **run7StageRetrievalAndSynthesize**; **deriveRetrievalQuality**, **synthesisAnswerConfidence**, **buildFormattingGuidance**; **runAutomatedEvals** → **debug.automatedEvalScores**. |
+| **`node/src/services/retrieval-plan.ts`** | **planRetrievalSteps**; **getPlannedPrimaryVertical**. |
+| **`node/src/services/retrieval-plan-executor.ts`** | **executeRetrievalPlan**; capability-client calls; system defaults. |
+| **`node/src/services/retrieval-router.ts`** | **smartDedupeChunks**, **rerankChunks**; **RetrievedChunk**. |
+| **`node/src/services/llm-main.ts`** | **callMainLLM**; **ROUTER_GROUNDING_SYSTEM**. |
 
 ---
 
-## Summary: One Path, Two Examples
+## Stage 3: Optional Deep Mode (full path only)
 
-| Step | What happens (in short) | “Hotels in Boston under $150” | “Flights to NYC and hotels near airport” |
-|------|--------------------------|--------------------------------|------------------------------------------|
-| 1 | You type and send (message + history + mode) | One question: hotels | One message, two requests |
-| 2 | Server builds a plan (rewrite, split into parts, intent, preferences, forms) | One part: hotels; Boston, dates, preferences “under $150, good wifi” | Two parts: flights + hotels; “airport” = NYC airport; both get forms |
-| 3 | Server runs search (parallel when multiple parts), merges, picks who’s first by quality | Hotel search → summary + cards + sources | Flight + hotel search in parallel → merge → e.g. hotels first if better results |
-| 4 | Fallback (add web overview if results weak), Deep extras, UI hints, build payload | Usually no fallback; Deep adds polish if on | Same; sources from both parts combined |
-| 5 | App receives one JSON payload | Stored as this search’s answer | Same |
-| 6 | Screen shows short answer, summary, cards, sources, follow-ups | Definition + hotel summary + hotel cards + map? + sources + chips | Definition + main summary + main cards + “Also relevant” + secondary cards + sources + chips |
+When **ctx.mode === 'deep'** and **grounding.grounding_mode === 'full'**:
 
-That’s the full path: from your question to the UI you see, with nothing left out in between.
+- **Critique:** Small LLM asked whether the current answer is "sufficient" or "insufficient" (coverage weak/incomplete).
+- If **insufficient:** **expandedPrompt** = rewrittenPrompt + (rewrittenPrompt.includes('?') ? " Include more specific options and details." : ""); **run7StageRetrievalAndSynthesize** runs **once more**; result, citations, effectivePlannedVertical, effectiveUiIntent, routingInfo, primaryVertical are replaced; **debug.deepRefined = true**; **addSpan(trace, 'deep_refinement', …)**.
+
+Max one extra retrieval pass. Default (mode !== 'deep') unchanged.
 
 ---
 
-## More Example Queries You Can Try
+## Stage 4: Post-Retrieval (hybrid + full)
 
-| You type | What happens in short |
-|---------|------------------------|
-| *“What’s the weather in Boston?”* | One part → **other** → web overview with sources. |
-| *“Compare MacBook Air M3 vs ThinkPad X1”* | One part → **product**, intent **compare** → comparison layout (short answer → “When to choose A vs B” → details → references). |
-| *“Weekend in NYC with kids – things to do and a family-friendly hotel”* | Two parts: **hotel** + **other** (things to do). Hotel gets form (NYC, weekend dates); “other” gets web overview. You see hotel summary + cards and a “things to do” section with sources. |
-| *“Movie showtimes for Dune 2 in Seattle this weekend”* | One part → **movie**; “this weekend” becomes real dates → showtime cards + sources. |
-| *“Best running shoes 2024”* | One part → **product** → product summary + cards + sources. |
-| *“Cheap flights to JFK and a quiet hotel near LaGuardia”* | Two parts: **flight** (JFK) + **hotel** (LGA). If results show different airports, you may see a **cross-part hint**: “You’re flying into JFK but hotel results are for LaGuardia — want hotels near JFK?” |
+**What happens:** Single path for both hybrid and full.
+
+1. **Retrieval quality:** **retrievalQuality = result.retrievalStats?.quality ?? classifyRetrievalQuality(baseItemsCount, maxItemsHint)**. Optional upgrade: if retrievalQuality === 'weak' and 1 ≤ baseItemsCount ≤ 3 and avgScore >= 0.7 → set retrievalQuality = 'good'.
+2. **Weak fallback:** If **retrievalQuality === 'weak'** and **result.vertical !== 'other'**, append **perplexityOverview(rewrittenPrompt)** to summary, set result vertical to 'other', merge citations, **retrievalStats.quality = 'fallback_other'**.
+3. **finalQuality** for **debug.retrieval** (good | weak | fallback_other).
+4. **attachUiDecision(result, originalQuery, uiIntent, plannedPrimaryVertical, lastResultStrength):**
+   - **deriveAnswerConfidence(result, lastResultStrength, uiIntent)** uses **result.retrievalStats?.quality** first, then lastResultStrength, then uiIntent.confidenceExpectation → 'strong' | 'medium' | 'weak'.
+   - If answerConfidence === 'weak' → **showCards: false**.
+   - **ui.answerConfidence** set.
+5. **debug.answerConfidence** = resultWithUi.ui?.answerConfidence; **debug.retrieval** = { vertical, items, snippets, quality: finalQuality, maxItems }.
+6. **buildDynamicFollowUps(resultWithUi, ctx, { primaryVertical, intent, filterSummary, topResultNames }):**
+   - **buildFilterSummary(extractedFilters)** → short string (e.g. "Boston, check-in 2025-03-01, 2 guests").
+   - **getTopResultNames(result)** → up to 3 hotel names / product titles / flight routes / movie titles.
+   - Prompt includes vertical, intent, filters, top results; LLM returns up to **3** contextual follow-ups (JSON array of strings).
+7. **updateSession(ctx.sessionId, { appendTurn, lastSuccessfulVertical, lastResultStrength })** where lastResultStrength is derived from **result.retrievalStats?.quality** (good → strong, weak/fallback_other → weak, else ok).
+8. **setCache(cacheKey, finalPayload)**; **shouldSampleForEval** → **submitForHumanReview** when sampled; **finishTrace**; **metrics.finish**; return **finalPayload**.
+
+| File | Role |
+|------|------|
+| **`node/src/services/orchestrator.ts`** | **deriveRetrievalQuality**, **synthesisAnswerConfidence**, **buildFormattingGuidance**, **deriveAnswerConfidence**, **attachUiDecision**; **buildFilterSummary**, **getTopResultNames**, **buildDynamicFollowUps** with context; weak fallback; debug; **updateSession**; cache. |
+| **`node/src/services/ui-intent.ts`** | **computeUiIntent(grounding, plannedPrimaryVertical)** → preferredLayout, confidenceExpectation. |
+| **`node/src/services/ui_decision/*.ts`** | **buildHotelUiDecision**, **buildProductUiDecision**, etc. |
+| **`node/src/memory/sessionMemory.ts`** | **updateSession**. |
+| **`node/src/services/eval-sampling.ts`** | **shouldSampleForEval**, **submitForHumanReview**. |
+
+**Result:** Full **PipelineResult** (summary, citations, vertical, cards, ui with answerConfidence, debug with quality/answerConfidence/clarificationTriggered/deepRefined, followUpSuggestions, needsClarification/clarificationQuestions when applicable).
+
+---
+
+## Stage 5: App Receives and Renders
+
+The HTTP client receives the JSON. The answer screen shows interpretation, summary, vertical cards (hotels, products, flights, showtimes), map if applicable, citations, and follow-up suggestions. When **needsClarification** is true, the client can show **clarificationQuestions** and avoid treating the response as a full answer.
+
+| File | Role |
+|------|------|
+| **`lib/core/api_client.dart`** / **`lib/services/query_api_client.dart`** | Parses response. |
+| **`lib/widgets/ClonarAnswerWidget.dart`** | Renders summary, cards, citations, follow-ups. |
+| **`lib/screens/ClonarAnswerScreen.dart`** | Answer screen driven by pipeline response. |
+
+---
+
+## Summary Table: One Query, All Stages
+
+| Stage | What happens | Key files |
+|-------|------------------------|-----------|
+| 0 | Request; build **QueryContext**; load **session** (thread, last*Filters, lastSuccessfulVertical, lastResultStrength); **user memory**; **pipeline cache** check (return if hit). | **query.ts**, **sessionMemory.ts**, **userMemory.ts**, **api_client.dart**, **agent_provider.dart**, **ShopScreen.dart** |
+| 1 | **Plan cache** (key: message+history, TTL 60s). **Hit:** use cached rewrite/filters/grounding. **Miss:** **rewrite** → if **needsClarification** return clarification payload (no retrieval); else **extractFilters** → **grounding** → **set plan cache**. | **orchestrator.ts**, **query-rewrite.ts**, **filter-extraction.ts**, **grounding-decision.ts** |
+| 2 | **grounding_mode**: **none** → LLM-only, attachUi, follow-ups, session, cache, return. **hybrid** → overview + **deriveRetrievalQuality** + **buildFormattingGuidance** + synthesize; **retrievalStats.quality** derived. **full** → **7-stage** (plan → execute → merge → **deriveRetrievalQuality** + **buildFormattingGuidance** + synthesize); **retrievalStats.quality**, avgScore, topKAvg. | **orchestrator.ts**, **retrieval-plan.ts**, **retrieval-plan-executor.ts**, **retrieval-router.ts**, **llm-main.ts**, **perplexity-web.ts** |
+| 3 | **Deep mode** (optional): if **ctx.mode === 'deep'** and full path, **critique** → if insufficient, **run 7-stage again** (expanded prompt); **debug.deepRefined = true**. | **orchestrator.ts** |
+| 4 | **Post-retrieval:** retrievalQuality from result.retrievalStats ?? classifyRetrievalQuality; optional upgrade; **weak fallback** (web overview); **attachUiDecision** (deriveAnswerConfidence → showCards, answerConfidence); **debug.answerConfidence**, **debug.retrieval.quality**; **buildDynamicFollowUps** with vertical, intent, filterSummary, topResultNames; **updateSession**; cache; return. | **orchestrator.ts**, **ui-intent.ts**, **ui_decision/*.ts**, **sessionMemory.ts**, **eval-sampling.ts** |
+| 5 | App receives JSON; renders summary, cards, sources, follow-ups; handles **needsClarification** / **clarificationQuestions** when present. | **api_client.dart**, **ClonarAnswerWidget.dart**, **ClonarAnswerScreen.dart** |
+
+---
+
+## Confidence and Quality Flow
+
+- **deriveRetrievalQuality**: Deterministic. **citationCount === 0** → 'fallback_other'; **itemCount >= 4** → 'good'; else 'weak'. If quality would be 'good' and **avgScore < 0.5** and **itemCount <= 2** → downgrade to 'weak'. Used in **hybrid** and **7-stage**; no hardcoded 'good' or 'fallback_other'.
+- **synthesisAnswerConfidence(quality)**: good → 'strong', weak/fallback_other → 'weak', else 'medium'. Drives **buildFormattingGuidance** (tables allowed only when strong + itemCount >= 2 + comparableAttributes).
+- **deriveAnswerConfidence(result, lastResultStrength, uiIntent)**: Uses **result.retrievalStats?.quality** first, then lastResultStrength, then uiIntent.confidenceExpectation. Feeds **attachUiDecision** (showCards, ui.answerConfidence).
+- **Debug:** **debug.retrieval.quality**, **debug.answerConfidence**, **debug.clarificationTriggered** (when clarification returned), **debug.deepRefined** (when deep refinement ran).
+
+---
+
+## Observability
+
+- **Trace:** **debug.trace** (traceId, spans: rewrite, plan_cache_hit, filter_extraction, grounding_decision, plan, execute, merge, synthesize, hybrid_retrieval, deep_refinement). **query-processing-trace.ts**.
+- **Metrics:** **query_processing_metrics**; **setMetricsCallback**. **query-processing-metrics.ts**.
+- **Eval:** **debug.automatedEvalScores**; **shouldSampleForEval** → **submitForHumanReview**. **eval-sampling.ts**, **eval-automated.ts**.
+
+---
+
+## Design Notes
+
+- **Plan cache:** Reduces redundant rewrite + filter + grounding on duplicate/retry (same message + history). TTL 60s. Clarification path does not set plan cache (early return before cache write).
+- **Clarification loop:** When rewrite returns **needsClarification**, the pipeline returns immediately with **needsClarification: true** and **clarificationQuestions** (from conflicts). No retrieval; client can prompt user and resubmit.
+- **Confidence:** One consistent signal: **deriveRetrievalQuality** → **retrievalStats.quality** → **synthesisAnswerConfidence** (formatting) and **deriveAnswerConfidence** (UI). No hardcoded confidence in hybrid or 7-stage.
+- **Follow-ups:** **buildDynamicFollowUps** receives **primaryVertical**, **intent**, **filterSummary** (from **buildFilterSummary(extractedFilters)**), **topResultNames** (from **getTopResultNames(result)**) so follow-ups are contextual. Returns up to 3 suggestions.
+- **Deep mode:** Optional second pass only when **ctx.mode === 'deep'** (or **mode === 'pro'**, normalized to deep) and full retrieval; critique decides; max one extra 7-stage run. Expanded prompt adds " Include more specific options and details." only when the rewritten prompt contains a question mark.
+- **Dates/guests:** Planner may omit when user didn’t specify; **executor** injects system defaults. **preferenceDescription** is **preferenceContext** for scoring/rerank only, never hard filters.
+- **Planned vs observed vertical:** **plannedPrimaryVertical** (first step); **observedPrimaryVertical** = result.vertical. Both in **debug**; **attachUiDecision** uses **resolveUiVertical** (observed, or planned when result is 'other').
+- **Session:** **lastSuccessfulVertical**, **lastResultStrength** (from retrievalStats.quality) stored for next request.
+- **Previous feedback:** When the user marked the previous answer as unhelpful (e.g. from the stream path via **getAndClearLastFeedback**), **ctx.previousFeedback** is set. The pipeline injects this into the LLM prompt for the ungrounded path and into synthesis so the model can improve (e.g. "The user marked the previous answer as unhelpful. For this follow-up, be more helpful, specific, or accurate.").

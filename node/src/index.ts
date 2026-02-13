@@ -1,6 +1,3 @@
-/// <reference path="./types/express/index.d.ts" />
-
-
 import dotenv from 'dotenv';
 import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
@@ -8,125 +5,22 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import morgan from 'morgan';
-import compression from 'compression';
-import rateLimit from 'express-rate-limit';
 
-import { errorHandler } from '@/middleware/errorHandler';
-import { notFoundHandler } from '@/middleware/notFoundHandler';
-import authRoutes from '@/routes/auth';
-import refreshTokenRoutes from '@/routes/refreshToken';
-import personaRoutes from '@/routes/personas';
-import collageRoutes from '@/routes/collages';
-import userRoutes from '@/routes/users';
-import uploadRoutes from '@/routes/upload';
-import chatRoutes from '@/routes/chat';
-import reconnectRoutes from '@/routes/reconnect';
-import productDetailsRoutes from '@/routes/productDetails';
-import hotelDetailsRoutes from '@/routes/hotelDetails';
-import autocompleteRoutes from '@/routes/autocomplete';
-import moviesRoutes from '@/routes/movies';
-import geocodeRoutes from '@/routes/geocode';
-import chatsRoutes from '@/routes/chats';
-import searchRoutes from '@/routes/search';
-import imagesRoutes from '@/routes/images';
-import videosRoutes from '@/routes/videos';
-import providersRoutes from '@/routes/providers';
-import filesRoutes from '@/routes/files';
-import { connectDatabase } from '@/services/database';
-import { startBackgroundJob } from '@/services/personalization/backgroundAggregator';
-// ✅ PHASE 10: Stability & Concurrency imports
-import { setupUnhandledRejectionHandler, setupUncaughtExceptionHandler, setupGracefulShutdown, requestTimeout, setServerInstance } from './stability/errorHandlers';
-import { startMemoryFlushScheduler } from './stability/memoryFlush';
-console.log("DEBUG: SUPABASE_URL =", process.env.SUPABASE_URL);
-console.log("DEBUG: SUPABASE_ANON_KEY =", process.env.SUPABASE_ANON_KEY ? "Loaded ✅" : "Missing ❌");
-console.log("DEBUG: SUPABASE_SERVICE_ROLE_KEY =", process.env.SUPABASE_SERVICE_ROLE_KEY ? "Loaded ✅" : "Missing ❌");
-console.log("DEBUG: TMDB_API_KEY =", process.env.TMDB_API_KEY ? "Loaded ✅" : "Missing ❌");
-
+import queryRoutes from '@/routes/query';
+import { initRedis } from '@/services/cache';
+import { logger } from '@/services/logger';
+import { setMetricsCallback } from '@/services/query-processing-metrics';
+import { record as recordMetricsAggregator } from '@/services/metrics-aggregator';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '4000', 10);
 
-
-app.use((req, res, next) => {
-  const timestamp = new Date().toISOString();
-  console.log(`\n🌐 [${timestamp}] ========== INCOMING REQUEST ==========`);
-  console.log(`   Method: ${req.method}`);
-  console.log(`   URL: ${req.url}`);
-  console.log(`   Path: ${req.path}`);
-  console.log(`   IP: ${req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown'}`);
-  console.log(`   User-Agent: ${req.headers['user-agent'] || 'unknown'}`);
-  console.log(`   Content-Type: ${req.headers['content-type'] || 'none'}`);
-  console.log(`   Origin: ${req.headers.origin || 'none'}`);
-  console.log(`   Referer: ${req.headers.referer || 'none'}`);
-  next();
-});
-
-
 app.use(helmet());
-
-
-const corsOptions = {
-  origin: process.env.NODE_ENV === 'development' 
-    ? '*' 
-    : (process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000']),
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-};
-app.use(cors(corsOptions));
-console.log(`🌐 CORS configured: ${process.env.NODE_ENV === 'development' ? 'ALLOWING ALL ORIGINS (dev mode)' : `Restricted to: ${corsOptions.origin}`}`);
-
-
-app.options('*', (req, res) => {
-  console.log(`🔄 OPTIONS preflight request for: ${req.url}`);
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
-  res.sendStatus(200);
-});
-
-
-if (process.env.NODE_ENV !== "development") {
-  
-  app.use(
-    rateLimit({
-      windowMs: 60 * 1000, 
-      max: 100, 
-      standardHeaders: true,
-      legacyHeaders: false,
-    })
-  );
-  console.log("🚦 Production mode: rate limiting enabled");
-} else {
-  
-  console.log("🧪 Dev mode: rate limiting disabled");
-}
-
-
-app.use(requestTimeout(15000));
-
-
+app.use(cors({ origin: process.env.NODE_ENV === 'development' ? '*' : ['http://localhost:3000'], credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
-console.log("🗂️ Serving static uploads at /uploads");
-
-
-app.use(compression());
-
-
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-} else {
-  app.use(morgan('combined'));
-}
-
-
-app.get('/health', (req, res) => {
-  console.log(`🏥 Health check requested from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
+app.get('/health', (_req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -135,123 +29,30 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.use('/api/query', queryRoutes);
 
-app.get('/api/test', (req, res) => {
-  console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
-  console.log(`   Headers: ${JSON.stringify(req.headers)}`);
-  res.status(200).json({
-    success: true,
-    message: 'Backend is reachable!',
-    timestamp: new Date().toISOString(),
-    ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
-  });
+app.use((_req, res) => {
+  res.status(404).json({ error: 'not_found', message: 'Not Found' });
 });
 
-
-app.get('/api/test', (req, res) => {
-  console.log(`🧪 Test endpoint hit from ${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`);
-  console.log(`   Headers: ${JSON.stringify(req.headers)}`);
-  res.status(200).json({
-    success: true,
-    message: 'Backend is reachable!',
-    timestamp: new Date().toISOString(),
-    ip: req.ip || req.headers['x-forwarded-for'] || 'unknown',
-  });
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  logger.error('Unhandled error', { error: err instanceof Error ? err.message : String(err) });
+  res.status(500).json({ error: 'internal_error', message: 'Internal Server Error' });
 });
-
-
-app.use((error: any, req: any, res: any, next: any) => {
-  if (error && error.code === 'LIMIT_UNEXPECTED_FILE') {
-    console.log('❌ Global Multer Error: Unexpected field name');
-    return res.status(400).json({
-      success: false,
-      error: 'Unexpected field name. Expected field name: "image"',
-    });
-  }
-  if (error && error.code === 'LIMIT_FILE_SIZE') {
-    console.log('❌ Global Multer Error: File too large');
-    return res.status(400).json({
-      success: false,
-      error: 'File too large. Maximum size is 10MB.',
-    });
-  }
-  next(error);
-});
-
-
-app.use('/api/auth', authRoutes);
-app.use('/api/auth', refreshTokenRoutes);
-app.use('/api/personas', personaRoutes);
-app.use('/api/collages', collageRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/upload', uploadRoutes);
-
-
-app.use('/api/chat', chatRoutes);
-console.log('✅ Chat route registered at /api/chat');
-
-
-app.use('/api/reconnect', reconnectRoutes);
-console.log('✅ Reconnect route registered at /api/reconnect');
-
-app.use('/api/product-details', productDetailsRoutes);
-app.use('/api/hotel-details', hotelDetailsRoutes);
-app.use('/api/autocomplete', autocompleteRoutes);
-app.use('/api/movies', moviesRoutes);
-app.use('/api/geocode', geocodeRoutes);
-console.log('✅ Geocode route registered at /api/geocode');
-app.use('/api/chats', chatsRoutes);
-console.log('✅ Chats route registered at /api/chats');
-app.use('/api/search', searchRoutes);
-console.log('✅ Search route registered at /api/search');
-app.use('/api/images', imagesRoutes);
-console.log('✅ Images route registered at /api/images');
-app.use('/api/videos', videosRoutes);
-console.log('✅ Videos route registered at /api/videos');
-app.use('/api/providers', providersRoutes);
-console.log('✅ Providers route registered at /api/providers');
-app.use('/api/files', filesRoutes);
-console.log('✅ Files route registered at /api/files');
-
-
-app.use(notFoundHandler);
-app.use(errorHandler);
-
-
-setupUnhandledRejectionHandler();
-setupUncaughtExceptionHandler();
-setupGracefulShutdown();
-
 
 const startServer = async () => {
   try {
-   
-    await connectDatabase();
-    
-    const server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Server running on http://localhost:${PORT}`);
-      console.log(`📊 Environment: ${process.env.NODE_ENV}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-      console.log(`🌐 Listening on ALL interfaces (0.0.0.0:${PORT}) - accessible from emulator at 10.0.2.2:${PORT}`);
-      console.log(`🧪 Test endpoint: http://localhost:${PORT}/api/test`);
-      console.log(`🌐 Listening on ALL interfaces (0.0.0.0:${PORT}) - accessible from emulator at 10.0.2.2:${PORT}`);
-      console.log(`🧪 Test endpoint: http://localhost:${PORT}/api/test`);
-      
-      if (process.env.NODE_ENV === 'development') {
-        console.log('⚙️  Dev Mode Active: Authentication checks are skipped for all routes');
-      }
+    await initRedis();
+    setMetricsCallback(recordMetricsAggregator);
 
-      
-      startBackgroundJob();
-      
-      
-      startMemoryFlushScheduler();
-      
-      
-      setServerInstance(server);
+    app.listen(PORT, '0.0.0.0', () => {
+      logger.info('Server running', { port: PORT, env: process.env.NODE_ENV });
+      console.log(`Server: http://localhost:${PORT}`);
+      console.log(`Health: http://localhost:${PORT}/health`);
+      console.log(`Query:  http://localhost:${PORT}/api/query`);
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    console.error('Failed to start server:', error);
     process.exit(1);
   }
 };

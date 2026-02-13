@@ -7,15 +7,21 @@ export interface RerankRequest<T> {
   items: T[];
   toText: (item: T) => string;
   maxItems?: number;
+  /**
+   * Subjective/fuzzy preference criteria (e.g. "good workspace", "close to restaurants").
+   * When provided, score each item by how well it satisfies these preferences in addition to query relevance.
+   */
+  preferenceCriteria?: string;
 }
 
 /**
  * Simple LLM-small reranker on top of hybrid scores.
+ * When preferenceCriteria is set, the LLM explicitly scores how well each item satisfies those fuzzy preferences.
  */
 export async function rerankWithLLm<T>(
   req: RerankRequest<T>,
 ): Promise<{ item: T; score: number }[]> {
-  const { query, items, toText, maxItems = 15 } = req;
+  const { query, items, toText, maxItems = 15, preferenceCriteria } = req;
   if (!items.length) return [];
 
   const payload = items.map((it, idx) => ({
@@ -23,13 +29,20 @@ export async function rerankWithLLm<T>(
     text: toText(it),
   }));
 
-  const prompt = `
-You are reranking hotel search results.
+  const preferenceBlock = preferenceCriteria?.trim()
+    ? `
+User preference criteria: ${preferenceCriteria}
 
-User query: "${query}"
+Only score an item higher for a preference if the item's text (description, amenities, reviews) contains evidence supporting it. Do NOT assume or infer satisfaction. If there is no evidence for a preference, assign neutral (not negative) weight.`
+    : '';
+
+  const prompt = `
+You are reranking search results.
+
+User query: "${query}"${preferenceBlock}
 
 For each item, assign a relevance score between 0 and 1.
-Consider semantic match and how well the hotel fits the query (location, price range if mentioned, etc.).
+Consider semantic match to the query and how well the item fits any stated preferences (location, price, style, amenities, proximity to places, etc.).
 
 Return JSON only in the format:
 [

@@ -90,11 +90,8 @@ export class InMemorySessionStore implements SessionStore {
       timestamp: Date.now(),
     };
 
-    console.log(`💾 InMemorySessionStore: Saved session state for ${sessionId}:`, {
-      domain: state.domain,
-      brand: state.brand,
-      category: state.category,
-      price: state.price,
+    console.log(`💾 InMemorySessionStore: Saved session for ${sessionId}`, {
+      threadTurns: state.conversationThread?.length ?? 0,
     });
   }
 

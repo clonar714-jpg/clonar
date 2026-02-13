@@ -1,5 +1,6 @@
 // src/services/providers/web/perplexity-web.ts
 import axios from 'axios';
+import { logger } from '../../logger';
 
 const PPLX_API_URL = 'https://api.perplexity.ai/chat/completions';
 
@@ -60,11 +61,22 @@ export async function perplexityOverview(query: string): Promise<PerplexityOverv
         }))
       : [];
 
+    if (citations.length === 0) {
+      logger.warn('perplexity:overview_no_citations', {
+        queryPreview: query.slice(0, 80),
+        hasSummary: summary.length > 0,
+        rawSearchResults: Array.isArray(rawResults) ? rawResults.length : 'not_array',
+      });
+    }
     return { summary, citations: citations.length > 0 ? citations : undefined };
   } catch (err: any) {
     const status = err.response?.status;
     const body = err.response?.data;
-    console.error('Perplexity overview error:', status, body ?? err.message);
+    logger.error('perplexity:overview_error', {
+      status,
+      message: err.message,
+      bodyPreview: body != null ? JSON.stringify(body).slice(0, 200) : undefined,
+    });
     throw err;
   }
 }
