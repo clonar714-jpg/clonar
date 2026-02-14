@@ -7,8 +7,10 @@
 !**/.env.example
 
 # Node
+node_modules/
 node/node_modules/
 node/dist/
+dist/
 
 # Miscellaneous
 *.class

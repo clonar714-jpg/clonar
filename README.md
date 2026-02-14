@@ -1,14 +1,18 @@
-# RAG Query Flow with Multihop Reasoning — Open-Source Architecture
+# Clonar: 🚀 An 8-Stage Agentic RAG Orchestrator for High-Precision Reasoning
 
-This repository open-sources the RAG (retrieval-augmented generation) query pipeline: from a user question to a grounded answer with citations. The design is Perplexity-style and centers on **explicit multihop reasoning**—each step conditions on the outputs of prior steps, with optional iterative refinement when the system detects insufficient coverage.
+This repository open-sources Clonar, a production-ready RAG (Retrieval-Augmented Generation) query pipeline designed to move beyond "naive RAG" with explicit multihop reasoning. From a user question to a grounded answer with citations, Clonar's Node.js backend implements an intelligent, iterative flow that redefines accuracy in AI-powered search.
+
+**The Problem:** Most RAG systems are "one-shot," performing a single retrieval and synthesis pass, leading to hallucinations and insufficient answers for complex queries.
+
+**The Solution:** Clonar introduces an 8-stage agentic workflow that reasons before it retrieves, clarifies when necessary, and critiques its own output to ensure high-fidelity, grounded responses.
 
 You do not need any frontend to use it. Run the Node backend and call the API with any HTTP client (curl, Postman, or your own app).
 
 ---
 
-## Multihop reasoning (design highlight)
+## 🎯 Key Architectural Highlights for Extraordinary Reasoning
 
-The pipeline implements **structured multihop reasoning** rather than a single monolithic retrieval-and-synthesize pass. Each hop consumes the results of previous hops and decides the next action; the final answer is produced only after this chain completes. Key mechanisms:
+Clonar's core innovation is its **8-Stage Reasoning Loop**. This isn't a simple concatenation of steps, but a dynamically conditioning, iterative process. Key mechanisms:
 
 | Hop / mechanism | What the system reasons over | Outcome |
 |-----------------|------------------------------|---------|
@@ -41,32 +45,32 @@ Only the following files are part of the supported query-flow release. Everythin
 
 | Layer | Files |
 |-------|--------|
-| **Entry** | `node/src/routes/query.ts` — POST / and GET /stream, buildPipelineContext, getSession, getUserMemory, runPipeline / runPipelineStream |
-| **Orchestration** | `node/src/services/orchestrator.ts`, `node/src/services/orchestrator-stream.ts` |
-| **Rewrite & filters** | `node/src/services/query-rewrite.ts`, `node/src/services/filter-extraction.ts` |
+| **Entry** | `src/main/node/routes/query.ts` — POST / and GET /stream, buildPipelineContext, getSession, getUserMemory, runPipeline / runPipelineStream |
+| **Orchestration** | `src/main/node/services/orchestrator.ts`, `orchestrator-stream.ts` |
+| **Rewrite & filters** | `query-rewrite.ts`, `filter-extraction.ts` |
 | **Grounding & plan** | `node/src/services/grounding-decision.ts`, `node/src/services/retrieval-plan.ts`, `node/src/services/retrieval-plan-executor.ts` |
-| **Retrieval** | `node/src/services/retrieval-router.ts`, `node/src/services/pipeline-deps.ts` |
+| **Retrieval** | `retrieval-router.ts`, `pipeline-deps.ts` |
 | **LLM & synthesis** | `node/src/services/llm-main.ts`, `node/src/services/llm-small.ts` |
 | **Deep mode** | Inline in orchestrator: critique via callSmallLLM; if insufficient, run 7-stage again with expanded prompt |
-| **Session & memory** | `node/src/memory/sessionMemory.ts`, `node/src/memory/userMemory.ts` |
+| **Session & memory** | `src/main/node/services/session/sessionMemory.ts`, `userMemory.ts` |
 | **Observability** | `node/src/services/query-processing-trace.ts`, `node/src/services/query-processing-metrics.ts`, `node/src/services/eval-sampling.ts`, `node/src/services/eval-automated.ts` |
-| **Web retrieval** | `node/src/services/providers/web/perplexity-web.ts` |
+| **Web retrieval** | `src/main/node/services/providers/web/perplexity-web.ts` |
 | **Routing & utils** | `node/src/services/cache.ts`, `node/src/services/rerank.ts`, `node/src/services/passage-reranker.ts`, `node/src/services/safe-parse-json.ts` |
-| **UI hints (backend)** | `node/src/services/ui-intent.ts`, `node/src/services/ui_decision/*`
+| **UI hints (backend)** | `ui-intent.ts`, `ui_decision/*`
 
 ### Supported files (needed to run the flow)
 
 | Purpose | Files |
 |---------|--------|
-| **Types** | `node/src/types/core.ts`, `node/src/types/verticals.ts`, `node/src/types/index.ts` |
-| **Session store** | `node/src/memory/SessionStore.ts`, `node/src/memory/InMemorySessionStore.ts`, `node/src/memory/RedisSessionStore.ts` |
-| **Infra** | `node/src/services/logger.ts`, `node/src/services/cache.ts` (incl. initRedis if Redis used) |
-| **Pipeline deps** | `node/src/services/pipeline-deps.ts` — builds retrievers; see below for provider files |
-| **Providers (retrieval)** | `node/src/services/providers/` — `retrieval-types.ts`, `retrieval-vector-utils.ts`|
-| **Reranker** | `node/src/services/passage-reranker.ts` (optional; used when pipeline-deps supplies it) |
-| **Server entry** | `node/src/index.ts` — mounts /api/query and other routes; for a minimal run you need at least health + query route + their middleware/deps |
+| **Types** | `src/main/node/types/core.ts`, `verticals.ts`, `index.ts` |
+| **Session store** | `src/main/node/services/session/SessionStore.ts`, `InMemorySessionStore.ts`, `RedisSessionStore.ts` |
+| **Infra** | `src/main/node/utils/logger.ts`, `services/cache.ts` (incl. initRedis if Redis used) |
+| **Pipeline deps** | `services/pipeline-deps.ts` — builds retrievers; see providers below |
+| **Providers (retrieval)** | `src/main/node/services/providers/` — `retrieval-types.ts`, `retrieval-vector-utils.ts` |
+| **Reranker** | `passage-reranker.ts` (optional) |
+| **Server entry** | `src/main/node/index.ts` — health + /api/query |
 
-Optional for evals/observability: `eval-alerting.ts`, `metrics-aggregator.ts`, `human-review-labels.ts`. Optional for MCP: `node/src/mcp/*` when enabled.
+Optional: `metrics-aggregator.ts`, other eval/observability modules.
 
 ---
 
@@ -81,25 +85,27 @@ No Flutter or other frontend is required. Use the backend and call the API.
 
 ### 1. Clone and install
 
+Run from the **repository root** (backend lives under `src/main/node/`):
+
 ```bash
 git clone <repository-url>
-cd clonar/node
+cd clonar
 npm install
 ```
 
 ### 2. Environment
 
-Create `node/.env`:
+Copy `.env.example` to `.env` in the repo root and set your keys:
 
-```env
-PORT=4000
-NODE_ENV=development
-OPENAI_API_KEY=your_openai_key
-PERPLEXITY_API_KEY=your_perplexity_key
-# Optional: REDIS_URL, DATABASE_URL (or SQLite/pg for catalog/hotel/flight/movie SQL providers)
+```bash
+cp .env.example .env
 ```
 
+Edit `.env`: set `OPENAI_API_KEY`, `PERPLEXITY_API_KEY`; optionally `REDIS_URL`, `SERP_API_KEY`, `GOOGLE_MAPS_API_KEY`.
+
 ### 3. Start the server
+
+From the repo root:
 
 ```bash
 npm run dev
@@ -134,56 +140,34 @@ The server loads **session** (conversation thread, last-used filters, lastSucces
 
 ---
 
-## Project layout (query-flow + supported only)
+## Project layout (required structure)
+
+The backend follows this layout under the repo root. Run from the root with `npm run dev`; `tsconfig` and scripts use `src/main/node` as the Node app.
 
 ```
 <repo>/
-├── node/
-│   ├── src/
-│   │   ├── routes/
-│   │   │   └── query.ts
-│   │   ├── services/
-│   │   │   ├── orchestrator.ts
-│   │   │   ├── orchestrator-stream.ts
-│   │   │   ├── query-rewrite.ts
-│   │   │   ├── filter-extraction.ts
-│   │   │   ├── grounding-decision.ts
-│   │   │   ├── retrieval-plan.ts
-│   │   │   ├── retrieval-plan-executor.ts
-│   │   │   ├── retrieval-router.ts
-│   │   │   ├── pipeline-deps.ts
-│   │   │   ├── cache.ts
-│   │   │   ├── llm-main.ts
-│   │   │   ├── llm-small.ts
-│   │   │   ├── rerank.ts
-│   │   │   ├── passage-reranker.ts
-│   │   │   ├── safe-parse-json.ts
-│   │   │   ├── ui-intent.ts
-│   │   │   ├── query-processing-trace.ts
-│   │   │   ├── query-processing-metrics.ts
-│   │   │   ├── eval-sampling.ts
-│   │   │   ├── eval-automated.ts
-│   │   │   ├── logger.ts
-│   │   │   ├── ui_decision   
-│   │   │   └── providers
-│   │   │       
-│   │   ├── memory/
-│   │   │   ├── sessionMemory.ts
-│   │   │   ├── userMemory.ts
-│   │   │   ├── SessionStore.ts
-│   │   │   ├── InMemorySessionStore.ts
-│   │   │   └── RedisSessionStore.ts
-│   │   ├── types/
-│   │   │   ├── core.ts
-│   │   │   ├── verticals.ts
-│   │   │   └── index.ts
-│   │   └── index.ts
-│   ├── package.json
-│   └── tsconfig.json
+├── src/
+│   └── main/
+│       └── node/
+│           ├── config/          # app, redis, database config
+│           ├── controllers/     # business logic (stubs)
+│           ├── middlewares/     # auth, validation, error
+│           ├── models/          # data models (stubs)
+│           ├── routes/          # query.ts, index
+│           ├── services/        # orchestrator, retrieval, session, providers
+│           │   ├── session/     # SessionStore, sessionMemory, userMemory
+│           │   └── providers/   # web, weather, catalog, hotels, flights, movies
+│           ├── types/           # core, verticals, index
+│           ├── utils/           # logger, helpers
+│           ├── resources/       # database migrations/seeds, static
+│           └── index.ts         # entry point
+├── .env.example
+├── package.json                 # scripts run src/main/node/index.ts
+├── tsconfig.json                # rootDir: src/main/node, paths @/* → src/main/node/*
 └── README.md
 ```
 
-Other directories (e.g. `lib/` Flutter app, other routes) are not required for the open-source RAG flow; the story and the files above are sufficient to clone and run.
+Query flow files: `routes/query.ts`, `services/orchestrator*.ts`, `services/query-rewrite.ts`, `services/filter-extraction.ts`, `services/grounding-decision.ts`, `services/retrieval-plan*.ts`, `services/retrieval-router.ts`, `services/pipeline-deps.ts`, `services/llm-*.ts`, `services/session/*`, `services/providers/*`, `utils/logger.ts`, `types/*`.
 
 ---
 
