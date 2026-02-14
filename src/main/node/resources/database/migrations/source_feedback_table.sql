@@ -10,3 +10,4 @@ CREATE TABLE IF NOT EXISTS source_feedback (
 );
 
 CREATE INDEX IF NOT EXISTS idx_source_feedback_session ON source_feedback (session_id);
+
