@@ -1,4 +1,4 @@
--- feedback table (PostgreSQL) — durable storage for Phase 4
+
 CREATE TABLE IF NOT EXISTS feedback (
   id            BIGSERIAL PRIMARY KEY,
   session_id    TEXT NOT NULL,
@@ -15,3 +15,4 @@ CREATE TABLE IF NOT EXISTS feedback (
 
 CREATE INDEX IF NOT EXISTS idx_feedback_session_id ON feedback(session_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);
+
