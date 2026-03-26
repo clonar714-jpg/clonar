@@ -47,7 +47,6 @@ If you implement evaluations or discover improvements, please open an issue or P
 
 ## 🎯 Key Architectural Highlights for Extraordinary Reasoning
 
-Clonar's core innovation is its **8-Stage Reasoning Loop**. This isn't a simple concatenation of steps, but a dynamically conditioning, iterative process:
 flowchart TB
   subgraph entry ["Client to API"]
     A["GET /api/query/stream <br/> (build QueryContext, session, memory)"]
