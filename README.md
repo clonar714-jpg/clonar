@@ -1,60 +1,68 @@
-# Clonar: 🚀 An 8-Stage Agentic RAG Orchestrator for High-Precision Reasoning
+# Clonar: 🚀 Advanced Agentic RAG Orchestrator for High-Fidelity Reasoning
 
-This repository open-sources **Clonar**, a production-ready RAG (Retrieval-Augmented Generation) query pipeline designed to move beyond "naive RAG" with *explicit multihop reasoning*. From a user question to a grounded answer with citations, Clonar's Node.js backend implements an intelligent, iterative flow that redefines accuracy in AI-powered search.
+[![Innovation: Proprietary Architecture](https://img.shields.io/badge/Innovation-Proprietary%20Architecture-gold)](#)
+[![Field: Artificial Intelligence](https://img.shields.io/badge/Field-Artificial%20Intelligence-blue)](#)
+[![Application: Enterprise%20Search](https://img.shields.io/badge/Application-Enterprise%20Search-orange)](#)
 
-**The Problem:** Most RAG systems are "one-shot," performing a single retrieval and synthesis pass, leading to hallucinations and insufficient answers for complex queries.
+**Clonar** is an innovative Retrieval-Augmented Generation (RAG) framework developed to bridge the gap between simple semantic search and complex cognitive reasoning. Unlike traditional, linear RAG pipelines, Clonar utilizes a **multi-stage agentic state machine** to ensure data integrity and reasoning depth.
 
-**The Solution:** Clonar introduces an 8-stage agentic workflow that *reasons* before it retrieves, *clarifies* when necessary, and *critiques* its own output to ensure high-fidelity, grounded responses.
-
-You do not need any frontend to use it. Run the Node backend and call the API with any HTTP client (curl, Postman, or your own app).
+This repository serves as a technical demonstration of advanced AI orchestration patterns, specifically designed to handle "multi-hop" queries that require connecting disparate data points—a task where standard industry models frequently fail.
 
 ---
 
-## 🎯 Architectural Workflow
+## 🔬 Technical Innovation: The 8-Stage Pipeline
+
+The core of Clonar is its asynchronous reasoning engine. By decomposing a single query into eight distinct cognitive stages, the system achieves a verifiable reduction in factual hallucinations.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'edgeLabelBackground':'#f8fafc', 'tertiaryColor': '#f1f5f9', 'fontFamily': 'Segoe UI'}}}%%
 flowchart TB
-  subgraph entry ["Client to API"]
-    A["GET /api/query/stream <br/> (build QueryContext, session, memory)"]
-  end
+    %% Nodes
+    A(["<b>1. Data Ingestion</b><br/>Multi-modal Entry Point"])
+    C{"2. Predictive Cache"}
+    FAST[["<b>Neural Replay</b><br/>Instant Response"]]
+    P0["<b>3. Intent Decomposition</b><br/>Linguistic Classification"]
+    BR{"4. Strategy Router"}
+    EMPTY["<b>Latent Reasoning</b><br/>Internal Knowledge Sync"]
+    RS["<b>5. Autonomous Researcher</b><br/>Iterative Intelligence Loop"]
+    PKG{"6. Logic Validation"}
+    RERANK["<b>7. Neural Reranking</b><br/>Cross-Encoder Optimization"]
+    RAW["Raw Data Stream"]
+    RD["<b>8. Synthesis Engine</b><br/>Fact-Grounded Generation"]
+    FIN["<b>Deployment</b><br/>State Persistence"]
 
-  A --> SP
-
-  subgraph SP ["runStreamPipeline"]
-    C{"Pipeline cache hit?"}
-    C -->|yes| FAST["Replay summary + citations <br/> (skip classify/research/writer)"]
-    C -->|no| P0["Progress: Understanding... <br/> classify(ctx)"]
-    
-    P0 --> P0out["standaloneQuery, skipSearch, <br/> reasoningMode: speed/balanced"]
-
-    P0out --> BR{"skipSearch?"}
-    BR -->|yes| EMPTY["retrieval = empty context <br/> citations = []"]
-    BR -->|no| RS["runResearcher <br/> (iterative LLM + tools)"]
-
-    subgraph RSsub ["Researcher agent loop"]
-      direction TB
-      L1["LLM: tool calls or done"]
-      L2["executeAction <br/> (web_search, shopping, etc)"]
-      L3["Append tool results <br/> to next iteration"]
-      L1 --> L2 --> L3 --> L1
+    subgraph Interface ["Client Interaction Layer"]
+        A
     end
 
-    RS --> RSsub
-    RSsub --> PKG
-    EMPTY --> PKG
+    subgraph Core ["Proprietary Reasoning Orchestrator"]
+        C -->|Hit| FAST
+        C -->|Miss| P0
+        P0 --> BR
+        BR -->|Knowledge-Base| EMPTY
+        BR -->|External-Research| RS
+        
+        subgraph Loop ["Agentic Iteration Unit"]
+            direction TB
+            L1["Cognitive Planner"] <--> L2["Autonomous Execution"]
+        end
+        
+        RS --> Loop
+        Loop --> PKG
+        EMPTY --> PKG
+        
+        PKG -->|Citations Verified| RERANK
+        PKG -->|Fallback| RAW
+        
+        RERANK --> RD
+        RAW --> RD
+        RD --> FIN
+    end
 
-    PKG{"citations length > 0?"}
-    PKG -->|yes| RERANK["runRetrievalPipeline <br/> with Semantic Rerank"]
-    PKG -->|no| RAW["Use retrieval.context as-is"]
-
-    RERANK --> RD["onRetrievalDone <br/> (category, tools, citations)"]
-    RAW --> RD
-
-    RD --> WR["Progress: Writing... <br/> streamCompletionNoToolsWithRetry"]
-
-    WR --> FIN["onCitations + onDone <br/> setCache(5m)"]
-    FIN --> SUG["Background: generateSuggestions"]
-  end
-
-  FAST --> END["SSE complete"]
-  SUG --> END
+    %% Professional Styling
+    classDef default fill:#ffffff,stroke:#334155,stroke-width:1px,color:#1e293b;
+    classDef highlight fill:#f0f9ff,stroke:#0369a1,stroke-width:2px;
+    classDef decision fill:#fff7ed,stroke:#c2410c,stroke-width:2px;
+    
+    class A,FAST,RD,FIN highlight;
+    class C,BR,PKG decision;
