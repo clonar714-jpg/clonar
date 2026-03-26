@@ -48,47 +48,47 @@ If you implement evaluations or discover improvements, please open an issue or P
 ## 🎯 Key Architectural Highlights for Extraordinary Reasoning
 
 Clonar's core innovation is its **8-Stage Reasoning Loop**. This isn't a simple concatenation of steps, but a dynamically conditioning, iterative process:
-
 flowchart TB
-  subgraph entry["Client → API"]
-    A["GET /api/query/stream\n(build QueryContext, session, memory)"]
+  subgraph entry ["Client to API"]
+    A["GET /api/query/stream <br/> (build QueryContext, session, memory)"]
   end
 
-  A --> SP["runStreamPipeline"]
+  A --> SP
 
-  subgraph SP["runStreamPipeline"]
-    C{"Pipeline cache\nhit?"}
-    C -->|yes| FAST["Replay summary + citations\n(skip classify / research / writer)"]
-    C -->|no| P0["Progress: Understanding…\nclassify(ctx)"]
-    P0 --> P0out["standaloneQuery, skipSearch,\nreasoningMode speed|balanced"]
+  subgraph SP ["runStreamPipeline"]
+    C{"Pipeline cache hit?"}
+    C -->|yes| FAST["Replay summary + citations <br/> (skip classify/research/writer)"]
+    C -->|no| P0["Progress: Understanding... <br/> classify(ctx)"]
+    
+    P0 --> P0out["standaloneQuery, skipSearch, <br/> reasoningMode: speed/balanced"]
 
     P0out --> BR{"skipSearch?"}
-    BR -->|yes| EMPTY["retrieval = empty context\ncitations = []"]
-    BR -->|no| RS["runResearcher\n(iterative LLM ↔ tools)"]
+    BR -->|yes| EMPTY["retrieval = empty context <br/> citations = []"]
+    BR -->|no| RS["runResearcher <br/> (iterative LLM + tools)"]
 
-    subgraph RSsub["Researcher (agent loop)"]
+    subgraph RSsub ["Researcher agent loop"]
       direction TB
       L1["LLM: tool calls or done"]
-      L2["executeAction\n(web_search, shopping, hotels, …)"]
-      L3["Append tool results\n→ next iteration"]
+      L2["executeAction <br/> (web_search, shopping, etc)"]
+      L3["Append tool results <br/> to next iteration"]
       L1 --> L2 --> L3 --> L1
     end
 
     RS --> RSsub
+    RSsub --> PKG
     EMPTY --> PKG
-    RS --> PKG
 
-    PKG{"citations\nlength > 0?"}
-    PKG -->|yes| RERANK["runRetrievalPipelineWithSemanticRerank\n(embeddings + optional LTR + context string)"]
+    PKG{"citations length > 0?"}
+    PKG -->|yes| RERANK["runRetrievalPipeline <br/> with Semantic Rerank"]
     PKG -->|no| RAW["Use retrieval.context as-is"]
 
-    RERANK --> RD["onRetrievalDone\n(category, toolsUsed, citations)"]
+    RERANK --> RD["onRetrievalDone <br/> (category, tools, citations)"]
     RAW --> RD
 
-    RD --> WR["Progress: Writing…\nstreamCompletionNoToolsWithRetry\n(writer prompt + thread + user)"]
+    RD --> WR["Progress: Writing... <br/> streamCompletionNoToolsWithRetry"]
 
-    WR --> FIN["onCitations + onDone\nsetCache(5m)"]
-    FIN --> SUG["Background: generateSuggestions\n(LLM JSON)"]
+    WR --> FIN["onCitations + onDone <br/> setCache(5m)"]
+    FIN --> SUG["Background: generateSuggestions"]
   end
 
   FAST --> END["SSE complete"]
