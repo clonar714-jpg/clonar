@@ -6,8 +6,6 @@
 
 **Clonar** is an innovative Retrieval-Augmented Generation (RAG) framework developed to bridge the gap between simple semantic search and complex cognitive reasoning. Unlike traditional, linear RAG pipelines, Clonar utilizes a **multi-stage agentic state machine** to ensure data integrity and reasoning depth.
 
-This repository serves as a technical demonstration of advanced AI orchestration patterns, specifically designed to handle "multi-hop" queries that require connecting disparate data points—a task where standard industry models frequently fail.
-
 ---
 
 ## 🔬 Technical Innovation: The 8-Stage Pipeline
@@ -16,7 +14,7 @@ The core of Clonar is its asynchronous reasoning engine. By decomposing a single
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'edgeLabelBackground':'#f8fafc', 'tertiaryColor': '#f1f5f9', 'fontFamily': 'Segoe UI'}}}%%
-flowchart TB
+flowchart TD
     %% Nodes
     A(["<b>1. Data Ingestion</b><br/>Multi-modal Entry Point"])
     C{"2. Predictive Cache"}
@@ -24,40 +22,36 @@ flowchart TB
     P0["<b>3. Intent Decomposition</b><br/>Linguistic Classification"]
     BR{"4. Strategy Router"}
     EMPTY["<b>Latent Reasoning</b><br/>Internal Knowledge Sync"]
-    RS["<b>5. Autonomous Researcher</b><br/>Iterative Intelligence Loop"]
+    
+    subgraph RS ["5. Autonomous Researcher"]
+        direction TB
+        L1["Cognitive Planner"] <--> L2["Autonomous Execution"]
+    end
+
     PKG{"6. Logic Validation"}
     RERANK["<b>7. Neural Reranking</b><br/>Cross-Encoder Optimization"]
     RAW["Raw Data Stream"]
     RD["<b>8. Synthesis Engine</b><br/>Fact-Grounded Generation"]
     FIN["<b>Deployment</b><br/>State Persistence"]
 
-    subgraph Interface ["Client Interaction Layer"]
-        A
-    end
-
-    subgraph Core ["Proprietary Reasoning Orchestrator"]
-        C -->|Hit| FAST
-        C -->|Miss| P0
-        P0 --> BR
-        BR -->|Knowledge-Base| EMPTY
-        BR -->|External-Research| RS
-        
-        subgraph Loop ["Agentic Iteration Unit"]
-            direction TB
-            L1["Cognitive Planner"] <--> L2["Autonomous Execution"]
-        end
-        
-        RS --> Loop
-        Loop --> PKG
-        EMPTY --> PKG
-        
-        PKG -->|Citations Verified| RERANK
-        PKG -->|Fallback| RAW
-        
-        RERANK --> RD
-        RAW --> RD
-        RD --> FIN
-    end
+    %% Flow
+    A --> C
+    C -- Hit --> FAST
+    C -- Miss --> P0
+    P0 --> BR
+    
+    BR -- Knowledge-Base --> EMPTY
+    BR -- External-Research --> RS
+    
+    EMPTY --> PKG
+    RS --> PKG
+    
+    PKG -- Verified --> RERANK
+    PKG -- Fallback --> RAW
+    
+    RERANK --> RD
+    RAW --> RD
+    RD --> FIN
 
     %% Professional Styling
     classDef default fill:#ffffff,stroke:#334155,stroke-width:1px,color:#1e293b;
